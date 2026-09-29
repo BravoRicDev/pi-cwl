@@ -58,6 +58,70 @@ interface RealMessage {
 }
 
 // ---------------------------------------------------------------------------
+// i18n
+// ---------------------------------------------------------------------------
+
+type Lang = 'en' | 'it';
+
+const FALLBACK: Lang = 'en';
+
+function primaryOf(tag: string): string | null {
+  if (typeof tag !== 'string') return null;
+  // Same regex as pi-anti-amnesia/i18n.mjs and pi-cron-bg: a naive split on
+  // "." yields "it_it" for "it_IT.UTF-8", which is not a supported language.
+  const m = /^\s*([A-Za-z]{2,3})(?:-|_)/.exec(tag) ?? /^\s*([A-Za-z]{2,3})\s*$/.exec(tag);
+  return m ? m[1].toLowerCase() : null;
+}
+
+function isSupported(primary: string | null): primary is Lang {
+  return primary === 'en' || primary === 'it';
+}
+
+/**
+ * Resolves the system language once, at module load.
+ *
+ * Must stay in lockstep with pi-anti-amnesia and pi-cron-bg: several
+ * extensions inject instructions into the same model context, and a model fed
+ * mixed-language directives degrades. Same order (LC_ALL > LC_MESSAGES > LANG
+ * > LANGUAGE, then Intl, then English), same unsupported-locale handling.
+ */
+function detectLang(): Lang {
+  const env = process.env;
+  for (const name of ['LC_ALL', 'LC_MESSAGES', 'LANG', 'LANGUAGE']) {
+    const tag = env?.[name];
+    if (!tag || tag === 'C' || tag === 'POSIX') continue;
+    const primary = primaryOf(tag);
+    if (isSupported(primary)) return primary;
+  }
+  try {
+    const icu = primaryOf(Intl.DateTimeFormat().resolvedOptions().locale ?? '');
+    if (isSupported(icu)) return icu;
+  } catch { /* no ICU data */ }
+  return FALLBACK;
+}
+
+const LANG: Lang = detectLang();
+
+const I18N: Record<Lang, { guidelines: string[] }> = {
+  en: {
+    guidelines: [
+      'Open an expl episode when you start exploring (reads, searches, listings). Close it as soon as you have the answer you need.',
+      'Open an act episode when you make a change (write files, run commands with effects). Declare the exploration episodes it depends on.',
+      'When closing an expl, give a concise description of what you learned: it is the only content that survives eviction.',
+      'Do not open overly fine-grained episodes: 5-15 per session is a good target.',
+    ],
+  },
+  it: {
+    guidelines: [
+      'Apri un episodio expl quando inizi a esplorare (letture, ricerche, listing). Chiudilo appena hai la risposta che ti serve.',
+      'Apri un episodio act quando fai una modifica (scrivi file, esegui comandi con effetti). Dichiara le esplorazioni da cui dipende.',
+      'Alla chiusura di un expl, fornisci una descrizione concisa di cosa hai imparato: e\' il contenuto che sopravvive all\'eviction.',
+      'Non aprire episodi troppo fini: 5-15 per sessione e\' un buon target.',
+    ],
+  },
+} satisfies Record<Lang, { guidelines: string[] }>;
+
+// ---------------------------------------------------------------------------
 // Config
 // ---------------------------------------------------------------------------
 
@@ -595,12 +659,7 @@ export default function (pi: ExtensionAPI) {
       'Quando chiudi un "expl", fornisci la descrizione di cosa hai imparato: ' +
       'e\' l\'unico contenuto che sopravvive all\'eviction.',
     promptSnippet: 'delimiter: segna i confini di un episodio CWL (expl/act)',
-    promptGuidelines: [
-      'Apri un episodio expl quando inizi a esplorare (letture, ricerche, listing). Chiudilo appena hai la risposta che ti serve.',
-      'Apri un episodio act quando fai una modifica (scrivi file, esegui comandi con effetti). Dichiara le esplorazioni da cui dipende.',
-      'Alla chiusura di un expl, fornisci una descrizione concisa di cosa hai imparato: e\' il contenuto che sopravvive se l\'episodio viene evictato.',
-      'Non aprire episodi troppo fini: 5-15 per sessione e\' un buon target.',
-    ],
+    promptGuidelines: I18N[LANG].guidelines,
     parameters: Type.Object({
       action: Type.Union([Type.Literal('start'), Type.Literal('end')], {
         description: '"start" per aprire un episodio, "end" per chiuderlo.',
