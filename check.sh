@@ -24,5 +24,9 @@ if [ -z "$TSC" ] || [ ! -x "$TSC" ]; then
 fi
 
 "$TSC" -p tsconfig.check.json "$@"
+# Caricamento reale del modulo: intercetta gli errori di runtime (TDZ, binding non
+# inizializzati, import rotti) che il typecheck non vede. Va PRIMA delle suite
+# ereditate da pi-anti-amnesia, che in questo repo falliscono per file assenti.
+node --test tests/smoke-load.test.mjs
 PYTHONDONTWRITEBYTECODE=1 python3 -m unittest discover -s tests -v
 node --test tests/topic-scope.test.mjs tests/extension-flow.test.mjs

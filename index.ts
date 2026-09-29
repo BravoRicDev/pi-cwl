@@ -2,33 +2,33 @@
  * CWL — Context Window Lifecycle
  * Structured context eviction for long-horizon Pi agents.
  *
- * PROBLEMA
- *   La compattazione a soglia (summarization) blocca il turno, perde informazione
- *   in modo imprevedibile, distrugge la struttura causale e introduce allucinazioni
- *   proprio quando il budget di contesto e' sotto pressione.
+ * PROBLEM
+ *   Threshold compaction (summarization) blocks the turn, loses information
+ *   in unpredictable ways, destroys causal structure and introduces hallucinations
+ *   exactly when the context budget is under pressure.
  *
- * SOLUZIONE (https://arxiv.org/html/2606.11213)
+ * SOLUTION (https://arxiv.org/html/2606.11213)
  *   The agent annotates its own trajectory as typed episodes (expl/act)
- *   tramite un tool `delimiter`. Una politica deterministica, LLM-free, evicta
+ *   through a `delimiter` tool. A deterministic, LLM-free policy evicts
  *   the content in order of recoverability once the budget is exceeded.
  *
- *   - expl (esplorazione): output di ricerca, listing, letture di orientamento.
+ *   - expl (exploration): search output, listings, orientation reads.
  *     On closing, the agent supplies a description: the only content kept.
  *   - act (action): writes, edits, tool calls. The effects are persistent in
  *     the environment, so they are the first candidates for eviction.
  *
- *   Le dipendenze dichiarate impediscono di perdere il contesto esplorativo che
+ *   Declared dependencies prevent losing the exploratory context that
  *   produced a decision that is still active.
  *
- *   User content e' inviolabile (Principio 3).
+ *   User content is inviolable (Principle 3).
  *   Compression NEVER invokes the model (Principle 5): zero cost, zero
- *   allucinazione introdotta, zero blocco.
+ *   introduced hallucination, zero blocking.
  *
- * FORMA REALE DEI MESSAGGI (da @earendil-works/pi-ai)
+ * REAL MESSAGE SHAPE (from @earendil-works/pi-ai)
  *   UserMessage      : { role: "user",      content: string | Content[] }
  *   AssistantMessage : { role: "assistant", content: (Text|Thinking|ToolCall)[] }
  *   ToolResultMessage: { role: "toolResult",content: (Text|Image)[] }
- *   Nota: il role dei tool result e' "toolResult", NON "tool".
+ *   Note: the tool result role is "toolResult", NOT "tool".
  */
 
 import type { ExtensionAPI, ExtensionContext } from '@earendil-works/pi-coding-agent';
@@ -38,6 +38,8 @@ import * as fs from 'node:fs';
 import * as path from 'node:path';
 import * as os from 'node:os';
 import { fileURLToPath } from 'node:url';
+import { createHash } from 'node:crypto';
+import type * as Recall from './recall.mjs';
 
 // ---------------------------------------------------------------------------
 // Minimal types for the real message shape (subset of @earendil-works/pi-ai)
@@ -120,6 +122,27 @@ type CwlMessages = {
   statusHeader: (budget: string, threshold: string) => string;
   statusEpisodes: (total: number, active: number, closed: number, stripped: number) => string;
   statusEvictions: (count: number, tokens: string) => string;
+  /** Message injected instead of a compressed span (goes into the LLM context). */
+  compressedNotice: (from: string, to: string, saved: number) => string;
+  episodeClosed: (type: string, name: string) => string;
+  statusMeasured: (tokens: string) => string;
+  statusActive: (list: string) => string;
+  /** UI notice when falling back to the global reasoning strip. */
+  fallbackNotice: (changed: number, from: number, to: number) => string;
+  /** UI notice after an eviction pass. */
+  evictionNotice: (dropped: number, truncated: number, from: string, to: string) => string;
+  /** Texts that end up in the LLM context. */
+  snippets: { delimiter: string; status: string; compress: string; recall: string };
+  /** Texts of the two autonomous compression tools. */
+  tools: {
+    compressDesc: string; compressStart: string; compressEnd: string; compressSummary: string;
+    recallDesc: string; recallQuery: string;
+  };
+  /** Parameter descriptions: read by the LLM on every invocation. */
+  params: {
+    delimiterDesc: string; action: string; name: string; type: string;
+    dependencies: string; description: string; statusDesc: string;
+  };
 };
 
 const I18N: Record<Lang, CwlMessages> = {
@@ -145,13 +168,45 @@ const I18N: Record<Lang, CwlMessages> = {
     statusHeader: (budget, threshold) => `CWL — token budget: ${budget} (threshold: ${threshold}%)`,
     statusEpisodes: (total, active, closed, stripped) => `Episodes total: ${total} | active: ${active} | closed: ${closed} | stripped: ${stripped}`,
     statusEvictions: (count, tokens) => `Evictions total: ${count} | tokens saved: ${tokens}`,
+    compressedNotice: (from, to, saved) => `[CWL · RECALL] The messages from ${from} to ${to} were compressed into ` +
+      `this summary (~${saved} tokens saved).\n` +
+      `If you need the original text, call cwl_recall with keywords from that content.\n\n`,
+    episodeClosed: (type, name) => `Episode ${type} "${name}" closed.`,
+    statusMeasured: (tokens) => `Measured context tokens: ~${tokens}`,
+    statusActive: (list) => `Active: ${list}`,
+    fallbackNotice: (changed, from, to) => `CWL: no episode annotated, reasoning blocks reduced in ${changed} messages ` +
+      `(${from} -> ${to} tokens). Use \`delimiter\` for graded eviction.`,
+    evictionNotice: (dropped, truncated, from, to) => `CWL: ${dropped} evicted, ${truncated} reduced (${from} -> ${to} tokens).`,
+    snippets: {
+      delimiter: 'delimiter: marks the boundaries of a CWL episode (expl/act)',
+      status: 'cwl_status: CWL context lifecycle status',
+      compress: 'cwl_compress: compress a range of messages in the active context',
+      recall: 'cwl_recall: retrieve a conversation excerpt by BM25 query',
+    },
+    tools: {
+      compressDesc: 'Replaces, in the active context, the messages between two hashes with your summary, leaving the original intact in the transcript. Use it only when the extension asks you to.',
+      compressStart: 'Hash of the FIRST message to compress.',
+      compressEnd: 'Hash of the LAST message to compress.',
+      compressSummary: 'The summary that REPLACES the compressed messages. Write WHOLE PIECES, not digests: it must be enough to keep working without re-reading them. Include paths, file names, function names, numeric values, and what you decided and why.',
+      recallDesc: 'Searches the session messages (user and assistant) and returns the pieces most relevant to a BM25 query. Use it to bring compressed text back into view.',
+      recallQuery: 'Keywords to search for: paths, function names, technical terms.',
+    },
+    params: {
+      delimiterDesc: 'Marks the boundaries of a CWL episode. Types: "expl" (exploration: searches, reads, orientation — the content is not needed after the inference) and "act" (action: writes, edits, executions — persistent effects, first candidate for eviction). When you open an "act", declare the explorations it depends on. When you close an "expl", give the description of what you learned: it is the only content that survives eviction.',
+      action: '"start" to open an episode, "end" to close it.',
+      name: 'Unique episode name (required for action=start).',
+      type: 'Episode type: "expl" (exploration) or "act" (action). Required for action=start.',
+      dependencies: 'Names of the expl episodes this action depends on. Required for action=start with type="act".',
+      description: 'Marks the boundaries of a CWL episode. Types: "expl" (exploration: searches, reads, orientation — the content is not needed after the inference) and "act" (action: writes, edits, executions — persistent effects, first candidate for eviction). When you open an "act", declare the explorations it depends on. When you close an "expl", give the description of what you learned: it is the only content that survives eviction.',
+      statusDesc: 'Shows the context lifecycle status: budget, active/closed episodes, evictions performed.',
+    },
   },
   it: {
     guidelines: [
       'Apri un episodio expl quando inizi a esplorare (letture, ricerche, listing). Chiudilo appena hai la risposta che ti serve.',
       'Apri un episodio act quando fai una modifica (scrivi file, esegui comandi con effetti). Dichiara le esplorazioni da cui dipende.',
-      'Alla chiusura di un expl, fornisci una descrizione concisa di cosa hai imparato: e\' il contenuto che sopravvive all\'eviction.',
-      'Non aprire episodi troppo fini: 5-15 per sessione e\' un buon target.',
+      "Alla chiusura di un expl, fornisci una descrizione concisa di cosa hai imparato: e' il contenuto che sopravvive all'eviction.",
+      "Non aprire episodi troppo fini: 5-15 per sessione e' un buon target.",
     ],
     strippedReasoning: '[CWL: reasoning evictato]',
     truncatedString: (len, level) => `[CWL: contenuto ridotto da ${len} chars (livello ${level})]`,
@@ -168,6 +223,38 @@ const I18N: Record<Lang, CwlMessages> = {
     statusHeader: (budget, threshold) => `CWL — token budget: ${budget} (threshold: ${threshold}%)`,
     statusEpisodes: (total, active, closed, stripped) => `Episodi totali: ${total} | attivi: ${active} | chiusi: ${closed} | gia' stripped: ${stripped}`,
     statusEvictions: (count, tokens) => `Eviction totali: ${count} | token risparmiati: ${tokens}`,
+    compressedNotice: (from, to, saved) => `[CWL · RICHIAMO] I messaggi da ${from} a ${to} sono stati compressi in ` +
+      `questo riepilogo (~${saved} token risparmiati).\n` +
+      `Se ti serve il testo originale, chiama cwl_recall con parole chiave di quel contenuto.\n\n`,
+    episodeClosed: (type, name) => `Episodio ${type} "${name}" chiuso.`,
+    statusMeasured: (tokens) => `Token contesto misurati: ~${tokens}`,
+    statusActive: (list) => `Attivi: ${list}`,
+    fallbackNotice: (changed, from, to) => `CWL: nessun episodio annotato, ridotti i blocchi di reasoning in ${changed} messaggi ` +
+      `(${from} -> ${to} token). Usa \`delimiter\` per un'eviction graduata.`,
+    evictionNotice: (dropped, truncated, from, to) => `CWL: ${dropped} evictati, ${truncated} ridotti (${from} -> ${to} token).`,
+    snippets: {
+      delimiter: 'delimiter: segna i confini di un episodio CWL (expl/act)',
+      status: 'cwl_status: stato del context lifecycle CWL',
+      compress: 'cwl_compress: comprimi un intervallo di messaggi nel contesto attivo',
+      recall: 'cwl_recall: recupera un pezzo di conversazione per query BM25',
+    },
+    tools: {
+      compressDesc: "Sostituisce nel contesto attivo i messaggi fra due hash con il tuo riassunto, lasciando l'originale intatto nel transcript. Usalo solo se l'estensione te lo chiede.",
+      compressStart: 'Hash del PRIMO messaggio da comprimere.',
+      compressEnd: "Hash dell'ULTIMO messaggio da comprimere.",
+      compressSummary: "Il riassunto che SOSTITUISCE i messaggi compressi. Scrivi PEZZI INTERI, non sommari: deve bastare a lavorare senza rileggere. Includi path, nomi di file, nomi di funzione, valori numerici e cosa hai scelto e perche'.",
+      recallDesc: "Cerca nei messaggi della sessione (user e assistant) e restituisce i pezzi piu' pertinenti per una query BM25. Usalo per riportare alla luce testo compresso.",
+      recallQuery: 'Le parole chiave da cercare: path, nomi di funzione, termini tecnici.',
+    },
+    params: {
+      delimiterDesc: 'Segna i confini di un episodio CWL. Tipi: "expl" (esplorazione: ricerca, letture, orientamento — il contenuto non serve dopo l\'inferenza) e "act" (azione: scritture, edit, esecuzioni — effetti persistenti, primo candidato all\'eviction). Quando apri un "act", dichiara le esplorazioni da cui dipende. Quando chiudi un "expl", fornisci la descrizione di cosa hai imparato: e\' l\'unico contenuto che sopravvive all\'eviction.',
+      action: '"start" per aprire un episodio, "end" per chiuderlo.',
+      name: 'Nome univoco dell\'episodio (obbligatorio per action=start).',
+      type: 'Tipo episodio: "expl" (esplorazione) o "act" (azione). Obbligatorio per action=start.',
+      dependencies: 'Nomi degli episodi expl da cui questo atto dipende. Obbligatorio per action=start con type="act".',
+      description: 'Descrizione di cosa hai imparato. Obbligatorio solo per action=end con type="expl".',
+      statusDesc: 'Mostra lo stato del context lifecycle: budget, episodi attivi/chiusi, eviction eseguite.',
+    },
   },
 } satisfies Record<Lang, CwlMessages>;
 
@@ -181,25 +268,25 @@ function t<K extends keyof CwlMessages>(key: K): CwlMessages[K] {
 // ---------------------------------------------------------------------------
 
 interface CwlConfig {
-  /** Budget di token attivi oltre il quale l'eviction parte. */
+  /** Active token budget above which eviction starts. */
   tokenBudget: number;
-  /** Soglia di attivazione come frazione del budget (0..1). */
+  /** Activation threshold as a fraction of the budget (0..1). */
   thresholdRatio: number;
-  /** Livelli di aggressivita' abilitati. */
+  /** Enabled aggressiveness levels. */
   levels: {
     stripReasoning: boolean;
     stripBulkOutput: boolean;
     stripIntermediate: boolean;
     removeEpisode: boolean;
   };
-  /** Renderizza widget UI con lo stato. */
+  /** Renders the UI widget with the status. */
   showWidget: boolean;
-  /** Log di debug su file. */
+  /** Debug logging to file. */
   debug: boolean;
 }
 
 const DEFAULT_CONFIG: CwlConfig = {
-  // 80k = ~30% di un contesto da 256k; CWL paper: regime sotto il quale
+  // 80k = ~30% of a 256k context; the CWL paper puts this at the regime under which
   // attention does not degrade. If your context is 1M, raise this value.
   tokenBudget: 80_000,
   thresholdRatio: 0.85,
@@ -213,18 +300,18 @@ const DEFAULT_CONFIG: CwlConfig = {
   debug: false,
 };
 
-// __dirname equivalente in ESM.
+// __dirname equivalent in ESM.
 const _EXT_DIR = path.dirname(fileURLToPath(import.meta.url));
-// Config utente; se assente si cade sul config incluso nell'estensione, cosi' il
-// file distribuito col repo serve a qualcosa invece di restare un documento morto.
+// User config; if absent we fall back to the config bundled with the extension, so the
+// file shipped with the repo actually does something instead of being a dead document.
 const CONFIG_PATH = path.join(os.homedir(), '.pi', 'cwl', 'config.json');
 const BUNDLED_CONFIG_PATH = path.join(_EXT_DIR, 'config.json');
 const LOG_PATH = path.join(os.homedir(), '.pi', 'cwl', 'cwl.log');
 
 /**
- * Deep-merge: i livelli devono essere uniti singolarmente, altrimenti un
- * config.json parziale (es. { levels: { stripBulkOutput: false } }) sostituirebbe
- * l'intero blocco levels perdendo le altre tre flag.
+ * Deep-merge: the levels must be merged individually, otherwise a partial
+ * config.json (e.g. { levels: { stripBulkOutput: false } }) would replace
+ * the whole levels block and lose the other three flags.
  */
 function loadConfig(): CwlConfig {
   for (const candidate of [CONFIG_PATH, BUNDLED_CONFIG_PATH]) {
@@ -237,7 +324,7 @@ function loadConfig(): CwlConfig {
         levels: { ...DEFAULT_CONFIG.levels, ...(user.levels ?? {}) },
       };
     } catch {
-      // prova il candidato successivo
+      // try the next candidate
     }
   }
   return { ...DEFAULT_CONFIG, levels: { ...DEFAULT_CONFIG.levels } };
@@ -248,14 +335,14 @@ function debugLog(cfg: CwlConfig, msg: string) {
   try {
     fs.mkdirSync(path.dirname(LOG_PATH), { recursive: true });
     fs.appendFileSync(LOG_PATH, `[${new Date().toISOString()}] ${msg}\n`);
-  } catch { /* non critico */ }
+  } catch { /* not critical */ }
 }
 
 // ---------------------------------------------------------------------------
 // Token estimation (approximate, no tokenizer call)
 // ---------------------------------------------------------------------------
 
-/** Stima token: ~4 caratteri per token per testo inglese; e' un overestimate per code. */
+/** Token estimate: ~4 characters per token for English prose; it overestimates for code. */
 function estimateTokens(text: string): number {
   return Math.ceil(text.length / 4);
 }
@@ -270,10 +357,10 @@ function estimateMessageTokens(msg: unknown): number {
 }
 
 // ---------------------------------------------------------------------------
-// Content helpers (forma reale: array di blocchi)
+// Content helpers (real shape: array of blocks)
 // ---------------------------------------------------------------------------
 
-/** Estrae il testo concatenato da stringa o array di blocchi content. */
+/** Extracts the concatenated text from a string or an array of content blocks. */
 function contentToText(content: unknown): string {
   if (typeof content === 'string') return content;
   if (!Array.isArray(content)) return '';
@@ -285,7 +372,7 @@ function contentToText(content: unknown): string {
   return out;
 }
 
-/** Numero di caratteri di testo effettivamente presente nel messaggio. */
+/** Number of text characters actually present in the message. */
 function textLengthOf(msg: unknown): number {
   const m = msg as RealMessage;
   return contentToText(m?.content).length;
@@ -301,25 +388,25 @@ type StripLevel = 'none' | 'reasoning' | 'bulk' | 'intermediate' | 'removed';
 interface Episode {
   name: string;
   type: EpisodeType;
-  /** Nomi degli episodi expl da cui questo atto dipende. */
+  /** Names of the expl episodes this act depends on. */
   dependencies: string[];
   /**
-   * toolCallId del risultato `delimiter` che ha aperto l'episodio: e' l'ancoraggio
-   * AFFIDABILE. L'indice non lo e', perche' il cursore si aggiorna solo
-   * nell'hook context (prima della chiamata LLM) mentre il tool gira nel turno.
+   * toolCallId of the `delimiter` result that opened the episode: that is the
+   * RELIABLE anchor. The index is not, because the cursor only updates
+   * in the context hook (before the LLM call) while the tool runs within the turn.
    */
   startToolCallId: string;
-  /** Come startToolCallId, per la chiusura. */
+  /** Same as startToolCallId, for the close. */
   endToolCallId: string | null;
-  /** Indice diagnostico, non usato per la mappatura. */
+  /** Diagnostic index, not used for the mapping. */
   startIdx: number;
-  /** Indice diagnostico, non usato per la mappatura. */
+  /** Diagnostic index, not used for the mapping. */
   endIdx: number | null;
-  /** Descrizione fornita dall'agente alla chiusura (solo expl). */
+  /** Description supplied by the agent on close (expl only). */
   description: string;
-  /** Livello di stripping attualmente applicato. */
+  /** Stripping level currently applied. */
   level: StripLevel;
-  /** Timestamp di apertura. */
+  /** Opening timestamp. */
   openedAt: number;
 }
 
@@ -359,20 +446,20 @@ class EpisodeGraph {
 
   active(): Episode[] { return this.episodes.filter(e => e.endIdx === null); }
 
-  /** Episodi chiusi il cui contenuto esiste ancora in contesto. */
+  /** Closed episodes whose content still exists in the context. */
   recoverable(): Episode[] {
     return this.episodes.filter(e => e.endIdx !== null && e.level !== 'removed');
   }
 
-  /** Episodi chiusi di QUALSIASI livello: serve per mappare gli indici. */
+  /** Closed episodes at ANY level: needed to map the indices. */
   closed(): Episode[] {
     return this.episodes.filter(e => e.endIdx !== null);
   }
 
-  /** true se un episodio con questo nome e' gia' stato creato (evita cicli). */
+  /** true if an episode with this name already exists (prevents cycles). */
   has(name: string) { return this.nameSet.has(name); }
 
-  /** Dipendenti non ancora completamente evictati. */
+  /** Dependents not yet fully evicted. */
   hasLiveDependents(name: string): boolean {
     return this.episodes.some(ep =>
       ep.name !== name &&
@@ -381,14 +468,14 @@ class EpisodeGraph {
     );
   }
 
-  /** Reset completo (nuova sessione). */
+  /** Full reset (new session). */
   reset() {
     this.episodes = [];
     this.activeNames.clear();
     this.nameSet.clear();
   }
 
-  /** Serializza per persistenza. */
+  /** Serialises for persistence. */
   toJSON() { return { episodes: this.episodes }; }
 
   static fromJSON(data: unknown): EpisodeGraph {
@@ -414,12 +501,18 @@ interface CwlState {
   lastEvictionTurn: number;
   totalEvictions: number;
   totalEvictedTokens: number;
-  /** Indice del prossimo messaggio: derivato dal conteggio REALE dei messaggi. */
+  /** Next message index: derived from the REAL message count. */
   messageCursor: number;
-  /** Numero di messaggi seen nell'ultimo context hook (per calcolare il delta). */
+  /** Number of messages seen in the last context hook (to compute the delta). */
   lastSeenMessages: number;
-  /** Token stimati al prossimo check. */
+  /** Tokens estimated at the next check. */
   lastMeasuredTokens: number;
+  /** Spans compressed by the LLM: hash of the first/last message + summary. */
+  spans: CompressedSpan[];
+  /** Text hashes of the messages seen: anchor for cwl_compress. */
+  knownHashes: Set<string>;
+  /** BM25 index of the transcript, built lazily on the first search. */
+  recallIndex: Recall.Bm25Index | null;
 }
 
 function newState(): CwlState {
@@ -431,13 +524,18 @@ function newState(): CwlState {
     messageCursor: 0,
     lastSeenMessages: 0,
     lastMeasuredTokens: 0,
+    spans: [],
+    knownHashes: new Set(),
+    recallIndex: null,
   };
 }
 
-/** Chiave di sessione: cwd + path sessione se disponibile, altrimenti "default". */
+/** Session key: cwd + session path when available, otherwise "default". */
 function sessionKey(ctx: ExtensionContext | null | undefined): string {
   try {
     const cwd = typeof ctx?.cwd === 'string' ? ctx.cwd : '';
+    // SAFETY: ExtensionContext does not declare sessionManager; probe it as an
+    // optional shape and degrade to "default" when it is absent.
     const sm = (ctx as unknown as { sessionManager?: { getSessionId?: () => string } })?.sessionManager;
     const sid = typeof sm?.getSessionId === 'function' ? sm.getSessionId() : '';
     return `${cwd}::${sid}`;
@@ -448,6 +546,10 @@ function sessionKey(ctx: ExtensionContext | null | undefined): string {
 
 const states = new Map<string, CwlState>();
 const configs = new Map<string, CwlConfig>();
+
+// Recall module, dynamically loaded in session_start: it holds the BM25
+// index of the transcript. Null until the load has happened.
+let recall: typeof Recall | null = null;
 
 function getState(key: string): CwlState {
   let st = states.get(key);
@@ -467,32 +569,36 @@ function dropState(key: string) {
 }
 
 // ---------------------------------------------------------------------------
-// Stripping (forma reale: array di blocchi content)
+// Stripping (real shape: array of content blocks)
 // ---------------------------------------------------------------------------
 
-/** Soglia oltre la quale un singolo blocco testuale viene ridotto. */
+/** Threshold above which a single text block gets reduced. */
 const STRIP_BLOCK_CHARS = 2000;
 
 /**
- * Riduce un messaggio in base al livello di stripping richiesto.
+ * Reduces a message according to the requested stripping level.
  *
- * Gestisce la forma reale di pi-ai:
+ * Handles the real pi-ai shape:
  *   - ToolResultMessage: content: (Text|Image)[]
  *   - AssistantMessage : content: (Text|Thinking|ToolCall)[]
  *   - UserMessage      : content: string | (Text|Image)[]
  *
- * Strategia:
- *   - reasoning  -> rimuove i blocchi { type: "thinking" }
- *   - bulk/intermediate -> tronca i blocchi testuali lunghi, preserva ToolCall
- *   - immagini e toolCall NON vengono mai toccati
+ * Strategy:
+ *   - reasoning  -> removes the { type: "thinking" } blocks
+ *   - bulk/intermediate -> truncates long text blocks, preserves ToolCall
+ *   - images and toolCall are NEVER touched
  */
 function stripToolResult(msg: AgentMessage, level: StripLevel): AgentMessage {
+  // SAFETY: AgentMessage is a union over the real pi-ai shapes; RealMessage is the
+  // structural probe of it, plus an index signature for the extra fields.
   const m = msg as unknown as RealMessage & Record<string, unknown>;
 
-  // Caso content stringa (UserMessage)
+  // Case: string content (UserMessage)
   if (typeof m.content === 'string') {
-    if (level === 'reasoning') return msg; // niente reasoning in una stringa
+    if (level === 'reasoning') return msg; // no reasoning in a string
     if (m.content.length > STRIP_BLOCK_CHARS) {
+      // SAFETY: only `content` changes (string -> string); every other field keeps
+      // the original message shape.
       return {
         ...m,
         content: t('truncatedString')(m.content.length, level),
@@ -509,19 +615,19 @@ function stripToolResult(msg: AgentMessage, level: StripLevel): AgentMessage {
   const reduced = blocks.map((part) => {
     if (!part || typeof part !== 'object') return part;
 
-    // reasoning: elimina i blocchi thinking
+    // reasoning: drop the thinking blocks
     if (level === 'reasoning' && part.type === 'thinking') {
       changed = true;
       return { type: 'text', text: t('strippedReasoning') } satisfies RealContentBlock;
     }
 
-    // toolCall: intoccabile, semantica d'azione
+    // toolCall: untouchable, action semantics
     if (part.type === 'toolCall') return part;
 
-    // immagini: intoccabili
+    // images: untouchable
     if (part.type === 'image') return part;
 
-    // testo lungo: tronca
+    // long text: truncate
     if (part.type === 'text' && typeof part.text === 'string' && part.text.length > STRIP_BLOCK_CHARS) {
       changed = true;
       const origLen = part.text.length;
@@ -535,6 +641,8 @@ function stripToolResult(msg: AgentMessage, level: StripLevel): AgentMessage {
   });
 
   if (!changed) return msg;
+  // SAFETY: `content` keeps the same block-array shape; only the text/thinking
+  // blocks are rewritten, so the result is still a valid message.
   return { ...m, content: reduced } as unknown as AgentMessage;
 }
 
@@ -545,9 +653,9 @@ function stripToolResult(msg: AgentMessage, level: StripLevel): AgentMessage {
 const LEVEL_ORDER: StripLevel[] = ['none', 'reasoning', 'bulk', 'intermediate', 'removed'];
 
 /**
- * Mappa il livello di stripping alla chiave corrispondente in cfg.levels.
+ * Maps the stripping level to the matching key in cfg.levels.
  * Without this map, cfg.levels['bulk'] was undefined and the
- * bulk/intermediate venivano SEMPRE scartati.
+ * bulk/intermediate levels were ALWAYS dropped.
  */
 const LEVEL_CONFIG_KEY: Record<StripLevel, keyof CwlConfig['levels'] | null> = {
   none: null,
@@ -557,7 +665,7 @@ const LEVEL_CONFIG_KEY: Record<StripLevel, keyof CwlConfig['levels'] | null> = {
   removed: 'removeEpisode',
 };
 
-/** Risparmio stimato come frazione dei token dell'episodio, per livello. */
+/** Estimated saving as a fraction of the episode tokens, per level. */
 const LEVEL_SAVINGS: Record<StripLevel, number> = {
   none: 0,
   reasoning: 0.2,
@@ -573,8 +681,8 @@ function levelEnabled(cfg: CwlConfig, level: StripLevel): boolean {
 }
 
 /**
- * Esegue un passaggio di eviction: cammina il grafo, seleziona il target
- * most recoverable target, and computes the required stripping level.
+ * Runs one eviction pass: walks the graph, selects the most recoverable
+ * target and computes the required stripping level.
  *
  * Returns an array of actions (empty if the budget is already satisfied).
  */
@@ -618,7 +726,7 @@ function runEvictionPass(
   for (const target of ordered) {
     if (projected <= targetTokens) break;
 
-    // Trova il livello minimo che ci riporta sotto budget
+    // Find the minimum level that brings us back under budget
     for (const level of ['reasoning', 'bulk', 'intermediate', 'removed'] as StripLevel[]) {
       if (level === 'reasoning' && target.type !== 'expl') continue;
 
@@ -644,21 +752,21 @@ function computeStripActionWith(cfg: CwlConfig, ep: Episode, level: StripLevel) 
   switch (level) {
     case 'reasoning':
       if (ep.type !== 'expl') return null;
-      return { episode: ep.name, level, instruction: `Rimuovi i blocchi thinking dall'episodio "${ep.name}". Mantieni tool call e risultati.` };
+      return { episode: ep.name, level, instruction: `Remove the thinking blocks from episode "${ep.name}". Keep tool calls and results.` };
     case 'bulk':
-      return { episode: ep.name, level, instruction: `Rimuovi gli output di grandi tool enumerabili dall'episodio "${ep.name}". Mantieni le azioni.` };
+      return { episode: ep.name, level, instruction: `Remove the bulk enumerable tool output from episode "${ep.name}". Keep the actions.` };
     case 'intermediate':
-      return { episode: ep.name, level, instruction: `Rimuovi i risultati intermedi dall'episodio "${ep.name}". Mantieni solo le conclusioni.` };
+      return { episode: ep.name, level, instruction: `Remove the intermediate results from episode "${ep.name}". Keep only the conclusions.` };
     case 'removed':
       return { episode: ep.name, level, instruction: ep.type === 'expl'
-        ? `Rimuovi completamente l'episodio "${ep.name}". Sostituisci con: "${ep.description || '(nessuna descrizione)'}"`
-        : `Rimuovi completamente l'episodio azione "${ep.name}".` };
+        ? `Remove the episode "${ep.name}" completely. Replace it with: "${ep.description || '(no description)'}"`
+        : `Remove the action episode "${ep.name}" completely.` };
     default:
       return null;
   }
 }
 
-/** Stima i token occupati da un episodio, pro-rata sul totale corrente. */
+/** Estimates the tokens an episode occupies, pro-rata on the current total. */
 function estimateEpisodeTokens(ep: Episode, currentTokens: number): number {
   const span = Math.max(1, (ep.endIdx ?? currentTokens) - ep.startIdx);
   return Math.max(1, Math.floor(currentTokens * (span / Math.max(1, currentTokens))));
@@ -669,10 +777,10 @@ function estimateEpisodeTokens(ep: Episode, currentTokens: number): number {
 // ---------------------------------------------------------------------------
 
 /**
- * Fallback senza episodi: riduce i blocchi di reasoning dei messaggi assistant.
- * E' il recupero piu' sicuro: i blocchi thinking sono traccia interna del
- * modello — non risultati, non azioni, non input dell'utente — e ARC non li
- * tocca. Ritorna null se non c'e' nulla da togliere.
+ * Fallback with no episodes: reduces the reasoning blocks of assistant messages.
+ * It is the safest recovery: thinking blocks are the model's internal trace
+ * — not results, not actions, not user input — and ARC does not
+ * touch them. Returns null if there is nothing to remove.
  */
 function globalReasoningStrip(
   messages: AgentMessage[],
@@ -680,6 +788,7 @@ function globalReasoningStrip(
   const kept: AgentMessage[] = [];
   let changed = 0;
   for (const msg of messages) {
+    // SAFETY: read-only field probe (role/content); the union does not expose them.
     const m = msg as unknown as RealMessage;
     if (m.role === 'assistant' && Array.isArray(m.content)) {
       const hasThinking = (m.content as RealContentBlock[]).some(
@@ -696,6 +805,128 @@ function globalReasoningStrip(
   return changed > 0 ? { kept, changed } : null;
 }
 
+/**
+ * A compressed span: the messages from `startHash` to `endHash` are replaced
+ * in the active context by the summary alone. The original stays in Pi's JSONL
+ * transcript, which is append-only: compression is therefore LOSSLESS, and
+ * `cwl_recall` can retrieve the text in full.
+ */
+interface CompressedSpan {
+  startHash: string;
+  endHash: string;
+  summary: string;
+  originalTokens: number;
+  at: number;
+}
+
+/** Stable hash of a message's text: 12 hex chars, like ARC ids. */
+function hashText(text: string): string {
+  return createHash('sha256').update(text).digest('hex').slice(0, 12);
+}
+
+/** Locates the session JSONL transcript, looking it up by key suffix. */
+/** Reads a file or returns null: missing and unreadable must not fail. */
+/** Concatenable text from a message (string or list of blocks). */
+function textOf(m: unknown): string {
+  const c = (m as { content?: unknown }).content;
+  if (typeof c === 'string') return c;
+  if (!Array.isArray(c)) return '';
+  let out = '';
+  for (const b of c as { text?: string; thinking?: string }[]) {
+    if (typeof b?.text === 'string') out += b.text;
+    else if (typeof b?.thinking === 'string') out += b.thinking;
+  }
+  return out;
+}
+
+function readFileOrNull(p: string): string | null {
+  try { return fs.readFileSync(p, 'utf-8'); } catch { return null; }
+}
+
+function findTranscript(sessionKey: string): string | null {
+  const sessionsDir = path.join(os.homedir(), '.pi', 'agent', 'sessions');
+  const suffix = `_${sessionKey}.jsonl`;
+  let dirs: string[];
+  try { dirs = fs.readdirSync(sessionsDir); } catch { return null; }
+  for (const dir of dirs) {
+    const full = path.join(sessionsDir, dir);
+    try {
+      for (const f of fs.readdirSync(full)) {
+        if (f.endsWith(suffix)) return path.join(full, f);
+      }
+    } catch { /* unreadable directory: try the next one */ }
+  }
+  return null;
+}
+
+/**
+ * Applies the spans compressed by the LLM: the messages between startHash and
+ * endHash are replaced by the summary alone. The original stays in the JSONL
+ * transcript, which is append-only: compression is therefore LOSSLESS and
+ * cwl_recall can retrieve the text in full.
+ */
+function applySpans(
+  messages: AgentMessage[],
+  spans: CompressedSpan[],
+): { kept: AgentMessage[]; applied: number; saved: number } {
+  if (spans.length === 0) return { kept: messages, applied: 0, saved: 0 };
+
+  // hash -> position index, computed once.
+  const posByHash = new Map<string, number>();
+  messages.forEach((m, i) => {
+    // SAFETY: read-only probe of an optional field, undefined for other roles.
+    const role = (m as unknown as RealMessage).role;
+    if (role !== 'user' && role !== 'assistant') return;
+    posByHash.set(hashText(textOf(m)), i);
+  });
+
+  // Nested spans make no sense: if one contains another, the outermost one
+  // wins. A summary inside a summary loses information twice.
+  const resolved = spans
+    .map((sp) => {
+      const from = posByHash.get(sp.startHash);
+      const to = posByHash.get(sp.endHash);
+      return from === undefined || to === undefined ? null : { sp, from, to: Math.max(from, to) };
+    })
+    .filter((x): x is { sp: CompressedSpan; from: number; to: number } => x !== null)
+    .filter((x, _all, arr) => !arr.some((o) => o !== x && o.from <= x.from && o.to >= x.to))
+    .sort((a, b) => a.from - b.from);
+
+  if (resolved.length === 0) return { kept: messages, applied: 0, saved: 0 };
+
+  const replaced = new Set<number>();
+  const injected: AgentMessage[] = [];
+  let saved = 0;
+
+  for (const { sp, from, to } of resolved) {
+    let original = 0;
+    for (let i = from; i <= to; i++) {
+      replaced.add(i);
+      original += estimateMessageTokens(messages[i]);
+    }
+    saved += Math.max(0, original - estimateTokens(sp.summary));
+    // SAFETY: Pi accepts the custom role in the context hook although the
+    // AgentMessage union does not declare it; the extra keys are its contract.
+    injected.push({
+      role: 'custom',
+      customType: 'cwl-compressed',
+      content: t('compressedNotice')(sp.startHash, sp.endHash, original) + sp.summary,
+      display: false,
+      timestamp: Date.now(),
+    } as unknown as AgentMessage);
+  }
+
+  const kept: AgentMessage[] = [];
+  messages.forEach((m, i) => {
+    // Inject the summary in place of the first compressed message.
+    const startsSpan = resolved.find((r) => r.from === i);
+    if (startsSpan) kept.push(injected[resolved.indexOf(startsSpan)]);
+    if (!replaced.has(i)) kept.push(m);
+  });
+
+  return { kept, applied: resolved.length, saved };
+}
+
 export default function (pi: ExtensionAPI) {
   // ---- Tools -------------------------------------------------------------
 
@@ -703,29 +934,29 @@ export default function (pi: ExtensionAPI) {
     name: 'delimiter',
     label: 'CWL Delimiter',
     description:
-      'Segna i confini di un episodio CWL. Tipi: "expl" (esplorazione: ricerca, ' +
-      'letture, orientamento — il contenuto non serve dopo l\'inferenza) e "act" ' +
-      '(azione: scritture, edit, esecuzioni — effetti persistenti, primo candidato ' +
-      'all\'eviction). Quando apri un "act", dichiara le esplorazioni da cui dipende. ' +
-      'Quando chiudi un "expl", fornisci la descrizione di cosa hai imparato: ' +
-      'e\' l\'unico contenuto che sopravvive all\'eviction.',
-    promptSnippet: 'delimiter: segna i confini di un episodio CWL (expl/act)',
+      'Marks the boundaries of a CWL episode. Types: "expl" (exploration: searches, ' +
+      'reads, orientation — the content is not needed after the inference) and "act" ' +
+      '(action: writes, edits, executions — persistent effects, first candidate ' +
+      'for eviction). When you open an "act", declare the explorations it depends on. ' +
+      'When you close an "expl", give the description of what you learned: ' +
+      'it is the only content that survives eviction.',
+    promptSnippet: t('snippets').delimiter,
     promptGuidelines: I18N[LANG].guidelines,
     parameters: Type.Object({
       action: Type.Union([Type.Literal('start'), Type.Literal('end')], {
-        description: '"start" per aprire un episodio, "end" per chiuderlo.',
+        description: t('params').action,
       }),
       name: Type.Optional(Type.String({
-        description: 'Nome univoco dell\'episodio (obbligatorio per action=start).',
+        description: t('params').name,
       })),
       type: Type.Optional(Type.Union([Type.Literal('expl'), Type.Literal('act')], {
-        description: 'Tipo episodio: "expl" (esplorazione) o "act" (azione). Obbligatorio per action=start.',
+        description: t('params').type,
       })),
       dependencies: Type.Optional(Type.Array(Type.String(), {
-        description: 'Nomi degli episodi expl da cui questo atto dipende. Obbligatorio per action=start con type="act".',
+        description: t('params').dependencies,
       })),
       description: Type.Optional(Type.String({
-        description: 'Descrizione di cosa hai imparato. Obbligatorio solo per action=end con type="expl".',
+        description: t('params').description,
       })),
     }),
     async execute(toolCallId, params, _signal, _onUpdate, ctx) {
@@ -737,13 +968,13 @@ export default function (pi: ExtensionAPI) {
         if (!params.name || !params.type) {
           return {
             content: [{ type: 'text', text: t('startNeedsNameType') }],
-            details: { ok: false, error: 'parametri-mancanti' },
+            details: { ok: false, error: 'missing-params' },
           };
         }
         if (st.graph.has(params.name)) {
           return {
             content: [{ type: 'text', text: t('duplicateName')(params.name) }],
-            details: { ok: false, error: 'nome-duplicato' },
+            details: { ok: false, error: 'duplicate-name' },
           };
         }
         const deps = params.dependencies ?? [];
@@ -754,7 +985,7 @@ export default function (pi: ExtensionAPI) {
         if (invalidDeps.length > 0) {
           return {
             content: [{ type: 'text', text: t('invalidDeps')(invalidDeps.join(', ')) }],
-            details: { ok: false, error: 'dipendenze-non-valide' },
+            details: { ok: false, error: 'invalid-dependencies' },
           };
         }
 
@@ -771,19 +1002,19 @@ export default function (pi: ExtensionAPI) {
         if (!params.name) {
           return {
             content: [{ type: 'text', text: t('endNeedsName') }],
-            details: { ok: false, error: 'parametri-mancanti' },
+            details: { ok: false, error: 'missing-params' },
           };
         }
         const ep = st.graph.close(params.name, params.description ?? '', st.messageCursor, toolCallId);
         if (!ep) {
           return {
             content: [{ type: 'text', text: t('notFoundOrClosed')(params.name) }],
-            details: { ok: false, error: 'episodio-non-trovato' },
+            details: { ok: false, error: 'episode-not-found' },
           };
         }
         debugLog(cf, `CLOSE ${ep.type} "${ep.name}" level=${ep.level} endIdx=${ep.endIdx}`);
 
-        let msg = `Episodio ${ep.type} "${ep.name}" chiuso.`;
+        let msg = t('episodeClosed')(ep.type, ep.name);
         if (ep.type === 'expl' && !ep.description) {
           msg += t('emptyDescriptionWarning');
         }
@@ -803,8 +1034,8 @@ export default function (pi: ExtensionAPI) {
   pi.registerTool({
     name: 'cwl_status',
     label: 'CWL Status',
-    description: 'Mostra lo stato del context lifecycle: budget, episodi attivi/chiusi, eviction eseguite.',
-    promptSnippet: 'cwl_status: stato del context lifecycle CWL',
+    description: t('params').statusDesc,
+    promptSnippet: t('snippets').status,
     parameters: Type.Object({}),
     async execute(_toolCallId, _params, _signal, _onUpdate, ctx) {
       const key = sessionKey(ctx);
@@ -843,18 +1074,124 @@ export default function (pi: ExtensionAPI) {
     },
   });
 
+  pi.registerTool({
+    name: 'cwl_compress',
+    label: 'CWL Compress',
+    description:
+      t('tools').compressDesc,
+    promptSnippet: t('snippets').compress,
+    parameters: Type.Object({
+      startHash: Type.String({ description: t('tools').compressStart, }),
+      endHash: Type.String({ description: t('tools').compressEnd, }),
+      summary: Type.String({
+        description:
+          t('tools').compressSummary,
+      }),
+    }),
+    async execute(_toolCallId, params, _signal, _onUpdate, ctx) {
+      const key = sessionKey(ctx);
+      const st = getState(key);
+      const cf = getConfig(key);
+
+      if (!params.startHash || !params.endHash || !params.summary) {
+        return { content: [{ type: 'text', text: 'startHash, endHash and summary are all required.' }], details: { ok: false, error: 'missing-params' } };
+      }
+      const seen = st.knownHashes;
+      if (seen.has(params.startHash) && seen.has(params.endHash)) {
+        st.spans = st.spans.filter((sp) => !(sp.startHash === params.startHash && sp.endHash === params.endHash));
+        debugLog(cf, `COMPRESS revoked ${params.startHash}..${params.endHash}`);
+        return { content: [{ type: 'text', text: `Span ${params.startHash}..${params.endHash} restored to full text.` }], details: { ok: true, revoked: true } };
+      }
+      const from = seen.has(params.startHash);
+      const to = seen.has(params.endHash);
+      if (!from || !to) {
+        return {
+          content: [{ type: 'text', text: `Unknown hash. startHash found: ${from}, endHash found: ${to}. Copy them verbatim from the context.` }],
+          details: { ok: false, error: 'unknown-hash', startFound: from, endFound: to },
+        };
+      }
+      st.spans.push({
+        startHash: params.startHash,
+        endHash: params.endHash,
+        summary: params.summary,
+        originalTokens: 0,
+        at: Date.now(),
+      });
+      debugLog(cf, `COMPRESS applied ${params.startHash}..${params.endHash}`);
+      return {
+        content: [{ type: 'text', text: `Compressed ${params.startHash}..${params.endHash} into your summary. The original stays on disk: recover it with cwl_recall.` }],
+        details: { ok: true, spans: st.spans.length },
+      };
+    },
+  });
+
+  pi.registerTool({
+    name: 'cwl_recall',
+    label: 'CWL Recall',
+    description:
+      t('tools').recallDesc,
+    promptSnippet: t('snippets').recall,
+    parameters: Type.Object({
+      query: Type.String({ description: t('tools').recallQuery, }),
+      limit: Type.Optional(Type.Number({ description: 'How many results (default 5).' })),
+    }),
+    async execute(_toolCallId, params, _signal, _onUpdate, ctx) {
+      const key = sessionKey(ctx);
+      if (!recall) {
+        return { content: [{ type: 'text', text: 'The recall index is not loaded; /reload the extension.' }], details: { ok: false, error: 'not-loaded' } };
+      }
+      const file = findTranscript(key.split('::')[1] ?? key);
+      if (!file) {
+        return { content: [{ type: 'text', text: 'Transcript not found for this session.' }], details: { ok: false, error: 'no-transcript' } };
+      }
+      const raw = readFileOrNull(file);
+      if (raw === null) {
+        return { content: [{ type: 'text', text: 'Transcript unreadable.' }], details: { ok: false, error: 'unreadable' } };
+      }
+      const st = getState(key);
+      const idx = st.recallIndex ?? recall.indexTranscript(raw, null);
+      st.recallIndex = idx;
+      const hits = idx.search(params.query, params.limit ?? 5);
+      if (hits.length === 0) {
+        return { content: [{ type: 'text', text: `No match for "${params.query}".` }], details: { ok: true, hits: 0, indexed: idx.size } };
+      }
+      const body = hits.map((h, i) => `[${i + 1}] ${h.role} score=${h.score.toFixed(2)}\n${h.preview}`).join('\n\n');
+      return {
+        content: [{ type: 'text', text: `Found ${hits.length} of ${idx.size} indexed messages for "${params.query}":\n\n${body}` }],
+        details: { ok: true, hits: hits.length, indexed: idx.size, ids: hits.map((h) => h.id) },
+      };
+    },
+  });
+
   // ---- Hooks -------------------------------------------------------------
 
   pi.on('session_start', async (_event, ctx) => {
     const key = sessionKey(ctx);
     states.set(key, newState());
     configs.set(key, loadConfig());
+
+    // recall.mjs: BM25 indexer for the transcript. Same cache-busting as the
+    // helper: static imports would stay cached after /reload.
+    try {
+      const recallUrl = new URL('./recall.mjs', import.meta.url);
+      const src = readFileOrNull(fileURLToPath(recallUrl));
+      if (src !== null) {
+        recallUrl.searchParams.set(
+          'version',
+          createHash('sha256').update(src).digest('hex').slice(0, 16),
+        );
+        recall = await import(recallUrl.href) as typeof Recall;
+      }
+    } catch (err) {
+      debugLog(getConfig(key), `recall.mjs not loaded: ${String(err)}`);
+    }
+
     debugLog(getConfig(key), 'SESSION START — graph reset');
   });
 
   /**
-   * L'eviction vive nell'hook 'context': e' l'unico punto in cui Pi permette di
-   * RISCRIVERE la lista messaggi che verra' inviata al provider. turn_end puo'
+   * Eviction lives in the 'context' hook: it is the only point where Pi lets you
+   * REWRITE the message list that will be sent to the provider. turn_end can
    * only observe, so computing there would never have reduced anything.
    */
   pi.on('context', async (event, ctx) => {
@@ -866,59 +1203,79 @@ export default function (pi: ExtensionAPI) {
     if (!messages || messages.length === 0) return;
 
     // Update the cursor with the REAL message count (not turns).
-    // I tool risultanti vengono aggiunti durante il turno, quindi il conteggio
-    // the message count is the only reliable basis for episode indices.
-    st.messageCursor = messages.length; // ricalcolato, non accumulato
+    // Tool results are appended during the turn, so the message count is
+    // the only reliable basis for episode indices.
+    st.messageCursor = messages.length; // recomputed, not accumulated
+
+    // Hash anchoring: the LLM points at the messages to compress by the hash
+    // of their text. Indices shift every turn, hashes do not.
+    for (const m of messages) {
+      // SAFETY: read-only probe of an optional field, undefined for other roles.
+      const role = (m as unknown as RealMessage).role;
+      if (role !== 'user' && role !== 'assistant') continue;
+      st.knownHashes.add(hashText(textOf(m)));
+    }
 
     const g = st.graph;
 
-    // 1. Misura il contesto reale
+    // 1. Measure the real context
     let currentTokens = 0;
     for (const m of messages) {
       currentTokens += estimateMessageTokens(m);
     }
     st.lastMeasuredTokens = currentTokens;
 
+    // The spans compressed by the LLM are ALWAYS applied, not only above the
+    // threshold: the agent decides when to compress, not the extension estimate.
+    if (st.spans.length > 0) {
+      const applied = applySpans(messages, st.spans);
+      if (applied.applied > 0) {
+        st.totalEvictions += applied.applied;
+        st.totalEvictedTokens += applied.saved;
+        debugLog(cf, `SPANS applied: ${applied.applied}, saved ${applied.saved}t`);
+        return { messages: applied.kept };
+      }
+    }
+
     const trigger = cf.tokenBudget * cf.thresholdRatio;
     if (currentTokens <= trigger) {
-      debugLog(cf, `CONTEXT ${currentTokens}t sotto soglia ${Math.round(trigger)}t: nessuna eviction`);
+      debugLog(cf, `CONTEXT ${currentTokens}t under threshold ${Math.round(trigger)}t: no eviction`);
       return;
     }
 
-    // 1b. DEGRADAZIONE UTILE: senza episodi l'eviction graduata non ha bersagli.
-    // Prima di lasciare il contesto intatto si recupera comunque il budget piu'
-    // sicuro: i blocchi di reasoning dei messaggi assistant. Sono traccia interna
-    // del modello, non risultati ne azioni, e ARC non li tocca. Senza questo un
-    // agente che non usa `delimiter` non ottiene compressione per quanto alto sia
-    // il contesto — ed e' proprio il caso in cui serve di piu'.
+    // 1b. USEFUL DEGRADATION: without episodes, graded eviction has no targets.
+    // Before leaving the context untouched we still recover the safest budget:
+    // the reasoning blocks of assistant messages. They are the model's internal
+    // trace, not results nor actions, and ARC does not touch them. Without this,
+    // an agent that never uses `delimiter` gets no compression however high
+    // the context — and that is exactly the case where it matters most.
     if (g.isEmpty) {
       const out = globalReasoningStrip(messages);
       if (out) {
         const after = out.kept.reduce((sum: number, m: AgentMessage) => sum + estimateMessageTokens(m), 0);
         st.totalEvictions++;
         st.totalEvictedTokens += Math.max(0, currentTokens - after);
-        debugLog(cf, `FALLBACK reasoning-strip: ${out.changed} messaggi, ${currentTokens}t -> ${after}t`);
+        debugLog(cf, `FALLBACK reasoning-strip: ${out.changed} messages, ${currentTokens}t -> ${after}t`);
         if (ctx?.hasUI) {
           ctx.ui.notify(
-            `CWL: nessun episodio annotato, ridotti i blocchi di reasoning in ${out.changed} messaggi ` +
-            `(${currentTokens} -> ${after} token). Usa \`delimiter\` per un'eviction graduata.`,
+            t('fallbackNotice')(out.changed, currentTokens, after),
             'info',
           );
         }
         return { messages: out.kept };
       }
-      debugLog(cf, 'CONTEXT sopra soglia ma nessun episodio E nessun reasoning strip possibile');
+      debugLog(cf, 'CONTEXT above threshold but no episode AND no reasoning strip possible');
       return;
     }
 
-    // 2. Policy deterministica: calcola cosa evictare e a che livello
+    // 2. Deterministic policy: compute what to evict and at which level
     const actions = runEvictionPass(cf, g, currentTokens, trigger);
     if (actions.length === 0) {
-      debugLog(cf, `CONTEXT ${currentTokens}t sopra soglia ma nessun candidato sicuro: contesto intatto`);
+      debugLog(cf, `CONTEXT ${currentTokens}t above threshold but no safe candidate: context untouched`);
       return;
     }
 
-    // 3. APPLICA davvero: ricostruisci la lista messaggi evictando i segmenti
+    // 3. Actually APPLY: rebuild the message list evicting the segments
     const byLevel = new Map<StripLevel, Set<string>>();
     for (const a of actions) {
       let s = byLevel.get(a.level);
@@ -932,16 +1289,18 @@ export default function (pi: ExtensionAPI) {
     ]);
     const stripReasoning = byLevel.get('reasoning') ?? new Set<string>();
 
-    // Map message index -> episode. Uses g.closed() (all closed
-    // episodes, including level='removed'): with recoverable() the already
-    // episodes, including removed ones; with recoverable() they would NEVER
-    // be mapped and the full eviction would never fire.
-    // Ancoraggio per toolCallId, non per indice: i risultati `delimiter` sono
-    // messaggi reali nel transcript, quindi la loro posizione e' sempre esatta.
-    // L'indice del cursore non lo e' (cfr. startIdx) e rendeva l'eviction
-    // impossibile quando il contesto si accorciava.
+    // Map message index -> episode. Uses g.closed() (all closed episodes,
+    // including those at level='removed'): with recoverable() the episodes
+    // already marked 'removed' would NEVER be mapped and the full eviction
+    // would never fire.
+    // Anchoring by toolCallId, not by index: `delimiter` results are real
+    // messages in the transcript, so their position is always exact.
+    // The cursor index is not (cf. startIdx) and made eviction
+    // impossible whenever the context got shorter.
     const posByToolCallId = new Map<string, number>();
     messages.forEach((m, i) => {
+      // SAFETY: toolCallId exists on the real tool-result messages, but the
+      // public AgentMessage union does not declare it.
       const id = (m as unknown as RealMessage).toolCallId;
       if (typeof id === 'string') posByToolCallId.set(id, i);
     });
@@ -950,7 +1309,7 @@ export default function (pi: ExtensionAPI) {
     for (const ep of g.closed()) {
       const from = posByToolCallId.get(ep.startToolCallId);
       const to = ep.endToolCallId !== null ? posByToolCallId.get(ep.endToolCallId) : undefined;
-      if (from === undefined) continue; // ancoraggio perso: meglio non evictare
+      if (from === undefined) continue; // anchor lost: better not to evict
       const end = to !== undefined ? to : messages.length;
       if (end <= from) continue;
       for (let i = from; i <= Math.min(end, messages.length - 1); i++) episodeAt.set(i, ep);
@@ -964,11 +1323,13 @@ export default function (pi: ExtensionAPI) {
 
     messages.forEach((msg, idx) => {
       const ep = episodeAt.get(idx);
+      // SAFETY: read-only probe of an optional field; it is undefined for
+      // messages that are not user/assistant/toolResult.
       const role = (msg as unknown as RealMessage).role;
 
-      // Principio 3: user turns are inviolable. Ma non basta `user`: `system`
-      // e `developer` contengono le istruzioni del ruolo e i tool disponibili.
-      // Evictarli lascia l'agente senza schema di azione.
+      // Principle 3: user turns are inviolable. But `user` is not enough: `system`
+      // and `developer` carry the role instructions and the available tools.
+      // Evicting them leaves the agent with no action schema.
       if (role === 'user' || role === 'system' || role === 'developer') {
         kept.push(msg);
         return;
@@ -981,8 +1342,11 @@ export default function (pi: ExtensionAPI) {
 
       if (evictFull.has(ep.name)) {
         removedTokens += estimateMessageTokens(msg);
-        // Per expl con descrizione, conserva il marker di rientro.
+        // For an expl with a description, keep the re-entry marker.
         if (ep.type === 'expl' && ep.description) {
+          // SAFETY: Pi accepts the custom role in the context hook although the
+          // AgentMessage union does not declare it; the extra keys are its own
+          // custom-message contract.
           kept.push({
             role: 'custom',
             customType: 'cwl-evicted',
@@ -998,9 +1362,9 @@ export default function (pi: ExtensionAPI) {
       if (stripReasoning.has(ep.name)) {
         const before = textLengthOf(msg);
         const out = stripToolResult(msg, 'reasoning');
-        // Conta solo se lo strip ha DAVVERO ridotto: altrimenti la notifica
-        // dichiarerebbe un risparmio avvenuto, e l'operatore crederebbe che
-        // l'eviction lavori mentre non muove nulla.
+        // Count only if the strip REALLY reduced something: otherwise the notice
+        // would claim a saving that did not happen, and the operator would believe
+        // eviction is working while it moves nothing.
         if (out !== msg) {
           truncatedTokens += Math.max(0, Math.floor((before - textLengthOf(out)) / 4));
           truncated++;
@@ -1012,9 +1376,9 @@ export default function (pi: ExtensionAPI) {
       if (stripBulk.has(ep.name)) {
         const before = textLengthOf(msg);
         const out = stripToolResult(msg, 'bulk');
-        // Conta solo se lo strip ha DAVVERO ridotto: altrimenti la notifica
-        // dichiarerebbe un risparmio avvenuto, e l'operatore crederebbe che
-        // l'eviction lavori mentre non muove nulla.
+        // Count only if the strip REALLY reduced something: otherwise the notice
+        // would claim a saving that did not happen, and the operator would believe
+        // eviction is working while it moves nothing.
         if (out !== msg) {
           truncatedTokens += Math.max(0, Math.floor((before - textLengthOf(out)) / 4));
           truncated++;
@@ -1027,7 +1391,7 @@ export default function (pi: ExtensionAPI) {
     });
 
     if (dropped === 0 && truncated === 0) {
-      debugLog(cf, 'EVICTION: nessun messaggio effettivamente riducibile, contesto lasciato intatto');
+      debugLog(cf, 'EVICTION: no message actually reducible, context left untouched');
       return;
     }
 
@@ -1037,11 +1401,11 @@ export default function (pi: ExtensionAPI) {
     st.totalEvictedTokens += removedTokens + truncatedTokens;
 
     const afterTokens = kept.reduce((s, m) => s + estimateMessageTokens(m), 0);
-    debugLog(cf, `EVICTION applicata: ${dropped} msg rimossi, ${truncated} ridotti, ${currentTokens}t -> ${afterTokens}t (risparmio ${removedTokens + truncatedTokens}t)`);
+    debugLog(cf, `EVICTION applied: ${dropped} msg removed, ${truncated} reduced, ${currentTokens}t -> ${afterTokens}t (saved ${removedTokens + truncatedTokens}t)`);
 
     if (ctx?.hasUI) {
       ctx.ui.notify(
-        `CWL: ${dropped} evictati, ${truncated} ridotti (${currentTokens.toLocaleString()} -> ${afterTokens.toLocaleString()} token).`,
+        t('evictionNotice')(dropped, truncated, currentTokens.toLocaleString(), afterTokens.toLocaleString()),
         'info',
       );
     }
@@ -1050,8 +1414,8 @@ export default function (pi: ExtensionAPI) {
   });
 
   pi.on('turn_end', async (_event, ctx) => {
-    // Osservatore: il cursore dei messaggi viene aggiornato nel context hook,
-    // che e' l'unico punto con accesso all'array reale dei messaggi.
+    // Observer: the message cursor is updated in the context hook,
+    // which is the only point with access to the real message array.
     sessionKey(ctx);
   });
 
