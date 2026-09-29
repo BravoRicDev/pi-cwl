@@ -2,10 +2,12 @@ cff-version: 1.2.0
 message: "If you use this software, please cite the original paper."
 title: "pi-cwl — Context Window Lifecycle for Pi"
 abstract: >-
-  Implementazione indipendente di Structured Context Eviction (CWL) per
-  l'ecosistema Pi, ispirata al paper "Beyond Compaction: Structured Context
-  Eviction for Long-Horizon Agents" (arXiv:2606.11213). Nessun codice di terzi
-  è stato copiato o forkato; l'implementazione è originale.
+  An original, independent TypeScript implementation of Structured Context
+  Eviction (CWL) for the Pi agent ecosystem, implementing the technique
+  described in "Beyond Compaction: Structured Context Eviction for
+  Long-Horizon Agents" (arXiv:2606.11213). Deterministic, LLM-free graduated
+  eviction over a graph of agent-typed episodes. No third-party source code
+  was copied, forked, or adapted.
 authors:
   - family-names: "Riccardo"
     given-names: "BravoRicDev"
