@@ -37,6 +37,7 @@ import { Type } from 'typebox';
 import * as fs from 'node:fs';
 import * as path from 'node:path';
 import * as os from 'node:os';
+import { fileURLToPath } from 'node:url';
 
 // ---------------------------------------------------------------------------
 // Minimal types for the real message shape (subset of @earendil-works/pi-ai)
@@ -212,7 +213,12 @@ const DEFAULT_CONFIG: CwlConfig = {
   debug: false,
 };
 
+// __dirname equivalente in ESM.
+const _EXT_DIR = path.dirname(fileURLToPath(import.meta.url));
+// Config utente; se assente si cade sul config incluso nell'estensione, cosi' il
+// file distribuito col repo serve a qualcosa invece di restare un documento morto.
 const CONFIG_PATH = path.join(os.homedir(), '.pi', 'cwl', 'config.json');
+const BUNDLED_CONFIG_PATH = path.join(_EXT_DIR, 'config.json');
 const LOG_PATH = path.join(os.homedir(), '.pi', 'cwl', 'cwl.log');
 
 /**
@@ -221,17 +227,20 @@ const LOG_PATH = path.join(os.homedir(), '.pi', 'cwl', 'cwl.log');
  * l'intero blocco levels perdendo le altre tre flag.
  */
 function loadConfig(): CwlConfig {
-  try {
-    const raw = fs.readFileSync(CONFIG_PATH, 'utf8');
-    const user = JSON.parse(raw) as Partial<CwlConfig> & { levels?: Partial<CwlConfig['levels']> };
-    return {
-      ...DEFAULT_CONFIG,
-      ...user,
-      levels: { ...DEFAULT_CONFIG.levels, ...(user.levels ?? {}) },
-    };
-  } catch {
-    return { ...DEFAULT_CONFIG, levels: { ...DEFAULT_CONFIG.levels } };
+  for (const candidate of [CONFIG_PATH, BUNDLED_CONFIG_PATH]) {
+    try {
+      const raw = fs.readFileSync(candidate, 'utf8');
+      const user = JSON.parse(raw) as Partial<CwlConfig> & { levels?: Partial<CwlConfig['levels']> };
+      return {
+        ...DEFAULT_CONFIG,
+        ...user,
+        levels: { ...DEFAULT_CONFIG.levels, ...(user.levels ?? {}) },
+      };
+    } catch {
+      // prova il candidato successivo
+    }
   }
+  return { ...DEFAULT_CONFIG, levels: { ...DEFAULT_CONFIG.levels } };
 }
 
 function debugLog(cfg: CwlConfig, msg: string) {
@@ -294,9 +303,17 @@ interface Episode {
   type: EpisodeType;
   /** Nomi degli episodi expl da cui questo atto dipende. */
   dependencies: string[];
-  /** Indice nella lista messaggi dove inizia l'episodio. */
+  /**
+   * toolCallId del risultato `delimiter` che ha aperto l'episodio: e' l'ancoraggio
+   * AFFIDABILE. L'indice non lo e', perche' il cursore si aggiorna solo
+   * nell'hook context (prima della chiamata LLM) mentre il tool gira nel turno.
+   */
+  startToolCallId: string;
+  /** Come startToolCallId, per la chiusura. */
+  endToolCallId: string | null;
+  /** Indice diagnostico, non usato per la mappatura. */
   startIdx: number;
-  /** Indice nella lista messaggi dove finisce (null se ancora attivo). */
+  /** Indice diagnostico, non usato per la mappatura. */
   endIdx: number | null;
   /** Descrizione fornita dall'agente alla chiusura (solo expl). */
   description: string;
@@ -311,9 +328,10 @@ class EpisodeGraph {
   private activeNames: Set<string> = new Set();
   private nameSet: Set<string> = new Set();
 
-  open(name: string, type: EpisodeType, dependencies: string[], startIdx: number): Episode {
+  open(name: string, type: EpisodeType, dependencies: string[], startIdx: number, startToolCallId: string): Episode {
     const ep: Episode = {
       name, type, dependencies,
+      startToolCallId, endToolCallId: null,
       startIdx, endIdx: null,
       description: '',
       level: 'none',
@@ -325,10 +343,11 @@ class EpisodeGraph {
     return ep;
   }
 
-  close(name: string, description: string, endIdx: number): Episode | null {
-    const ep = this.episodes.find(e => e.name === name && e.endIdx === null);
+  close(name: string, description: string, endIdx: number, endToolCallId: string): Episode | null {
+    const ep = this.episodes.find(e => e.name === name && e.endToolCallId === null);
     if (!ep) return null;
     ep.endIdx = endIdx;
+    ep.endToolCallId = endToolCallId;
     ep.description = description || ep.description;
     this.activeNames.delete(name);
     return ep;
@@ -649,6 +668,34 @@ function estimateEpisodeTokens(ep: Episode, currentTokens: number): number {
 // Extension entry
 // ---------------------------------------------------------------------------
 
+/**
+ * Fallback senza episodi: riduce i blocchi di reasoning dei messaggi assistant.
+ * E' il recupero piu' sicuro: i blocchi thinking sono traccia interna del
+ * modello — non risultati, non azioni, non input dell'utente — e ARC non li
+ * tocca. Ritorna null se non c'e' nulla da togliere.
+ */
+function globalReasoningStrip(
+  messages: AgentMessage[],
+): { kept: AgentMessage[]; changed: number } | null {
+  const kept: AgentMessage[] = [];
+  let changed = 0;
+  for (const msg of messages) {
+    const m = msg as unknown as RealMessage;
+    if (m.role === 'assistant' && Array.isArray(m.content)) {
+      const hasThinking = (m.content as RealContentBlock[]).some(
+        (b) => b && b.type === 'thinking',
+      );
+      if (hasThinking) {
+        changed++;
+        kept.push(stripToolResult(msg, 'reasoning'));
+        continue;
+      }
+    }
+    kept.push(msg);
+  }
+  return changed > 0 ? { kept, changed } : null;
+}
+
 export default function (pi: ExtensionAPI) {
   // ---- Tools -------------------------------------------------------------
 
@@ -681,7 +728,7 @@ export default function (pi: ExtensionAPI) {
         description: 'Descrizione di cosa hai imparato. Obbligatorio solo per action=end con type="expl".',
       })),
     }),
-    async execute(_toolCallId, params, _signal, _onUpdate, ctx) {
+    async execute(toolCallId, params, _signal, _onUpdate, ctx) {
       const key = sessionKey(ctx);
       const st = getState(key);
       const cf = getConfig(key);
@@ -711,7 +758,7 @@ export default function (pi: ExtensionAPI) {
           };
         }
 
-        const ep = st.graph.open(params.name, params.type, deps, st.messageCursor);
+        const ep = st.graph.open(params.name, params.type, deps, st.messageCursor, toolCallId);
         debugLog(cf, `OPEN ${ep.type} "${ep.name}" deps=[${deps.join(',')}] startIdx=${ep.startIdx}`);
 
         return {
@@ -727,7 +774,7 @@ export default function (pi: ExtensionAPI) {
             details: { ok: false, error: 'parametri-mancanti' },
           };
         }
-        const ep = st.graph.close(params.name, params.description ?? '', st.messageCursor);
+        const ep = st.graph.close(params.name, params.description ?? '', st.messageCursor, toolCallId);
         if (!ep) {
           return {
             content: [{ type: 'text', text: t('notFoundOrClosed')(params.name) }],
@@ -821,10 +868,9 @@ export default function (pi: ExtensionAPI) {
     // Update the cursor with the REAL message count (not turns).
     // I tool risultanti vengono aggiunti durante il turno, quindi il conteggio
     // the message count is the only reliable basis for episode indices.
-    st.messageCursor = Math.max(st.messageCursor, messages.length);
+    st.messageCursor = messages.length; // ricalcolato, non accumulato
 
     const g = st.graph;
-    if (g.isEmpty) return; // l'agente non ha annotato episodi: non forzare nulla
 
     // 1. Misura il contesto reale
     let currentTokens = 0;
@@ -836,6 +882,32 @@ export default function (pi: ExtensionAPI) {
     const trigger = cf.tokenBudget * cf.thresholdRatio;
     if (currentTokens <= trigger) {
       debugLog(cf, `CONTEXT ${currentTokens}t sotto soglia ${Math.round(trigger)}t: nessuna eviction`);
+      return;
+    }
+
+    // 1b. DEGRADAZIONE UTILE: senza episodi l'eviction graduata non ha bersagli.
+    // Prima di lasciare il contesto intatto si recupera comunque il budget piu'
+    // sicuro: i blocchi di reasoning dei messaggi assistant. Sono traccia interna
+    // del modello, non risultati ne azioni, e ARC non li tocca. Senza questo un
+    // agente che non usa `delimiter` non ottiene compressione per quanto alto sia
+    // il contesto — ed e' proprio il caso in cui serve di piu'.
+    if (g.isEmpty) {
+      const out = globalReasoningStrip(messages);
+      if (out) {
+        const after = out.kept.reduce((sum: number, m: AgentMessage) => sum + estimateMessageTokens(m), 0);
+        st.totalEvictions++;
+        st.totalEvictedTokens += Math.max(0, currentTokens - after);
+        debugLog(cf, `FALLBACK reasoning-strip: ${out.changed} messaggi, ${currentTokens}t -> ${after}t`);
+        if (ctx?.hasUI) {
+          ctx.ui.notify(
+            `CWL: nessun episodio annotato, ridotti i blocchi di reasoning in ${out.changed} messaggi ` +
+            `(${currentTokens} -> ${after} token). Usa \`delimiter\` per un'eviction graduata.`,
+            'info',
+          );
+        }
+        return { messages: out.kept };
+      }
+      debugLog(cf, 'CONTEXT sopra soglia ma nessun episodio E nessun reasoning strip possibile');
       return;
     }
 
@@ -864,11 +936,24 @@ export default function (pi: ExtensionAPI) {
     // episodes, including level='removed'): with recoverable() the already
     // episodes, including removed ones; with recoverable() they would NEVER
     // be mapped and the full eviction would never fire.
+    // Ancoraggio per toolCallId, non per indice: i risultati `delimiter` sono
+    // messaggi reali nel transcript, quindi la loro posizione e' sempre esatta.
+    // L'indice del cursore non lo e' (cfr. startIdx) e rendeva l'eviction
+    // impossibile quando il contesto si accorciava.
+    const posByToolCallId = new Map<string, number>();
+    messages.forEach((m, i) => {
+      const id = (m as unknown as RealMessage).toolCallId;
+      if (typeof id === 'string') posByToolCallId.set(id, i);
+    });
+
     const episodeAt = new Map<number, Episode>();
     for (const ep of g.closed()) {
-      const from = Math.max(0, ep.startIdx);
-      const to = Math.min(messages.length, ep.endIdx ?? messages.length);
-      for (let i = from; i < to; i++) episodeAt.set(i, ep);
+      const from = posByToolCallId.get(ep.startToolCallId);
+      const to = ep.endToolCallId !== null ? posByToolCallId.get(ep.endToolCallId) : undefined;
+      if (from === undefined) continue; // ancoraggio perso: meglio non evictare
+      const end = to !== undefined ? to : messages.length;
+      if (end <= from) continue;
+      for (let i = from; i <= Math.min(end, messages.length - 1); i++) episodeAt.set(i, ep);
     }
 
     const kept: AgentMessage[] = [];
@@ -881,8 +966,10 @@ export default function (pi: ExtensionAPI) {
       const ep = episodeAt.get(idx);
       const role = (msg as unknown as RealMessage).role;
 
-      // Principle 3: user turns are inviolable
-      if (role === 'user') {
+      // Principio 3: user turns are inviolable. Ma non basta `user`: `system`
+      // e `developer` contengono le istruzioni del ruolo e i tool disponibili.
+      // Evictarli lascia l'agente senza schema di azione.
+      if (role === 'user' || role === 'system' || role === 'developer') {
         kept.push(msg);
         return;
       }
@@ -911,18 +998,28 @@ export default function (pi: ExtensionAPI) {
       if (stripReasoning.has(ep.name)) {
         const before = textLengthOf(msg);
         const out = stripToolResult(msg, 'reasoning');
-        truncatedTokens += Math.max(0, Math.floor((before - textLengthOf(out)) / 4));
+        // Conta solo se lo strip ha DAVVERO ridotto: altrimenti la notifica
+        // dichiarerebbe un risparmio avvenuto, e l'operatore crederebbe che
+        // l'eviction lavori mentre non muove nulla.
+        if (out !== msg) {
+          truncatedTokens += Math.max(0, Math.floor((before - textLengthOf(out)) / 4));
+          truncated++;
+        }
         kept.push(out);
-        truncated++;
         return;
       }
 
       if (stripBulk.has(ep.name)) {
         const before = textLengthOf(msg);
         const out = stripToolResult(msg, 'bulk');
-        truncatedTokens += Math.max(0, Math.floor((before - textLengthOf(out)) / 4));
+        // Conta solo se lo strip ha DAVVERO ridotto: altrimenti la notifica
+        // dichiarerebbe un risparmio avvenuto, e l'operatore crederebbe che
+        // l'eviction lavori mentre non muove nulla.
+        if (out !== msg) {
+          truncatedTokens += Math.max(0, Math.floor((before - textLengthOf(out)) / 4));
+          truncated++;
+        }
         kept.push(out);
-        truncated++;
         return;
       }
 
