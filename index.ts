@@ -8,20 +8,20 @@
  *   proprio quando il budget di contesto e' sotto pressione.
  *
  * SOLUZIONE (https://arxiv.org/html/2606.11213)
- *   L'agente annota la propria traiettoria come episodi tipizzati (expl/act)
+ *   The agent annotates its own trajectory as typed episodes (expl/act)
  *   tramite un tool `delimiter`. Una politica deterministica, LLM-free, evicta
- *   il contenuto in ordine di recuperabilita' quando il budget viene superato.
+ *   the content in order of recoverability once the budget is exceeded.
  *
  *   - expl (esplorazione): output di ricerca, listing, letture di orientamento.
- *     Al closing, l'agente fornisce una descrizione: unico contenuto conservato.
- *   - act (azione): scritture, edit, tool call. Gli effetti sono persistenti
- *     nell'ambiente, quindi sono i primi candidati all'eviction.
+ *     On closing, the agent supplies a description: the only content kept.
+ *   - act (action): writes, edits, tool calls. The effects are persistent in
+ *     the environment, so they are the first candidates for eviction.
  *
  *   Le dipendenze dichiarate impediscono di perdere il contesto esplorativo che
- *   ha prodotto una decisione ancora attiva.
+ *   produced a decision that is still active.
  *
  *   User content e' inviolabile (Principio 3).
- *   La compressione non invoca MAI il modello (Principio 5): zero costo, zero
+ *   Compression NEVER invokes the model (Principle 5): zero cost, zero
  *   allucinazione introdotta, zero blocco.
  *
  * FORMA REALE DEI MESSAGGI (da @earendil-works/pi-ai)
@@ -39,7 +39,7 @@ import * as path from 'node:path';
 import * as os from 'node:os';
 
 // ---------------------------------------------------------------------------
-// Tipi minimi della forma reale dei messaggi (sottoset di @earendil-works/pi-ai)
+// Minimal types for the real message shape (subset of @earendil-works/pi-ai)
 // ---------------------------------------------------------------------------
 
 interface RealContentBlock {
@@ -102,7 +102,26 @@ function detectLang(): Lang {
 
 const LANG: Lang = detectLang();
 
-const I18N: Record<Lang, { guidelines: string[] }> = {
+type CwlMessages = {
+  guidelines: string[];
+  strippedReasoning: string;
+  truncatedString: (len: number, level: StripLevel) => string;
+  truncatedArray: (len: number, level: StripLevel) => string;
+  evictedEpisode: (name: string, desc: string) => string;
+  startNeedsNameType: string;
+  endNeedsName: string;
+  duplicateName: (name: string) => string;
+  notFoundOrClosed: (name: string) => string;
+  invalidDeps: (names: string) => string;
+  episodeOpened: (type: string, name: string) => string;
+  unknownAction: string;
+  emptyDescriptionWarning: string;
+  statusHeader: (budget: string, threshold: string) => string;
+  statusEpisodes: (total: number, active: number, closed: number, stripped: number) => string;
+  statusEvictions: (count: number, tokens: string) => string;
+};
+
+const I18N: Record<Lang, CwlMessages> = {
   en: {
     guidelines: [
       'Open an expl episode when you start exploring (reads, searches, listings). Close it as soon as you have the answer you need.',
@@ -110,6 +129,21 @@ const I18N: Record<Lang, { guidelines: string[] }> = {
       'When closing an expl, give a concise description of what you learned: it is the only content that survives eviction.',
       'Do not open overly fine-grained episodes: 5-15 per session is a good target.',
     ],
+    strippedReasoning: '[CWL: reasoning evicted]',
+    truncatedString: (len, level) => `[CWL: content reduced from ${len} chars (level ${level})]`,
+    truncatedArray: (len, level) => `[CWL: text reduced from ${len} chars to a marker (level ${level}) — use arc_recall or reopen the episode if needed]`,
+    evictedEpisode: (name, desc) => `Content of "${name}" evicted. Notes kept: ${desc}`,
+    startNeedsNameType: 'action=start requires name and type.',
+    endNeedsName: 'action=end requires name.',
+    duplicateName: (name) => `Episode "${name}" already exists. Use a unique name.`,
+    notFoundOrClosed: (name) => `Episode "${name}" not found or already closed.`,
+    invalidDeps: (names) => `Invalid dependencies (must be closed expl episodes): ${names}`,
+    episodeOpened: (type, name) => `Episode ${type} "${name}" opened.`,
+    unknownAction: 'Unrecognised action.',
+    emptyDescriptionWarning: ' WARNING: empty description — this episode has no fallback content.',
+    statusHeader: (budget, threshold) => `CWL — token budget: ${budget} (threshold: ${threshold}%)`,
+    statusEpisodes: (total, active, closed, stripped) => `Episodes total: ${total} | active: ${active} | closed: ${closed} | stripped: ${stripped}`,
+    statusEvictions: (count, tokens) => `Evictions total: ${count} | tokens saved: ${tokens}`,
   },
   it: {
     guidelines: [
@@ -118,8 +152,28 @@ const I18N: Record<Lang, { guidelines: string[] }> = {
       'Alla chiusura di un expl, fornisci una descrizione concisa di cosa hai imparato: e\' il contenuto che sopravvive all\'eviction.',
       'Non aprire episodi troppo fini: 5-15 per sessione e\' un buon target.',
     ],
+    strippedReasoning: '[CWL: reasoning evictato]',
+    truncatedString: (len, level) => `[CWL: contenuto ridotto da ${len} chars (livello ${level})]`,
+    truncatedArray: (len, level) => `[CWL: testo ridotto da ${len} chars a marker (livello ${level}) — usa arc_recall o riapri l'episodio se serve]`,
+    evictedEpisode: (name, desc) => `Contenuto di "${name}" evictato. Appunti conservati: ${desc}`,
+    startNeedsNameType: 'action=start richiede name e type.',
+    endNeedsName: 'action=end richiede name.',
+    duplicateName: (name) => `Episodio "${name}" gia' esiste. Usa un nome univoco.`,
+    notFoundOrClosed: (name) => `Episodio "${name}" non trovato o gia' chiuso.`,
+    invalidDeps: (names) => `Dipendenze non valide (devono essere episodi expl chiusi): ${names}`,
+    episodeOpened: (type, name) => `Episodio ${type} "${name}" aperto.`,
+    unknownAction: 'Azione non riconosciuta.',
+    emptyDescriptionWarning: ' ATTENZIONE: descrizione vuota — questo episodio non ha contenuto di fallback.',
+    statusHeader: (budget, threshold) => `CWL — token budget: ${budget} (threshold: ${threshold}%)`,
+    statusEpisodes: (total, active, closed, stripped) => `Episodi totali: ${total} | attivi: ${active} | chiusi: ${closed} | gia' stripped: ${stripped}`,
+    statusEvictions: (count, tokens) => `Eviction totali: ${count} | token risparmiati: ${tokens}`,
   },
-} satisfies Record<Lang, { guidelines: string[] }>;
+} satisfies Record<Lang, CwlMessages>;
+
+/** Localised string for the active language. */
+function t<K extends keyof CwlMessages>(key: K): CwlMessages[K] {
+  return I18N[LANG][key];
+}
 
 // ---------------------------------------------------------------------------
 // Config
@@ -145,7 +199,7 @@ interface CwlConfig {
 
 const DEFAULT_CONFIG: CwlConfig = {
   // 80k = ~30% di un contesto da 256k; CWL paper: regime sotto il quale
-  // l'attenzione non degrada. Se il tuo contesto e' 1M, alza questo valore.
+  // attention does not degrade. If your context is 1M, raise this value.
   tokenBudget: 80_000,
   thresholdRatio: 0.85,
   levels: {
@@ -333,7 +387,7 @@ class EpisodeGraph {
 }
 
 // ---------------------------------------------------------------------------
-// Session state (per-sessione: evita collisioni tra subagent)
+// Session state (per session: avoids collisions with subagents)
 // ---------------------------------------------------------------------------
 
 interface CwlState {
@@ -422,7 +476,7 @@ function stripToolResult(msg: AgentMessage, level: StripLevel): AgentMessage {
     if (m.content.length > STRIP_BLOCK_CHARS) {
       return {
         ...m,
-        content: `[CWL: contenuto ridotto da ${m.content.length} chars (livello ${level})]`,
+        content: t('truncatedString')(m.content.length, level),
       } as unknown as AgentMessage;
     }
     return msg;
@@ -439,7 +493,7 @@ function stripToolResult(msg: AgentMessage, level: StripLevel): AgentMessage {
     // reasoning: elimina i blocchi thinking
     if (level === 'reasoning' && part.type === 'thinking') {
       changed = true;
-      return { type: 'text', text: '[CWL: reasoning evictato]' } satisfies RealContentBlock;
+      return { type: 'text', text: t('strippedReasoning') } satisfies RealContentBlock;
     }
 
     // toolCall: intoccabile, semantica d'azione
@@ -454,7 +508,7 @@ function stripToolResult(msg: AgentMessage, level: StripLevel): AgentMessage {
       const origLen = part.text.length;
       return {
         ...part,
-        text: `[CWL: testo ridotto da ${origLen} chars a marker (livello ${level}) — usa arc_recall o riapri l'episodio se serve]`,
+        text: t('truncatedArray')(origLen, level),
       } satisfies RealContentBlock;
     }
 
@@ -473,7 +527,7 @@ const LEVEL_ORDER: StripLevel[] = ['none', 'reasoning', 'bulk', 'intermediate', 
 
 /**
  * Mappa il livello di stripping alla chiave corrispondente in cfg.levels.
- * Senza questa mappa, cfg.levels['bulk'] era undefined e i livelli
+ * Without this map, cfg.levels['bulk'] was undefined and the
  * bulk/intermediate venivano SEMPRE scartati.
  */
 const LEVEL_CONFIG_KEY: Record<StripLevel, keyof CwlConfig['levels'] | null> = {
@@ -500,55 +554,10 @@ function levelEnabled(cfg: CwlConfig, level: StripLevel): boolean {
 }
 
 /**
- * Applica il livello di stripping a un singolo episodio.
- * Restituisce l'azione se il livello e' stato applicato, null altrimenti.
- */
-function computeStripAction(ep: Episode, level: StripLevel): {
-  episode: string;
-  level: StripLevel;
-  instruction: string;
-} | null {
-  if (LEVEL_ORDER.indexOf(level) <= LEVEL_ORDER.indexOf(ep.level)) return null;
-  if (!levelEnabled(cfgRef, level)) return null;
-
-  switch (level) {
-    case 'reasoning':
-      if (ep.type !== 'expl') return null;
-      return {
-        episode: ep.name,
-        level: 'reasoning',
-        instruction: `Rimuovi i blocchi thinking/chain-of-thought dall'episodio "${ep.name}". Mantieni tool call e risultati.`,
-      };
-    case 'bulk':
-      return {
-        episode: ep.name,
-        level: 'bulk',
-        instruction: `Rimuovi gli output di grandi tool enumerabili (grep, glob, listing) dall'episodio "${ep.name}". Mantieni le azioni.`,
-      };
-    case 'intermediate':
-      return {
-        episode: ep.name,
-        level: 'intermediate',
-        instruction: `Rimuovi i risultati intermedi di letture file e comandi bash dall'episodio "${ep.name}". Mantieni solo le conclusioni.`,
-      };
-    case 'removed':
-      return {
-        episode: ep.name,
-        level: 'removed',
-        instruction: ep.type === 'expl'
-          ? `Rimuovi completamente l'episodio esplorativo "${ep.name}". Sostituisci con: "${ep.description || '(nessuna descrizione)'}"`
-          : `Rimuovi completamente l'episodio azione "${ep.name}". Gli effetti sono persistenti nell'ambiente.`,
-      };
-    default:
-      return null;
-  }
-}
-
-/**
  * Esegue un passaggio di eviction: cammina il grafo, seleziona il target
- * piu' recuperabile, calcola il livello di stripping necessario.
+ * most recoverable target, and computes the required stripping level.
  *
- * Restituisce un array di azioni (vuoto se budget gia' soddisfatto).
+ * Returns an array of actions (empty if the budget is already satisfied).
  */
 function runEvictionPass(
   cfg: CwlConfig,
@@ -568,7 +577,7 @@ function runEvictionPass(
     estimatedTokens: number;
   }[] = [];
 
-  // Candidati: episodi chiusi, non attivi, senza dipendenti vivi
+  // Candidates: closed episodes, not active, without live dependents
   const candidates = graph.recoverable().filter(ep => {
     if (graph.hasLiveDependents(ep.name)) return false;
     return true;
@@ -576,7 +585,7 @@ function runEvictionPass(
 
   if (candidates.length === 0) return [];
 
-  // Priorita': act prima di expl (effetti persistenti), poi per eta'
+  // Priority: act before expl (persistent effects), then by age
   const actCandidates = candidates.filter(e => e.type === 'act');
   const explCandidates = candidates.filter(e => e.type === 'expl');
 
@@ -597,7 +606,7 @@ function runEvictionPass(
       const action = computeStripActionWith(cfg, target, level);
       if (action) {
         target.level = level;
-        // Stima dei token dell'episodio per calcolare il risparmio reale
+        // Estimate the episode tokens to compute the real saving
         const epTokens = estimateEpisodeTokens(target, projected);
         const saved = Math.floor(epTokens * LEVEL_SAVINGS[level]);
         projected = Math.max(0, projected - saved);
@@ -636,16 +645,11 @@ function estimateEpisodeTokens(ep: Episode, currentTokens: number): number {
   return Math.max(1, Math.floor(currentTokens * (span / Math.max(1, currentTokens))));
 }
 
-// Riferimento alla config corrente, usato solo da computeStripAction legacy.
-let cfgRef: CwlConfig = loadConfig();
-
 // ---------------------------------------------------------------------------
 // Extension entry
 // ---------------------------------------------------------------------------
 
 export default function (pi: ExtensionAPI) {
-  cfgRef = loadConfig();
-
   // ---- Tools -------------------------------------------------------------
 
   pi.registerTool({
@@ -685,13 +689,13 @@ export default function (pi: ExtensionAPI) {
       if (params.action === 'start') {
         if (!params.name || !params.type) {
           return {
-            content: [{ type: 'text', text: 'action=start richiede name e type.' }],
+            content: [{ type: 'text', text: t('startNeedsNameType') }],
             details: { ok: false, error: 'parametri-mancanti' },
           };
         }
         if (st.graph.has(params.name)) {
           return {
-            content: [{ type: 'text', text: `Episodio "${params.name}" gia' esiste. Usa un nome univoco.` }],
+            content: [{ type: 'text', text: t('duplicateName')(params.name) }],
             details: { ok: false, error: 'nome-duplicato' },
           };
         }
@@ -702,7 +706,7 @@ export default function (pi: ExtensionAPI) {
         });
         if (invalidDeps.length > 0) {
           return {
-            content: [{ type: 'text', text: `Dipendenze non valide (devono essere episodi expl chiusi): ${invalidDeps.join(', ')}` }],
+            content: [{ type: 'text', text: t('invalidDeps')(invalidDeps.join(', ')) }],
             details: { ok: false, error: 'dipendenze-non-valide' },
           };
         }
@@ -711,7 +715,7 @@ export default function (pi: ExtensionAPI) {
         debugLog(cf, `OPEN ${ep.type} "${ep.name}" deps=[${deps.join(',')}] startIdx=${ep.startIdx}`);
 
         return {
-          content: [{ type: 'text', text: `Episodio ${ep.type} "${ep.name}" aperto.` }],
+          content: [{ type: 'text', text: t('episodeOpened')(ep.type, ep.name) }],
           details: { ok: true, episode: ep.name, type: ep.type },
         };
       }
@@ -719,14 +723,14 @@ export default function (pi: ExtensionAPI) {
       if (params.action === 'end') {
         if (!params.name) {
           return {
-            content: [{ type: 'text', text: 'action=end richiede name.' }],
+            content: [{ type: 'text', text: t('endNeedsName') }],
             details: { ok: false, error: 'parametri-mancanti' },
           };
         }
         const ep = st.graph.close(params.name, params.description ?? '', st.messageCursor);
         if (!ep) {
           return {
-            content: [{ type: 'text', text: `Episodio "${params.name}" non trovato o gia' chiuso.` }],
+            content: [{ type: 'text', text: t('notFoundOrClosed')(params.name) }],
             details: { ok: false, error: 'episodio-non-trovato' },
           };
         }
@@ -734,7 +738,7 @@ export default function (pi: ExtensionAPI) {
 
         let msg = `Episodio ${ep.type} "${ep.name}" chiuso.`;
         if (ep.type === 'expl' && !ep.description) {
-          msg += ' ATTENZIONE: descrizione vuota — questo episodio non ha contenuto di fallback.';
+          msg += t('emptyDescriptionWarning');
         }
         return {
           content: [{ type: 'text', text: msg }],
@@ -743,7 +747,7 @@ export default function (pi: ExtensionAPI) {
       }
 
       return {
-        content: [{ type: 'text', text: 'Azione non riconosciuta.' }],
+        content: [{ type: 'text', text: t('unknownAction') }],
         details: { ok: false },
       };
     },
@@ -765,10 +769,10 @@ export default function (pi: ExtensionAPI) {
       const stripped = closed.filter(e => e.level !== 'none');
 
       const lines = [
-        `CWL — token budget: ${cf.tokenBudget.toLocaleString()} (threshold: ${(cf.thresholdRatio * 100).toFixed(0)}%)`,
+        t('statusHeader')(cf.tokenBudget.toLocaleString(), (cf.thresholdRatio * 100).toFixed(0)),
         `Token contesto misurati: ~${st.lastMeasuredTokens.toLocaleString()}`,
-        `Episodi totali: ${g.count} | attivi: ${active.length} | chiusi: ${closed.length} | gia' stripped: ${stripped.length}`,
-        `Eviction totali: ${st.totalEvictions} | token risparmiati: ${st.totalEvictedTokens.toLocaleString()}`,
+        t('statusEpisodes')(g.count, active.length, closed.length, stripped.length),
+        t('statusEvictions')(st.totalEvictions, st.totalEvictedTokens.toLocaleString()),
       ];
       if (active.length > 0) {
         lines.push(`Attivi: ${active.map(e => `${e.name}(${e.type})`).join(', ')}`);
@@ -804,7 +808,7 @@ export default function (pi: ExtensionAPI) {
   /**
    * L'eviction vive nell'hook 'context': e' l'unico punto in cui Pi permette di
    * RISCRIVERE la lista messaggi che verra' inviata al provider. turn_end puo'
-   * solo osservare, quindi calcolare li' non avrebbe mai ridotto nulla.
+   * only observe, so computing there would never have reduced anything.
    */
   pi.on('context', async (event, ctx) => {
     const key = sessionKey(ctx);
@@ -814,9 +818,9 @@ export default function (pi: ExtensionAPI) {
     const messages: AgentMessage[] = event.messages;
     if (!messages || messages.length === 0) return;
 
-    // Aggiorna il cursore con il conteggio REALE dei messaggi (non turni).
+    // Update the cursor with the REAL message count (not turns).
     // I tool risultanti vengono aggiunti durante il turno, quindi il conteggio
-    // dei messaggi e' l'unica base affidabile per gli indici di episodio.
+    // the message count is the only reliable basis for episode indices.
     st.messageCursor = Math.max(st.messageCursor, messages.length);
 
     const g = st.graph;
@@ -856,9 +860,10 @@ export default function (pi: ExtensionAPI) {
     ]);
     const stripReasoning = byLevel.get('reasoning') ?? new Set<string>();
 
-    // Mappa indice-messaggio -> episodio. USA g.closed() (tutti gli episodi
-    // chiusi, incluso level='removed'): usando recoverable() gli episodi gia'
-    // rimossi non sarebbero MAI mappati e l'eviction completa non scatterebbe.
+    // Map message index -> episode. Uses g.closed() (all closed
+    // episodes, including level='removed'): with recoverable() the already
+    // episodes, including removed ones; with recoverable() they would NEVER
+    // be mapped and the full eviction would never fire.
     const episodeAt = new Map<number, Episode>();
     for (const ep of g.closed()) {
       const from = Math.max(0, ep.startIdx);
@@ -876,7 +881,7 @@ export default function (pi: ExtensionAPI) {
       const ep = episodeAt.get(idx);
       const role = (msg as unknown as RealMessage).role;
 
-      // Principio 3: i turni dell'utente sono inviolabili
+      // Principle 3: user turns are inviolable
       if (role === 'user') {
         kept.push(msg);
         return;
@@ -894,7 +899,7 @@ export default function (pi: ExtensionAPI) {
           kept.push({
             role: 'custom',
             customType: 'cwl-evicted',
-            content: `Contenuto di "${ep.name}" evictato. Appunti conservati: ${ep.description}`,
+            content: t('evictedEpisode')(ep.name, ep.description),
             display: false,
             timestamp: Date.now(),
           } as unknown as AgentMessage);
@@ -931,7 +936,7 @@ export default function (pi: ExtensionAPI) {
 
     st.totalEvictions++;
     st.lastEvictionTurn = st.messageCursor;
-    // Somma SOLO i token effettivamente risparmiati, non l'intero contesto.
+    // Sum ONLY the tokens actually saved, not the whole context.
     st.totalEvictedTokens += removedTokens + truncatedTokens;
 
     const afterTokens = kept.reduce((s, m) => s + estimateMessageTokens(m), 0);
