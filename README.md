@@ -83,6 +83,22 @@ an empty `text` gives the body back.
 
 **`cwl_old`** — fold the oldest young nodes into the old node: the summary of summaries.
 
+**`cwl_group`** — group leaves into a **topic node**, which is born collapsed: the `name` and the
+`description` you write stand for its leaves in the index from that moment on, so the description
+must already cover the future use of the topic. Only the leaves of the buffer — the last node, the
+one attached to the leaves still open — can be grouped or moved, and a topic is never the first
+node. Adding leaves to an existing topic (`node`, without `description`) is free: the labels leave
+the head, the description stays. The description is immutable while the topic is OUTSIDE the old
+node; once the topic is inside it, it can be rewritten, because there it no longer touches the
+context.
+
+The index is therefore NESTED: the **old node** at the head, then **legacy nodes** and **topic
+nodes**, then the **buffer** (which is never pruned, even at zero leaves), then the leaves still
+open. With three nodes in front of it, the old node absorbs two, of any kind, and the descriptions
+of the topics it swallows are glued to its synthesis word for word — they are not rewritten, and
+the tip's synthesis is a frozen snapshot: material added to a topic afterwards is described by the
+topic, not by the pit, and both are readable with `cwl_open`.
+
 **`cwl_recall`** / **`cwl_recall_episode`** — find compressed text by keyword, or retrieve an evicted
 episode by name, straight from the transcript.
 
@@ -223,6 +239,21 @@ dimensione.
 caratteri, ~300 token); un `text` vuoto restituisce il corpo.
 
 **`cwl_old`** — accorpa i nodi giovani più vecchi nel nodo vecchio: il riassunto dei riassunti.
+
+**`cwl_group`** — raggruppa le foglie in un **nodo topic**, che nasce già collassato: il `name` e la
+`description` che scrivi stanno per le sue foglie nell'indice da quel momento, quindi la descrizione
+deve coprire già l'uso futuro del topic. Si possono raggruppare o spostare solo le foglie del buffer
+— l'ultimo nodo, quello attaccato alle foglie ancora aperte — e un topic non è mai il primo nodo.
+Aggiungere foglie a un topic esistente (`node`, senza `description`) è gratis: le etichette escono
+dalla testa, la descrizione resta. La descrizione è immutabile finché il topic è FUORI dal nodo
+vecchio; una volta che il topic è dentro, si può riscrivere, perché lì non tocca più il contesto.
+
+L'indice è quindi ANNIDATO: in testa il **nodo vecchio**, poi i **nodi legacy** e i **nodi topic**,
+poi il **buffer** (che non viene mai potato, nemmeno a zero foglie), poi le foglie ancora aperte.
+Con tre nodi davanti, il nodo vecchio ne assorbe due, di qualunque natura, e le descrizioni dei
+topic che ingoia vengono incollate alla sua sintesi parola per parola — non vengono riscritte, e la
+sintesi del pozzo è un'istantanea congelata: il materiale aggiunto dopo a un topic lo racconta il
+topic, non il pozzo, e si leggono entrambi con `cwl_open`.
 
 **`cwl_recall`** / **`cwl_recall_episode`** — cercano testo compresso per parola chiave, oppure
 recuperano un episodio evictato per nome, direttamente dal transcript.
