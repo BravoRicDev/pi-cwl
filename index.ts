@@ -162,6 +162,8 @@ type CwlMessages = {
   topicHead: (name: string, leaves: number, saved: number) => string;
   /** Said after a merge that carried the immutable descriptions of the topics it absorbed. */
   oldTopicsConcatenated: (topics: number, chars: number) => string;
+  /** Said when a description is rewritten inside the pit: the context does not move. */
+  groupDescriptionUpdated: () => string;
   statusUnlocatable: (n: number) => string;
   /** Strings of the cwl_recall tool. */
   recallNotLoaded: string;
@@ -277,13 +279,15 @@ const I18N: Record<Lang, CwlMessages> = {
     indexLine: (pitNodes, pitLeaves, youngNodes, youngLeaves, loose, waiting, headTokens, evictions, savedTokens) =>
       `pit ${pitNodes}n/${pitLeaves}l │ young ${youngNodes}n/${youngLeaves}l │ loose ${loose} │ waiting micro ${waiting} │ head ~${headTokens}t │ ${evictions} evict │ ${savedTokens} saved`,
     groupRefused: (why, detail) =>
-      `\n\nGrouping refused (${why}${detail ? `: ${detail}` : ''}). Nothing was recorded. Only the leaves of the BUFFER — the last node, the one attached to the leaves still open — can be grouped or moved: older material stays where it is. A leaf already inside the old node cannot come back (the pit's synthesis stands for it), and a leaf without a micro would not appear in any head: write the micro first.`,
+      `\n\nGrouping refused (${why}${detail ? `: ${detail}` : ''}). Nothing was recorded. Only the leaves of the BUFFER — the last node, the one attached to the leaves still open — can be grouped or moved: older material stays where it is. A leaf already inside the old node cannot come back (the pit's synthesis stands for it), and a leaf without a micro would not appear in any head: write the micro first. A description is IMMUTABLE while its topic is OUTSIDE the old node, because there it IS the index; inside the old node it can be rewritten, and there it moves nothing.`,
     groupTooSmall: (leaves, microChars, needChars) =>
       `\n\nNo topic was born: the ${leaves} leaf/leaves hold ${microChars} characters, and a topic must free at least ${needChars}. A topic is born COLLAPSED — its description replaces the labels of those leaves from this moment on — so it has to be worth more than the description that replaces them (~3,600 characters times the ratio, and never less than the absolute floor). Group more leaves, or leave them in the buffer until the topic is big enough.`,
     groupCreated: (name, id, leaves, microChars) =>
       `Topic "${name}" born as ${id}: ${leaves} leaf/leaves (${microChars} characters of labels) now stand behind your description, and their bodies stay readable with cwl_open. More leaves can be added to it at any time, and it costs nothing: the description does not change.`,
     groupAdded: (name, id, leaves) =>
-      `Leaf/leaves added to the topic "${name}" (${id}), which now holds ${leaves}. The description did not change: it is written once, to cover the future use of the topic.`,
+      `Leaf/leaves added to the topic "${name}" (${id}), which now holds ${leaves}.`,
+    groupDescriptionUpdated: () =>
+      `\n\nThe description was rewritten, and this changes NOTHING in the index: the node is inside the old node, whose synthesis was written before these leaves arrived. The pit's synthesis is a frozen snapshot; what you have just written is the living copy, readable with cwl_open.`,
     topicHead: (name, leaves, saved) =>
       `[CWL \u00b7 TOPIC "${name}" \u2014 ${leaves} leaf/leaves stand behind this description, which never changes (~${saved} tokens saved). Their bodies are whole and readable with cwl_open.\n\n`,
     oldTopicsConcatenated: (topics, chars) =>
@@ -369,7 +373,7 @@ const I18N: Record<Lang, CwlMessages> = {
       groupLeaves: 'Ids of the leaves to group or move. Only leaves of the buffer (or loose ones) can be moved, and each must already carry a micro.',
       groupNode: 'Id of an existing TOPIC node to add the leaves to. Omit it to create a new topic, which then requires `name` and `description`.',
       groupName: 'Short name of the new topic, written ONCE: it is part of the index prefix, so it never changes. e.g. "login-otp".',
-      groupText: 'Description of the new topic, written ONCE: it must already cover the future use of the topic, because it is what replaces the labels of its leaves in the index and it is never rewritten. Mandatory when creating.',
+      groupText: 'Description of the new topic, written ONCE: it must already cover the future use of the topic, because it is what replaces the labels of its leaves in the index and it is never rewritten WHILE THE TOPIC IS OUTSIDE THE OLD NODE. The one exception: a topic that is already inside the old node may have its description rewritten, because there it no longer touches the index. Mandatory when creating.',
       recallEpisodeFull: 'false (default) returns a truncated preview; true returns the whole episode.',
       compressRangeDesc: 'Compresses the OLDEST usable range of the conversation into your summary. YOU DO NOT pick the range and you do not need any hash: the extension already computed the address and holds it. Call it when an eviction marker or the budget demand tells you to compact, and write a summary good enough to keep working without re-reading the originals. Nothing inside the protected window is touched.',
       compressRangeSummary: 'The summary that REPLACES the compressed range. Write WHOLE PIECES, not a digest: it must be enough to keep working without re-reading them. Include paths, file names, function names, numeric values, and what you decided and why.',
@@ -438,13 +442,15 @@ const I18N: Record<Lang, CwlMessages> = {
     indexLine: (pitNodes, pitLeaves, youngNodes, youngLeaves, loose, waiting, headTokens, evictions, savedTokens) =>
       `pozzo ${pitNodes}n/${pitLeaves}f │ giovani ${youngNodes}n/${youngLeaves}f │ sciolte ${loose} │ aspettano micro ${waiting} │ testa ~${headTokens}t │ ${evictions} eviction │ ${savedTokens} risparmiati`,
     groupRefused: (why, detail) =>
-      `\n\nRaggruppamento rifiutato (${why}${detail ? `: ${detail}` : ''}). Non e' stato registrato niente. Si possono raggruppare o spostare SOLO le foglie del BUFFER — l'ultimo nodo, quello attaccato alle foglie ancora aperte: il materiale piu' vecchio resta dove sta. Una foglia gia' dentro il nodo vecchio non puo' tornare indietro (la sintesi del pozzo sta per lei), e una foglia senza micro non comparirebbe in nessuna testa: scrivi prima il micro.`,
+      `\n\nRaggruppamento rifiutato (${why}${detail ? `: ${detail}` : ''}). Non e' stato registrato niente. Si possono raggruppare o spostare SOLO le foglie del BUFFER — l'ultimo nodo, quello attaccato alle foglie ancora aperte: il materiale piu' vecchio resta dove sta. Una foglia gia' dentro il nodo vecchio non puo' tornare indietro (la sintesi del pozzo sta per lei), e una foglia senza micro non comparirebbe in nessuna testa: scrivi prima il micro. Una descrizione e' IMMUTABILE finche' il suo topic e' FUORI dal nodo vecchio, perche' li' e' l'indice; dentro il nodo vecchio si puo' riscrivere, e li' non muove niente.`,
     groupTooSmall: (leaves, microChars, needChars) =>
       `\n\nNessun topic e' nato: le ${leaves} foglia/e tengono ${microChars} caratteri, e un topic deve liberarne almeno ${needChars}. Un topic nasce GIA' COLLASSATO — la sua descrizione sostituisce le etichette di quelle foglie da questo momento — quindi deve valere piu' della descrizione che le sostituisce (~3.600 caratteri per il rapporto, e mai meno del minimo assoluto). Raggruppa piu' foglie, oppure lasciale nel buffer finche' il topic non e' abbastanza grande.`,
     groupCreated: (name, id, leaves, microChars) =>
       `Topic "${name}" nato come ${id}: ${leaves} foglia/e (${microChars} caratteri di etichette) ora stanno dietro la tua descrizione, e i loro corpi restano leggibili con cwl_open. Si possono aggiungere altre foglie in qualsiasi momento, e non costa niente: la descrizione non cambia.`,
     groupAdded: (name, id, leaves) =>
-      `Foglia/e aggiunte al topic "${name}" (${id}), che ora ne tiene ${leaves}. La descrizione non e' cambiata: si scrive una volta sola, per coprire l'uso futuro del topic.`,
+      `Foglia/e aggiunte al topic "${name}" (${id}), che ora ne tiene ${leaves}.`,
+    groupDescriptionUpdated: () =>
+      `\n\nLa descrizione e' stata riscritta, e questo NON cambia niente nell'indice: il nodo e' dentro il nodo vecchio, la cui sintesi e' stata scritta prima che queste foglie arrivassero. La sintesi del pozzo e' un'istantanea congelata; quella che hai appena scritto e' la copia viva, leggibile con cwl_open.`,
     topicHead: (name, leaves, saved) =>
       `[CWL \u00b7 TOPIC "${name}" \u2014 ${leaves} foglia/e stanno dietro questa descrizione, che non cambia mai (~${saved} token risparmiati). I loro corpi sono interi e leggibili con cwl_open.\n\n`,
     oldTopicsConcatenated: (topics, chars) =>
@@ -526,7 +532,7 @@ const I18N: Record<Lang, CwlMessages> = {
       groupLeaves: 'Id delle foglie da raggruppare o spostare. Si spostano solo foglie del buffer (o sciolte), e ognuna deve gia\' avere un micro.',
       groupNode: 'Id di un nodo TOPIC esistente a cui aggiungere le foglie. Omesso, crea un topic nuovo, che allora richiede `name` e `description`.',
       groupName: 'Nome breve del topic nuovo, scritto UNA VOLTA: fa parte del prefisso dell\'indice, quindi non cambia mai. Es. "login-otp".',
-      groupText: 'Descrizione del topic nuovo, scritta UNA VOLTA: deve coprire gia\' l\'uso futuro del topic, perche\' e\' quello che sostituisce le etichette delle sue foglie nell\'indice e non viene mai riscritta. Obbligatoria alla creazione.',
+      groupText: 'Descrizione del topic nuovo, scritta UNA VOLTA: deve coprire gia\' l\'uso futuro del topic, perche\' e\' quello che sostituisce le etichette delle sue foglie nell\'indice e non viene mai riscritta FINCHE\' IL TOPIC E\' FUORI DAL NODO VECCHIO. Unica eccezione: un topic gia\' dentro il nodo vecchio puo\' avere la descrizione riscritta, perche\' li\' non tocca piu\' l\'indice. Obbligatoria alla creazione.',
       recallEpisodeFull: 'false (default) restituisce un estratto troncato; true restituisce l\'episodio intero.',
       compressRangeDesc: "Comprime nel tuo riassunto l'intervallo PIU' VECCHIO utilizzabile della conversazione. NON scegli tu l'intervallo e non ti serve nessun hash: l'estensione ha gia' calcolato e tiene l'indirizzo. Chiamalo quando un marker di eviction o la richiesta di budget ti dicono di compattare, e scrivi un riassunto che basti a lavorare senza rileggere gli originali. Nulla dentro la finestra protetta viene toccato.",
       compressRangeSummary: "Il riassunto che SOSTITUISCE l'intervallo compresso. Scrivi PEZZI INTERI, non un sommario: deve bastare a lavorare senza rileggere. Includi path, nomi di file, nomi di funzione, valori numerici e cosa hai scelto e perche'.",
@@ -3532,17 +3538,34 @@ export default function (pi: ExtensionAPI) {
       if (params.node) {
         const target = st.nodes.find((nd) => nd.id === params.node);
         if (!target) return refuse('unknown-node', String(params.node));
-        if (inPit.has(target.id)) return refuse('node-in-the-pit', target.id);
         if (!target.description) return refuse('not-a-topic', target.id);
-        if (ids.length === 0) return refuse('no-leaves', target.id);
+        // A topic INSIDE the pit is still a catalogue the agent keeps using, so it may keep
+        // receiving leaves: the historical archive gets used, and long sessions stay
+        // catalogued instead of piling everything into one buffer. THE TRADE-OFF, said out
+        // loud: the pit's synthesis was written BEFORE these leaves arrived, so the synthesis
+        // does not describe them — the topic's own description is the living copy, and both
+        // are readable with cwl_open.
+        const inThePit = inPit.has(target.id);
+        const rewrite = (params.description ?? '').trim();
+        // Immutable while the topic is OUTSIDE the pit: there the description IS the head, and
+        // rewriting it would move the prefix of the index. Inside the pit it no longer touches
+        // the context, so the exception is safe, and an updated description is what keeps a
+        // topic usable when relevant leaves join it later.
+        if (rewrite && !inThePit) return refuse('description-is-immutable', target.id);
+        if (rewrite) target.description = rewrite;
+        if (ids.length === 0 && !rewrite) return refuse('no-leaves', target.id);
         const moving = new Set(ids);
         for (const nd of st.nodes) if (nd !== target) nd.leaves = nd.leaves.filter((x) => !moving.has(x));
         target.leaves.push(...ids);
         saveState(key, st);
-        debugLog(cf, `GROUP ${target.id} "${target.name ?? ''}": absorbed ${ids.length} leaf/leaves, ${target.leaves.length} in the topic`);
+        debugLog(cf, `GROUP ${target.id} "${target.name ?? ''}": +${ids.length} leaf/leaves (now ${target.leaves.length})${inThePit ? ', the node is in the pit' : ''}${rewrite ? `, description rewritten (${rewrite.length} chars)` : ''}`);
         return {
-          content: [{ type: 'text', text: t('groupAdded')(target.name ?? target.id, target.id, target.leaves.length) }],
-          details: { ok: true, id: target.id, name: target.name, leaves: target.leaves.length, added: ids.length },
+          content: [{
+            type: 'text' as const,
+            text: t('groupAdded')(target.name ?? target.id, target.id, target.leaves.length)
+              + (rewrite ? t('groupDescriptionUpdated') : ''),
+          }],
+          details: { ok: true, id: target.id, name: target.name, leaves: target.leaves.length, added: ids.length, inPit: inThePit, descriptionUpdated: Boolean(rewrite) },
         };
       }
 

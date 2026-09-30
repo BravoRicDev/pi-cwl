@@ -265,3 +265,72 @@ test('the description replaces the labels of the topic in the head', async () =>
     home.restore();
   }
 });
+
+/** One more leaf, built after the rest: the frontier keeps producing material. */
+async function oneMoreLeaf(sandbox, hooks, ctx, tools, n) {
+  const before = stateOf(sandbox).spans.length;
+  await hook(hooks, ctx, conversation(1, n + 3));
+  const res = await tools.get('cwl_compress_range').execute(
+    't', { summary: `EXTRA-${n} ` + 'x'.repeat(300) }, undefined, undefined, ctx,
+  );
+  assert.equal(res.details.ok, true, `the extra leaf was not born: ${JSON.stringify(res.details)}`);
+  const spans = stateOf(sandbox).spans;
+  assert.equal(spans.length, before + 1, 'the extra leaf did not arrive');
+  const id = spans[spans.length - 1].id;
+  const r = await tools.get('cwl_micro').execute(
+    't', { id, text: `MICRO-EXTRA-${n} ` + 'y'.repeat(1300) }, undefined, undefined, ctx,
+  );
+  assert.equal(r.details.ok, true, `micro on the extra leaf: ${JSON.stringify(r.details)}`);
+  await hook(hooks, ctx, conversation(1, n + 10));
+  return id;
+}
+
+test('a topic inside the old node keeps receiving leaves, and only there is its description rewritten', async () => {
+  const { sandbox, home, tools, hooks, ctx } = await boot({
+    nodeCapacity: 2, mergeNodesAt: 2, mergeMinRatio: 0, mergeMinChars: 0,
+  });
+  try {
+    const st = await leavesWithMicros(sandbox, hooks, ctx, tools, 4);
+    const born = await group(tools, ctx, { leaves: [st.spans[2].id], name: 'frontier', description: 'FIRST-DESCRIPTION: born at the frontier.' });
+    assert.equal(born.details.ok, true, `the topic was not born: ${JSON.stringify(born.details)}`);
+    const merged = await tools.get('cwl_old').execute('t', { text: 'MERGE-SUMMARY: the legacy material.' }, undefined, undefined, ctx);
+    assert.equal(merged.details.ok, true, `the merge was refused: ${JSON.stringify(merged.details)}`);
+    assert.equal(merged.details.topicsConcatenated, 1, 'the immutable description was not glued to the pit synthesis');
+
+    // The topic is inside the pit now, and a leaf from the frontier may still join it.
+    const extra = await oneMoreLeaf(sandbox, hooks, ctx, tools, 40);
+    const added = await group(tools, ctx, {
+      node: born.details.id, leaves: [extra], description: 'SECOND-DESCRIPTION: the frontier work joined this topic.',
+    });
+    assert.equal(added.details.ok, true, `adding to a topic inside the pit was refused: ${JSON.stringify(added.details)}`);
+    assert.equal(added.details.inPit, true, 'the tool does not know the topic is in the pit');
+    assert.equal(added.details.descriptionUpdated, true, 'the description was not rewritten');
+
+    // And the context does NOT move: what stands for the topic in the head is the pit's
+    // synthesis, frozen when it was written. The living copy is on the topic's own page.
+    const messages = await hook(hooks, ctx, conversation(1, 60));
+    const joined = messages.map((m) => String(m.content ?? '')).join('\n');
+    assert.ok(joined.includes('FIRST-DESCRIPTION'), 'the pit synthesis lost what it was written with');
+    assert.ok(!joined.includes('SECOND-DESCRIPTION'), 'rewriting the description MOVED the context');
+    const page = await openPage(tools, ctx, born.details.id);
+    assert.ok(page.includes('SECOND-DESCRIPTION'), `the living copy is not on the topic page: ${page.slice(0, 240)}`);
+  } finally {
+    home.restore();
+  }
+});
+
+test('a description outside the old node cannot be rewritten', async () => {
+  const { sandbox, home, tools, hooks, ctx } = await boot();
+  try {
+    const st = await leavesWithMicros(sandbox, hooks, ctx, tools, 10);
+    const born = await group(tools, ctx, { leaves: st.spans.slice(0, 9).map((s) => s.id), name: 'login-otp', description: DESCRIPTION });
+    assert.equal(born.details.ok, true, `the topic was not born: ${JSON.stringify(born.details)}`);
+    const res = await group(tools, ctx, { node: born.details.id, description: 'A rewritten description.' });
+    assert.equal(res.details.ok, false, 'the description of a topic OUTSIDE the pit was rewritten');
+    assert.equal(res.details.why, 'description-is-immutable', `unexpected refusal: ${JSON.stringify(res.details)}`);
+    const page = await openPage(tools, ctx, born.details.id);
+    assert.ok(page.includes(DESCRIPTION), 'the refused rewrite still changed the description');
+  } finally {
+    home.restore();
+  }
+});
