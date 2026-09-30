@@ -114,5 +114,18 @@ test('la riga del pavimento ripartisce il contesto: i quattro numeri sommano al 
     // termini devono essere non nulli, altrimenti l'identita' e' vera per caso.
     assert.ok(protetto > 0, 'la finestra protetta risulta vuota con protectedTurns=1: il test non prova niente');
     assert.ok(dentro > 0, 'il contenuto dentro gli span risulta nullo: il test non prova niente');
+    // Lo spacchettamento per ruolo. Le tre parti devono sommare al totale della
+    // riga SOPRA (due righe, un numero: non si puo' raccontare), e nel fixture
+    // dentro lo span sopravvivono solo i turni `user` e il riassunto iniettato:
+    // NIENTE system/developer/custom. Se la classificazione sbaglia, o `utente`
+    // va a zero, o `altro` smette di essere zero.
+    const contenuto = [...log.matchAll(/SPANS content: (\d+)t inside the spans = (\d+)t of summaries \+ (\d+)t of user turns \+ (\d+)t of other roles/g)];
+    assert.ok(contenuto.length > 0, 'la riga dello spacchettamento non e\' stata scritta con uno span applicato: non si puo\' sapere cosa gli span tengono');
+    const [, dentro2, riassunti, utente, altro] = contenuto[contenuto.length - 1].map(Number);
+    assert.equal(dentro2, dentro, `lo spacchettamento deve riguardare lo stesso totale della riga CONTEXT: ${dentro2} != ${dentro}`);
+    assert.equal(riassunti + utente + altro, dentro, `le tre parti devono sommare al totale: ${riassunti} + ${utente} + ${altro} != ${dentro}`);
+    assert.ok(utente > 0, 'dentro lo span devono sopravvivere i turni utente: se il conto non li vede, la classificazione e\' rotta');
+    assert.ok(riassunti > 0, 'dentro lo span c\'e\' il riassunto iniettato: se il conto non lo vede, la classificazione e\' rotta');
+    assert.equal(altro, 0, `nel fixture non c'e' nessun messaggio system/developer/custom dentro lo span, ma ne risultano ${altro}t: la classificazione sta contando la cosa sbagliata`);
   } finally { home.restore(); sandbox.cleanup(); }
 });

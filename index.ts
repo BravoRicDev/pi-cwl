@@ -2472,17 +2472,45 @@ export default function (pi: ExtensionAPI) {
       let protectedTokens = 0;
       let spanTokens = 0;
       let outside = 0;
+      // What the spans are actually HOLDING, by kind. Inside a span only
+      // user/system/developer/custom survive (plus the injected summary), and a
+      // user turn is inviolable (Principle 3): so this breakdown decides whether
+      // the `covered` set is blocking anything that COULD be compressed at all,
+      // or whether the space inside the spans is unrecoverable by construction.
+      // The total alone cannot answer that: `48623t inside the spans` was
+      // MEASURED on a real session and says nothing about whose text it is.
+      let spanSummaries = 0;
+      let spanUser = 0;
+      let spanOther = 0;
       list.forEach((m, i) => {
         const t = estimateMessageTokens(m);
         if (i >= floor) protectedTokens += t;
-        else if (inSpans.has(i)) spanTokens += t;
-        else outside += t;
+        else if (inSpans.has(i)) {
+          spanTokens += t;
+          // SAFETY: read-only probe of an optional field; the union does not
+          // declare `role`, and `undefined` simply falls through to `other`.
+          const role = (m as unknown as RealMessage).role;
+          // SAFETY: same probe for `customType`, which only custom messages
+          // carry: reading it as unknown and comparing it to a string cannot
+          // throw, and anything else lands in `other`.
+          const customType = (m as unknown as { customType?: unknown }).customType;
+          if (customType === 'cwl-compressed') spanSummaries += t;
+          else if (role === 'user') spanUser += t;
+          else spanOther += t;
+        } else outside += t;
       });
       // `free` is a SUBSET of `outside` (below the floor and not covered by a
       // span), so it is subtracted from it: the four numbers must partition the
       // context EXACTLY, and the test checks that identity.
       const free = Math.min(st.rangeTokens, outside);
       debugLog(cf, `CONTEXT ${tokens}t still above trigger ${Math.round(trigger)}t: ${protectedTokens}t in the protected window (last ${cf.protectedTurns} user turns), ${spanTokens}t inside the spans (${countedFrom}), ${free}t freely compressible, ${outside - free}t elsewhere`);
+      // The three parts sum to `spanTokens` BY CONSTRUCTION, and the test checks
+      // that against the row above: two lines, one number, and a sum that cannot
+      // be talked around. Without this, "48.623t inside the spans" is a number
+      // that cannot decide anything.
+      if (spanTokens > 0) {
+        debugLog(cf, `SPANS content: ${spanTokens}t inside the spans = ${spanSummaries}t of summaries + ${spanUser}t of user turns + ${spanOther}t of other roles`);
+      }
     };
 
     /**
