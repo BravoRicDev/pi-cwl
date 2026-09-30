@@ -304,3 +304,31 @@ test('a leaf of a contained node survives losing its micro', async () => {
     home.restore(); sandbox.cleanup();
   }
 });
+
+test('rewriting a pit topic description does not leak the i18n source', async () => {
+  // Found by USING the tool, not by reading it: the reply concatenated `t('groupDescriptionUpdated')`
+  // instead of CALLING it, so the agent got the source of the arrow function — `() => ...` and the
+  // whole Italian sentence — where the sentence itself belonged. `groupDescriptionUpdated` is a
+  // FUNCTION (`() => string`), and every other i18n entry in a reply is called.
+  const { sandbox, home, tools, hooks, ctx } = await boot();
+  try {
+    const ids = await makeLeaves(sandbox, tools, hooks, ctx, 14);
+    const merged = await tools.get('cwl_old').execute('t', { text: 'SYNTHESIS of the first stories' }, undefined, undefined, ctx);
+    assert.equal(merged.details.ok, true, `the merge was refused: ${JSON.stringify(merged.details)}`);
+    const inPit = stateOf(sandbox).nodes.filter((nd) => (stateOf(sandbox).oldNode.nodes ?? []).includes(nd.id)).flatMap((nd) => nd.leaves);
+    const topic = await tools.get('cwl_group').execute(
+      't', { pit: true, leaves: inPit.slice(0, 3), name: 'catalogue', description: 'CATALOGUE holds three stories' }, undefined, undefined, ctx,
+    );
+    assert.equal(topic.details.ok, true, `the pit topic was refused: ${JSON.stringify(topic.details)}`);
+    const rewritten = await tools.get('cwl_group').execute(
+      't', { pit: true, node: topic.details.id, description: 'CATALOGUE now covers three stories' }, undefined, undefined, ctx,
+    );
+    assert.equal(rewritten.details.ok, true, `the rewrite was refused: ${JSON.stringify(rewritten.details)}`);
+    assert.equal(rewritten.details.descriptionUpdated, true, 'the rewrite was not recorded');
+    const text = String(rewritten.content[0].text);
+    assert.doesNotMatch(text, /=>/, `the reply leaked the source of the i18n entry: ${text.slice(0, 200)}`);
+    assert.match(text, /NOTHING in the index|NON cambia niente/, 'the sentence itself is missing from the reply');
+  } finally {
+    home.restore(); sandbox.cleanup();
+  }
+});

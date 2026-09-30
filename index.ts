@@ -3860,7 +3860,7 @@ export default function (pi: ExtensionAPI) {
                     absorbed.reduce((n, c) => n + c.leaves.length, 0), absorbed.length,
                   )
                 : '')
-              + (rewrite ? t('groupDescriptionUpdated') : ''),
+              + (rewrite ? t('groupDescriptionUpdated')() : ''),
           }],
           details: { ok: true, id: target.id, name: target.name, leaves: target.leaves.length, added: ids.length, absorbed: absorbed.map((c) => c.id), inPit: inThePit, descriptionUpdated: Boolean(rewrite) },
         };
