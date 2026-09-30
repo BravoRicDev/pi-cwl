@@ -153,6 +153,11 @@ type CwlMessages = {
   oldTooSmall: (leaves: number, microChars: number, needChars: number) => string;
   /** The index shape in one line: the TUI widget and `cwl_status` show the same one. */
   indexLine: (pitNodes: number, pitLeaves: number, youngNodes: number, youngLeaves: number, loose: number, waiting: number, headTokens: string, evictions: number, savedTokens: string) => string;
+  /** Grouping leaves into a topic node, and the four reasons to refuse it. */
+  groupRefused: (why: string, detail: string) => string;
+  groupTooSmall: (leaves: number, microChars: number, needChars: number) => string;
+  groupCreated: (name: string, id: string, leaves: number, microChars: number) => string;
+  groupAdded: (name: string, id: string, leaves: number) => string;
   statusUnlocatable: (n: number) => string;
   /** Strings of the cwl_recall tool. */
   recallNotLoaded: string;
@@ -209,6 +214,7 @@ type CwlMessages = {
     compressRangeDesc: string; compressRangeSummary: string; compressMicro: string;
     compressCovered: (start: string, end: string) => string;
     microOver: (where: string, chars: number, ceiling: number) => string;
+    groupDesc: string; groupLeaves: string; groupNode: string; groupName: string; groupText: string;
   };
   /** Parameter descriptions: read by the LLM on every invocation. */
   params: {
@@ -266,6 +272,14 @@ const I18N: Record<Lang, CwlMessages> = {
       `\n\nNothing was recorded: the ${leaves} leaf/leaves that would leave the context hold ${microChars} characters, and a merge must free at least ${needChars}. A merge COSTS a synthesis: the pit's summary is rewritten, so what leaves has to be worth more than what replaces it. Compress more first, or merge when the nodes are full.`,
     indexLine: (pitNodes, pitLeaves, youngNodes, youngLeaves, loose, waiting, headTokens, evictions, savedTokens) =>
       `pit ${pitNodes}n/${pitLeaves}l │ young ${youngNodes}n/${youngLeaves}l │ loose ${loose} │ waiting micro ${waiting} │ head ~${headTokens}t │ ${evictions} evict │ ${savedTokens} saved`,
+    groupRefused: (why, detail) =>
+      `\n\nGrouping refused (${why}${detail ? `: ${detail}` : ''}). Nothing was recorded. Only the leaves of the BUFFER — the last node, the one attached to the leaves still open — can be grouped or moved: older material stays where it is. A leaf already inside the old node cannot come back (the pit's synthesis stands for it), and a leaf without a micro would not appear in any head: write the micro first.`,
+    groupTooSmall: (leaves, microChars, needChars) =>
+      `\n\nNo topic was born: the ${leaves} leaf/leaves hold ${microChars} characters, and a topic must free at least ${needChars}. A topic is born COLLAPSED — its description replaces the labels of those leaves from this moment on — so it has to be worth more than the description that replaces them (~3,600 characters times the ratio, and never less than the absolute floor). Group more leaves, or leave them in the buffer until the topic is big enough.`,
+    groupCreated: (name, id, leaves, microChars) =>
+      `Topic "${name}" born as ${id}: ${leaves} leaf/leaves (${microChars} characters of labels) now stand behind your description, and their bodies stay readable with cwl_open. More leaves can be added to it at any time, and it costs nothing: the description does not change.`,
+    groupAdded: (name, id, leaves) =>
+      `Leaf/leaves added to the topic "${name}" (${id}), which now holds ${leaves}. The description did not change: it is written once, to cover the future use of the topic.`,
     statusUnlocatable: (n) => `Episodes whose anchors left the context: ${n} (their content is not verifiable)`,
     recallNotLoaded: 'The recall index is not loaded; /reload the extension.',
     recallNoTranscript: 'Transcript not found for this session.',
@@ -343,6 +357,11 @@ const I18N: Record<Lang, CwlMessages> = {
       microText: 'The micro-summary that REPLACES the body in the context. The body is NOT touched: cwl_open still returns all of it. Write the pieces that matter; ~1.200 characters (≈300 tokens) is the size this design is built for — and the ceiling is measured: going over it is said in the result.',
       oldDesc: 'Writes the RIASSUNTONE and merges the oldest young nodes into the old node: their micros leave the context and the synthesis stands for all of them. The nodes and their leaves stay readable — cwl_open pages through them.',
       oldText: 'The synthesis (merge summary) that replaces the micros of the merged nodes in the context. Write WHOLE PIECES: it is what the agent will see instead of them. If the pit already holds a synthesis, cwl_open shows it: CARRY IT FORWARD, concatenated — a merge REPLACES the pit synthesis, it does not add to it.',
+      groupDesc: 'Groups leaves into a TOPIC node, which is born COLLAPSED: the name and the description you write now stand for its leaves in the index from this moment on, so the description must already cover the FUTURE use of the topic. Only the leaves of the buffer (the last node, attached to the leaves still open) can be grouped or moved. When the topic already exists, pass `node` and the description is NOT rewritten — that is what makes adding leaves later free.',
+      groupLeaves: 'Ids of the leaves to group or move. Only leaves of the buffer (or loose ones) can be moved, and each must already carry a micro.',
+      groupNode: 'Id of an existing TOPIC node to add the leaves to. Omit it to create a new topic, which then requires `name` and `description`.',
+      groupName: 'Short name of the new topic, written ONCE: it is part of the index prefix, so it never changes. e.g. "login-otp".',
+      groupText: 'Description of the new topic, written ONCE: it must already cover the future use of the topic, because it is what replaces the labels of its leaves in the index and it is never rewritten. Mandatory when creating.',
       recallEpisodeFull: 'false (default) returns a truncated preview; true returns the whole episode.',
       compressRangeDesc: 'Compresses the OLDEST usable range of the conversation into your summary. YOU DO NOT pick the range and you do not need any hash: the extension already computed the address and holds it. Call it when an eviction marker or the budget demand tells you to compact, and write a summary good enough to keep working without re-reading the originals. Nothing inside the protected window is touched.',
       compressRangeSummary: 'The summary that REPLACES the compressed range. Write WHOLE PIECES, not a digest: it must be enough to keep working without re-reading them. Include paths, file names, function names, numeric values, and what you decided and why.',
@@ -410,6 +429,14 @@ const I18N: Record<Lang, CwlMessages> = {
       `\n\nNon e\' stato registrato niente: le ${leaves} foglia/e che uscirebbero dal contesto tengono ${microChars} caratteri, e un accorpamento deve liberarne almeno ${needChars}. Un accorpamento COSTA una sintesi: la sintesi del pozzo viene riscritta, quindi cio\' che esce deve valere piu\' di cio\' che lo sostituisce. Comprimi altro prima, o accorpa quando i nodi sono pieni.`,
     indexLine: (pitNodes, pitLeaves, youngNodes, youngLeaves, loose, waiting, headTokens, evictions, savedTokens) =>
       `pozzo ${pitNodes}n/${pitLeaves}f │ giovani ${youngNodes}n/${youngLeaves}f │ sciolte ${loose} │ aspettano micro ${waiting} │ testa ~${headTokens}t │ ${evictions} eviction │ ${savedTokens} risparmiati`,
+    groupRefused: (why, detail) =>
+      `\n\nRaggruppamento rifiutato (${why}${detail ? `: ${detail}` : ''}). Non e' stato registrato niente. Si possono raggruppare o spostare SOLO le foglie del BUFFER — l'ultimo nodo, quello attaccato alle foglie ancora aperte: il materiale piu' vecchio resta dove sta. Una foglia gia' dentro il nodo vecchio non puo' tornare indietro (la sintesi del pozzo sta per lei), e una foglia senza micro non comparirebbe in nessuna testa: scrivi prima il micro.`,
+    groupTooSmall: (leaves, microChars, needChars) =>
+      `\n\nNessun topic e' nato: le ${leaves} foglia/e tengono ${microChars} caratteri, e un topic deve liberarne almeno ${needChars}. Un topic nasce GIA' COLLASSATO — la sua descrizione sostituisce le etichette di quelle foglie da questo momento — quindi deve valere piu' della descrizione che le sostituisce (~3.600 caratteri per il rapporto, e mai meno del minimo assoluto). Raggruppa piu' foglie, oppure lasciale nel buffer finche' il topic non e' abbastanza grande.`,
+    groupCreated: (name, id, leaves, microChars) =>
+      `Topic "${name}" nato come ${id}: ${leaves} foglia/e (${microChars} caratteri di etichette) ora stanno dietro la tua descrizione, e i loro corpi restano leggibili con cwl_open. Si possono aggiungere altre foglie in qualsiasi momento, e non costa niente: la descrizione non cambia.`,
+    groupAdded: (name, id, leaves) =>
+      `Foglia/e aggiunte al topic "${name}" (${id}), che ora ne tiene ${leaves}. La descrizione non e' cambiata: si scrive una volta sola, per coprire l'uso futuro del topic.`,
     statusUnlocatable: (n) => `Episodi le cui ancore sono uscite dal contesto: ${n} (contenuto non verificabile)`,
     recallNotLoaded: "L'indice di recall non e' caricato; fai /reload dell'estensione.",
     recallNoTranscript: 'Transcript non trovato per questa sessione.',
@@ -483,6 +510,11 @@ const I18N: Record<Lang, CwlMessages> = {
       microText: "Il micro-riassunto che SOSTITUISCE il corpo nel contesto. Il corpo NON viene toccato: cwl_open lo restituisce ancora tutto. Scrivi i pezzi che contano; ~1.200 caratteri (≈300 token) e' la misura per cui questo design e' costruito — e il tetto e' misurato: sfondarlo viene detto nel risultato.",
       oldDesc: 'Scrive il RIASSUNTONE e accorpa i nodi giovani piu\' vecchi nel nodo vecchio: i loro micro escono dal contesto e la sintesi sta per tutti. I nodi e le loro foglie restano leggibili — cwl_open li pagina.',
       oldText: 'La sintesi (riassuntone) che sostituisce i micro dei nodi accorpati nel contesto. Scrivi PEZZI INTERI: e\' quello che l\'agente vedra\' al posto loro. Se il pozzo ha gia\' una sintesi, cwl_open la mostra: PORTALA AVANTI, concatenata — un accorpamento la SOSTITUISCE, non ci si aggiunge.',
+      groupDesc: 'Raggruppa le foglie in un nodo TOPIC, che nasce GIA\' COLLASSATO: il nome e la descrizione che scrivi adesso stanno per le sue foglie nell\'indice da questo momento, quindi la descrizione deve coprire GIA\' l\'uso futuro del topic. Si possono raggruppare o spostare solo le foglie del buffer (l\'ultimo nodo, attaccato alle foglie ancora aperte). Quando il topic esiste gia\', passa `node` e la descrizione NON viene riscritta: e\' questo che rende gratis l\'aggiunta di foglie.',
+      groupLeaves: 'Id delle foglie da raggruppare o spostare. Si spostano solo foglie del buffer (o sciolte), e ognuna deve gia\' avere un micro.',
+      groupNode: 'Id di un nodo TOPIC esistente a cui aggiungere le foglie. Omesso, crea un topic nuovo, che allora richiede `name` e `description`.',
+      groupName: 'Nome breve del topic nuovo, scritto UNA VOLTA: fa parte del prefisso dell\'indice, quindi non cambia mai. Es. "login-otp".',
+      groupText: 'Descrizione del topic nuovo, scritta UNA VOLTA: deve coprire gia\' l\'uso futuro del topic, perche\' e\' quello che sostituisce le etichette delle sue foglie nell\'indice e non viene mai riscritta. Obbligatoria alla creazione.',
       recallEpisodeFull: 'false (default) restituisce un estratto troncato; true restituisce l\'episodio intero.',
       compressRangeDesc: "Comprime nel tuo riassunto l'intervallo PIU' VECCHIO utilizzabile della conversazione. NON scegli tu l'intervallo e non ti serve nessun hash: l'estensione ha gia' calcolato e tiene l'indirizzo. Chiamalo quando un marker di eviction o la richiesta di budget ti dicono di compattare, e scrivi un riassunto che basti a lavorare senza rileggere gli originali. Nulla dentro la finestra protetta viene toccato.",
       compressRangeSummary: "Il riassunto che SOSTITUISCE l'intervallo compresso. Scrivi PEZZI INTERI, non un sommario: deve bastare a lavorare senza rileggere. Includi path, nomi di file, nomi di funzione, valori numerici e cosa hai scelto e perche'.",
@@ -1857,6 +1889,16 @@ interface SpanNode {
   id: string;
   /** Leaf ids, chronological. A leaf belongs to AT MOST ONE node. */
   leaves: string[];
+  /**
+   * A TOPIC node: the name and the description the agent wrote AT BIRTH, and they never
+   * change. The description stands for the leaves in the head from the moment the node is
+   * born, and it is written to cover the FUTURE use of the topic — which is exactly what
+   * makes adding leaves later free: their micros leave the context, the description stays
+   * where it is, and no synthesis is written a second time. Rewriting it would move the
+   * prefix of the index, so it is IMMUTABLE by construction.
+   */
+  name?: string;
+  description?: string;
   at: number;
 }
 
@@ -1881,7 +1923,13 @@ function refreshNodes(
   // micro was REMOVED: un-absorbing puts its body back in the context, so it must
   // come out of the node it no longer belongs to. One condition covers both.
   for (const nd of st.nodes) nd.leaves = nd.leaves.filter((id) => Boolean(byId.get(id)?.micro));
-  st.nodes = st.nodes.filter((nd) => nd.leaves.length > 0);
+  // A node that lost its leaves dies — EXCEPT the LAST one, the buffer attached to the
+  // open leaves. It survives even at zero leaves: the agent can move every leaf of the
+  // buffer into a topic, and if the buffer died with them the first node would become a
+  // topic node, which must never hold that position (it cannot act as a buffer). The
+  // buffer keeps its id, so the head of the index does not move either.
+  const buffer = st.nodes[st.nodes.length - 1];
+  st.nodes = st.nodes.filter((nd) => nd.leaves.length > 0 || nd === buffer);
 
   // The nodes the pit absorbed are SETTLED: they keep their leaves and nothing new
   // enters them. That is exactly what lets their micros leave the context — the
@@ -3104,7 +3152,13 @@ export default function (pi: ExtensionAPI) {
       // opens it. Same rule as a leaf: the size is declared before it is handed over.
       const nd = st.nodes.find((n) => n.id === wanted);
       if (nd) {
-        const lines = nd.leaves
+        // A TOPIC node carries what the agent wrote at its BIRTH: the name and the
+        // description that stand for these leaves in the index. Both are immutable (a
+        // rewritten description would move the prefix of the index), so this page is the
+        // only place to read them back — and the only proof that the leaves below are
+        // held by a topic rather than by an ordinary node.
+        const head = nd.description ? `TOPIC "${nd.name ?? nd.id}": ${nd.description}\n` : '';
+        const lines = head + nd.leaves
           .map((leafId) => {
             const leaf = st.spans.find((s) => idOfSpan(s) === leafId);
             return leaf ? `- ${leafId}: ${leaf.micro ?? '(no micro yet)'}` : `- ${leafId}: (leaf gone)`;
@@ -3310,6 +3364,112 @@ export default function (pi: ExtensionAPI) {
       return {
         content: [{ type: 'text', text: t('oldNodeSet')(pit.id, absorbed.length, ids.length, microChars, tokens) }],
         details: { ok: true, id: pit.id, nodes: absorbed.length, leaves: ids.length, microChars, tokens },
+      };
+    },
+  });
+
+  /**
+   * `cwl_group` — how the LLM classifies leaves into a TOPIC node.
+   *
+   * A topic node is born COLLAPSED: `name` and `description` are written at birth and
+   * never change, and the description stands for its leaves in the head from that moment
+   * on. The description has to cover the FUTURE use of the topic — that is exactly what
+   * makes adding leaves later free: their micros leave the head, the description stays
+   * where it is, and no synthesis is written a second time. Rewriting it would move the
+   * prefix of the index, so it is immutable by construction.
+   *
+   * The rules, all of them REFUSALS rather than silent fixes:
+   *  - only the leaves of the BUFFER can be grouped or moved: it is the last node, the one
+   *    attached to the leaves that are still open. Older material stays where it is;
+   *  - a leaf already inside the old node cannot be grouped: the pit's synthesis stands
+   *    for it, and pulling it back would describe the same content twice;
+   *  - a leaf without a micro cannot be grouped: it would not appear in any head;
+   *  - a topic can never be the FIRST node, so it is inserted BEHIND the buffer;
+   *  - the size guard is the one a merge passes too: `mergeMinRatio` x the synthesis
+   *    estimate, and never less than `mergeMinChars`.
+   *
+   * The micros are NOT deleted. They are what the state knows about the leaves; the head
+   * simply stops showing them, because the description of the topic stands in their place.
+   */
+  pi.registerTool({
+    name: 'cwl_group',
+    label: 'CWL Group',
+    description: t('tools').groupDesc,
+    parameters: Type.Object({
+      leaves: Type.Optional(Type.Array(Type.String(), { description: t('tools').groupLeaves })),
+      node: Type.Optional(Type.String({ description: t('tools').groupNode })),
+      name: Type.Optional(Type.String({ description: t('tools').groupName })),
+      description: Type.Optional(Type.String({ description: t('tools').groupText })),
+    }),
+    async execute(_toolCallId, params, _signal, _onUpdate, ctx) {
+      const key = sessionKey(ctx);
+      const st = getState(key);
+      const cf = getConfig(key);
+      refreshNodes(st, cf);
+
+      const refuse = (why: string, detail: string) => ({
+        content: [{ type: 'text' as const, text: t('groupRefused')(why, detail) }],
+        details: { ok: false, error: 'group-refused', why, detail },
+      });
+
+      const byId = new Map(st.spans.map((s) => [idOfSpan(s), s]));
+      const nodeOf = (id: string): SpanNode | undefined => st.nodes.find((nd) => nd.leaves.includes(id));
+      const inPit = new Set(st.oldNode?.nodes ?? []);
+      const buffer = st.nodes[st.nodes.length - 1];
+      const ids = (Array.isArray(params.leaves) ? params.leaves : []).filter((s) => typeof s === 'string');
+
+      for (const id of ids) {
+        const leaf = byId.get(id);
+        if (!leaf) return refuse('unknown-leaf', id);
+        if (!leaf.micro) return refuse('leaf-without-micro', id);
+        const owner = nodeOf(id);
+        if (owner && inPit.has(owner.id)) return refuse('leaf-in-the-pit', `${id} (${owner.id})`);
+        if (owner && owner !== buffer) return refuse('leaf-not-in-the-buffer', `${id} (${owner.id})`);
+      }
+
+      if (params.node) {
+        const target = st.nodes.find((nd) => nd.id === params.node);
+        if (!target) return refuse('unknown-node', String(params.node));
+        if (inPit.has(target.id)) return refuse('node-in-the-pit', target.id);
+        if (!target.description) return refuse('not-a-topic', target.id);
+        if (ids.length === 0) return refuse('no-leaves', target.id);
+        const moving = new Set(ids);
+        for (const nd of st.nodes) if (nd !== target) nd.leaves = nd.leaves.filter((x) => !moving.has(x));
+        target.leaves.push(...ids);
+        saveState(key, st);
+        debugLog(cf, `GROUP ${target.id} "${target.name ?? ''}": absorbed ${ids.length} leaf/leaves, ${target.leaves.length} in the topic`);
+        return {
+          content: [{ type: 'text', text: t('groupAdded')(target.name ?? target.id, target.id, target.leaves.length) }],
+          details: { ok: true, id: target.id, name: target.name, leaves: target.leaves.length, added: ids.length },
+        };
+      }
+
+      const name = (params.name ?? '').trim();
+      const description = (params.description ?? '').trim();
+      if (!name || !description) return refuse('name-and-description-required', '');
+      if (ids.length === 0) return refuse('no-leaves', '');
+      if (!buffer) return refuse('no-buffer', '');
+      const microChars = ids.reduce((n, id) => n + (byId.get(id)?.micro?.length ?? 0), 0);
+      const needChars = Math.max(Math.round(cf.mergeMinRatio * MERGE_SYNTHESIS_CHARS), cf.mergeMinChars);
+      if (microChars < needChars) {
+        debugLog(cf, `GROUP not-born: ${ids.length} leaf/leaves hold ${microChars} chars, need ${needChars}`);
+        return {
+          content: [{ type: 'text', text: t('groupTooSmall')(ids.length, microChars, needChars) }],
+          details: { ok: false, error: 'too-small', leaves: ids.length, microChars, needChars },
+        };
+      }
+      const base = hashText(ids.join('|'));
+      let id = `nd-${base.slice(0, 8)}`;
+      for (let n = 2; st.nodes.some((nd) => nd.id === id); n++) id = `nd-${base.slice(0, 8)}-${n}`;
+      const moving = new Set(ids);
+      for (const nd of st.nodes) nd.leaves = nd.leaves.filter((x) => !moving.has(x));
+      const node: SpanNode = { id, leaves: [...ids], name, description, at: Date.now() };
+      st.nodes.splice(Math.max(0, st.nodes.length - 1), 0, node);
+      saveState(key, st);
+      debugLog(cf, `GROUP ${id} "${name}": born with ${ids.length} leaf/leaves, ${microChars} chars of micros, description of ${description.length} chars`);
+      return {
+        content: [{ type: 'text', text: t('groupCreated')(name, id, ids.length, microChars) }],
+        details: { ok: true, id, name, leaves: ids.length, microChars, descriptionChars: description.length },
       };
     },
   });

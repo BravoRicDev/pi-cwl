@@ -1,0 +1,239 @@
+/**
+ * TOPIC NODES — the nested archive:
+ *
+ *   [OLD NODE (the pit)] [topic nodes and legacy nodes] [BUFFER (the last node)] [open leaves]
+ *
+ * A topic node is born COLLAPSED: `name` and `description` are written once, at birth, and
+ * the description stands for its leaves in the index from that moment on. The description
+ * must already cover the FUTURE use of the topic, and that is not a style rule: it is what
+ * makes adding leaves later free — their labels leave the head, the description stays, and
+ * no synthesis is written a second time. Rewriting it would move the prefix of the index.
+ *
+ * WHAT THE TESTS CAN SEE. The nodes are NOT persisted: `saveState` writes the graph, the
+ * spans, the graveyard and the pit, and `refreshNodes` rebuilds the nodes from the spans
+ * every turn. So the shape of the index is observed through the tools — `cwl_status` (the
+ * index line), `cwl_group` (its details) and `cwl_open` (the page of a node, which carries
+ * the name and the description of a topic) — never by reading the state file.
+ *
+ * THE FIVE WAYS THIS TEST MUST DIE:
+ *  1. the topic replaces the buffer instead of sitting BEHIND it -> the first node would be
+ *     a topic, which could not act as a buffer;
+ *  2. a leaf that is not in the buffer is accepted -> material older than the frontier would
+ *     be rearranged under the agent's hands;
+ *  3. a leaf already inside the old node is accepted -> the pit's synthesis stands for it,
+ *     and the same content would be described twice;
+ *  4. a topic below the size guard is born -> the description costs more than it frees;
+ *  5. the buffer dies when its last leaf moves into a topic -> the first node would become
+ *     a topic node, which the design forbids.
+ */
+import assert from 'node:assert/strict';
+import test from 'node:test';
+import * as fs from 'node:fs';
+import * as path from 'node:path';
+import { makeSandbox, bootExtension, withHome, sessionCtx } from './_helpers.mjs';
+
+let seq = 0;
+
+const DESCRIPTION = 'Everything about the OTP login: the flow, the choices made, and the traps.';
+
+const config = (extra = {}) => ({
+  // A LOW budget on purpose: `cwl_compress_range` only offers a range when the context is
+  // over the threshold, so a generous budget answers `nothing-to-compress` and the fixture
+  // never builds a leaf. The leaves are `custom` and the eviction protects them.
+  tokenBudget: 600,
+  thresholdRatio: 0.5,
+  protectedTurns: 0,
+  levels: { stripReasoning: false, stripBulkOutput: false, stripIntermediate: false, removeEpisode: false },
+  showWidget: false,
+  debug: true,
+  looseLeaves: 1,
+  nodeCapacity: 30,
+  mergeNodesAt: 3,
+  ...extra,
+});
+
+async function boot(extra) {
+  const sandbox = makeSandbox({ name: `topic-${seq++}`, config: config(extra) });
+  const home = withHome(sandbox.dir);
+  const { tools, hooks } = await bootExtension(sandbox);
+  const ctx = sessionCtx(path.join(sandbox.dir, 'session.jsonl'));
+  await hooks.get('session_start')({}, ctx);
+  return { sandbox, home, tools, hooks, ctx };
+}
+
+const hook = async (hooks, ctx, messages) => {
+  const res = await hooks.get('context')({ messages }, ctx);
+  return (res && res.messages) || messages;
+};
+
+const stateOf = (sandbox) => {
+  const dir = path.join(sandbox.dir, '.pi', 'cwl', 'state');
+  const file = fs.readdirSync(dir).find((f) => f.endsWith('.json'));
+  assert.ok(file, 'the session state was not created');
+  return JSON.parse(fs.readFileSync(path.join(dir, file), 'utf8'));
+};
+
+const conversation = (from, to) => {
+  const out = [];
+  for (let i = from; i <= to; i++) {
+    out.push({ role: 'user', content: `turn ${i} content ` + 'U'.repeat(200) });
+    out.push({ role: 'assistant', content: `reply ${i} content ` + 'A'.repeat(200) });
+  }
+  return out;
+};
+
+const text = (res) => res.content.map((c) => c.text).join('\n');
+
+const statusText = async (tools, ctx) =>
+  text(await tools.get('cwl_status').execute('t', {}, undefined, undefined, ctx));
+
+const openPage = async (tools, ctx, id) =>
+  text(await tools.get('cwl_open').execute('t', { id }, undefined, undefined, ctx));
+
+/** `young 2n/9l` from the index line: the nodes and the labels the head is made of. */
+const youngOf = (line) => {
+  const m = String(line).match(/young (\d+)n\/(\d+)l/);
+  return m ? { nodes: Number(m[1]), leaves: Number(m[2]) } : null;
+};
+
+const group = (tools, ctx, args) => tools.get('cwl_group').execute('t', args, undefined, undefined, ctx);
+
+/** Builds `n` leaves, gives each a micro of ~1,300 characters, and forms the nodes. */
+async function leavesWithMicros(sandbox, hooks, ctx, tools, n) {
+  for (let i = 1; i <= n; i++) {
+    await hook(hooks, ctx, conversation(1, i + 3));
+    const res = await tools.get('cwl_compress_range').execute(
+      't', { summary: `BLOCK-${i} ` + 'x'.repeat(300) }, undefined, undefined, ctx,
+    );
+    assert.equal(res.details.ok, true, `round ${i}: the leaf was not born: ${JSON.stringify(res.details)}`);
+  }
+  const leaves = stateOf(sandbox).spans;
+  assert.equal(leaves.length, n, `expected ${n} leaves, ${leaves.length} in the state`);
+  for (let i = 0; i < n; i++) {
+    const r = await tools.get('cwl_micro').execute(
+      't', { id: leaves[i].id, text: `MICRO-${i + 1} ` + 'y'.repeat(1300) }, undefined, undefined, ctx,
+    );
+    assert.equal(r.details.ok, true, `micro on leaf ${i + 1}: ${JSON.stringify(r.details)}`);
+  }
+  await hook(hooks, ctx, conversation(1, 40));
+  return stateOf(sandbox);
+}
+
+test('a topic is born collapsed, behind the buffer', async () => {
+  const { sandbox, home, tools, hooks, ctx } = await boot();
+  try {
+    const st = await leavesWithMicros(sandbox, hooks, ctx, tools, 10);
+    // looseLeaves 1: the tenth leaf stays loose, the other nine sit in the buffer.
+    const inBuffer = st.spans.slice(0, 9).map((s) => s.id);
+    const before = youngOf(await statusText(tools, ctx));
+    assert.ok(before && before.nodes === 1, `expected one node before the topic, got ${JSON.stringify(before)}`);
+
+    const res = await group(tools, ctx, { leaves: inBuffer, name: 'login-otp', description: DESCRIPTION });
+    assert.equal(res.details.ok, true, `the topic was not born: ${JSON.stringify(res.details)}`);
+    assert.equal(res.details.name, 'login-otp');
+    assert.equal(res.details.leaves, 9);
+
+    const after = youngOf(await statusText(tools, ctx));
+    assert.ok(after, 'the index line lost its shape');
+    assert.equal(after.nodes, 2, 'the topic replaced the buffer: the buffer must survive BEHIND it');
+    assert.equal(after.leaves, 9, `the head should hold the 9 labels of the topic, it holds ${after.leaves}`);
+
+    const page = await openPage(tools, ctx, res.details.id);
+    assert.ok(page.includes('login-otp'), `the topic page lost the name: ${page.slice(0, 200)}`);
+    assert.ok(page.includes(DESCRIPTION), `the topic page lost the description: ${page.slice(0, 200)}`);
+    assert.equal((page.match(/^- sp-/gm) || []).length, 9, 'the topic page does not list its nine leaves');
+  } finally {
+    home.restore();
+  }
+});
+
+test('a topic below the size guard is refused, and the numbers are said', async () => {
+  const { sandbox, home, tools, hooks, ctx } = await boot();
+  try {
+    const st = await leavesWithMicros(sandbox, hooks, ctx, tools, 6);
+    const inBuffer = st.spans.slice(0, 5).map((s) => s.id);
+    const res = await group(tools, ctx, { leaves: inBuffer, name: 'too-tiny', description: 'A topic that cannot pay for itself.' });
+    assert.equal(res.details.ok, false, 'a topic below the guard was born');
+    assert.equal(res.details.error, 'too-small');
+    const body = text(res);
+    assert.ok(body.includes('10800'), `the refusal does not say what it needed: ${body}`);
+    assert.ok(body.includes(String(res.details.microChars)), `the refusal does not say what it would free: ${body}`);
+
+    const after = youngOf(await statusText(tools, ctx));
+    assert.equal(after.nodes, 1, 'a refused birth left a node behind');
+    assert.equal(st.spans.length, 6, 'a refused birth touched the leaves');
+  } finally {
+    home.restore();
+  }
+});
+
+test('the description is written once: adding leaves does not change it', async () => {
+  const { sandbox, home, tools, hooks, ctx } = await boot();
+  try {
+    const st = await leavesWithMicros(sandbox, hooks, ctx, tools, 10);
+    const inBuffer = st.spans.slice(0, 9).map((s) => s.id);
+    const born = await group(tools, ctx, { leaves: inBuffer, name: 'login-otp', description: DESCRIPTION });
+    assert.equal(born.details.ok, true, `the topic was not born: ${JSON.stringify(born.details)}`);
+    const loose = st.spans[9].id;
+    const added = await group(tools, ctx, { node: born.details.id, leaves: [loose] });
+    assert.equal(added.details.ok, true, `adding a leaf was refused: ${JSON.stringify(added.details)}`);
+
+    const page = await openPage(tools, ctx, born.details.id);
+    assert.ok(page.includes(DESCRIPTION), `the description was rewritten: ${page.slice(0, 240)}`);
+    assert.equal((page.match(/^- sp-/gm) || []).length, 10, 'the added leaf is not in the topic');
+  } finally {
+    home.restore();
+  }
+});
+
+test('only the leaves of the buffer can be moved', async () => {
+  const { sandbox, home, tools, hooks, ctx } = await boot({ nodeCapacity: 2, mergeMinRatio: 0, mergeMinChars: 0 });
+  try {
+    const st = await leavesWithMicros(sandbox, hooks, ctx, tools, 4);
+    // nodeCapacity 2 and looseLeaves 1: nodes are [leaf0, leaf1] and the buffer [leaf2];
+    // leaf3 is loose. So leaf2 is the one legal to move, and leaf0 is not.
+    const born = await group(tools, ctx, { leaves: [st.spans[2].id], name: 'frontier', description: 'Born from the frontier.' });
+    assert.equal(born.details.ok, true, `the topic was not born: ${JSON.stringify(born.details)}`);
+    const res = await group(tools, ctx, { node: born.details.id, leaves: [st.spans[0].id] });
+    assert.equal(res.details.ok, false, 'a leaf older than the frontier was moved');
+    assert.equal(res.details.why, 'leaf-not-in-the-buffer', `unexpected refusal: ${JSON.stringify(res.details)}`);
+  } finally {
+    home.restore();
+  }
+});
+
+test('a leaf already inside the old node cannot be grouped', async () => {
+  const { sandbox, home, tools, hooks, ctx } = await boot({
+    nodeCapacity: 2, mergeNodesAt: 2, mergeMinRatio: 0, mergeMinChars: 0,
+  });
+  try {
+    const st = await leavesWithMicros(sandbox, hooks, ctx, tools, 4);
+    const merged = await tools.get('cwl_old').execute('t', { text: 'MERGE-SUMMARY: the oldest material.' }, undefined, undefined, ctx);
+    assert.equal(merged.details.ok, true, `the merge was refused: ${JSON.stringify(merged.details)}`);
+    assert.equal(merged.details.leaves, 2, `the merge took ${merged.details.leaves} leaves, expected the oldest node's 2`);
+    // The pit absorbed the oldest node, which is [leaf0, leaf1].
+    const res = await group(tools, ctx, { leaves: [st.spans[0].id], name: 'from-the-pit', description: 'This leaf left the frontier long ago.' });
+    assert.equal(res.details.ok, false, 'a leaf of the pit was grouped: the pit stands for it');
+    assert.equal(res.details.why, 'leaf-in-the-pit', `unexpected refusal: ${JSON.stringify(res.details)}`);
+  } finally {
+    home.restore();
+  }
+});
+
+test('the buffer survives when its last leaf moves into a topic', async () => {
+  const { sandbox, home, tools, hooks, ctx } = await boot({ mergeMinRatio: 0, mergeMinChars: 0 });
+  try {
+    const st = await leavesWithMicros(sandbox, hooks, ctx, tools, 3);
+    // The third leaf is loose; leaves 0 and 1 are the buffer, and both move into the topic.
+    const born = await group(tools, ctx, { leaves: [st.spans[0].id, st.spans[1].id], name: 'everything', description: 'All the frontier material, archived.' });
+    assert.equal(born.details.ok, true, `the topic was not born: ${JSON.stringify(born.details)}`);
+    // A turn later `refreshNodes` runs, and it prunes empty nodes: the buffer must survive,
+    // or the first node would become a topic node.
+    await hook(hooks, ctx, conversation(1, 40));
+    const after = youngOf(await statusText(tools, ctx));
+    assert.ok(after, 'the index line lost its shape');
+    assert.equal(after.nodes, 2, 'the buffer was pruned: the first node is now a topic node');
+  } finally {
+    home.restore();
+  }
+});
