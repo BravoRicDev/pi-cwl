@@ -203,6 +203,7 @@ type CwlMessages = {
     oldDesc: string;
     oldText: string;
     compressRangeDesc: string; compressRangeSummary: string; compressMicro: string;
+    compressCovered: (start: string, end: string) => string;
   };
   /** Parameter descriptions: read by the LLM on every invocation. */
   params: {
@@ -337,6 +338,8 @@ const I18N: Record<Lang, CwlMessages> = {
       compressRangeDesc: 'Compresses the OLDEST usable range of the conversation into your summary. YOU DO NOT pick the range and you do not need any hash: the extension already computed the address and holds it. Call it when an eviction marker or the budget demand tells you to compact, and write a summary good enough to keep working without re-reading the originals. Nothing inside the protected window is touched.',
       compressRangeSummary: 'The summary that REPLACES the compressed range. Write WHOLE PIECES, not a digest: it must be enough to keep working without re-reading them. Include paths, file names, function names, numeric values, and what you decided and why.',
       compressMicro: 'Your ~200-word LABEL for this leaf: what it contains, detailed enough that the index can show it instead of the body. Write it HERE, while you have the messages in front of you — the leaf is then ready for a node and nothing will have to ask you for it later. A compression without a label stays valid: the extension will ask for it when the leaf is due to join a node.',
+      compressCovered: (start: string, end: string) =>
+        `Refused: the region ${start}..${end} is already inside a leaf of the index. Compressing it again would describe the same messages a second time, and the two descriptions would drift apart. Open the existing leaf with cwl_open, pick a region that is not covered, or use cwl_compress_range and let the extension choose.`,
     },
     params: {
       delimiterDesc: 'Marks the boundaries of a CWL episode. Types: "expl" (exploration: searches, reads, orientation — the content is not needed after the inference) and "act" (action: writes, edits, executions — persistent effects, first candidate for eviction). When you open an "act", declare the explorations it depends on. When you close an "expl", give the description of what you learned: it is the only content that survives eviction.',
@@ -469,6 +472,8 @@ const I18N: Record<Lang, CwlMessages> = {
       compressRangeDesc: "Comprime nel tuo riassunto l'intervallo PIU' VECCHIO utilizzabile della conversazione. NON scegli tu l'intervallo e non ti serve nessun hash: l'estensione ha gia' calcolato e tiene l'indirizzo. Chiamalo quando un marker di eviction o la richiesta di budget ti dicono di compattare, e scrivi un riassunto che basti a lavorare senza rileggere gli originali. Nulla dentro la finestra protetta viene toccato.",
       compressRangeSummary: "Il riassunto che SOSTITUISCE l'intervallo compresso. Scrivi PEZZI INTERI, non un sommario: deve bastare a lavorare senza rileggere. Includi path, nomi di file, nomi di funzione, valori numerici e cosa hai scelto e perche'.",
       compressMicro: "La tua ETICHETTA di ~200 parole per questa foglia: cosa contiene, con dettaglio sufficiente perche' l'indice la possa mostrare al posto del corpo. Scrivila QUI, mentre hai i messaggi davanti — la foglia e' cosi' pronta per un nodo e nessuno dovra' chiedertela dopo. Una compressione senza etichetta resta valida: l'estensione te la chiedera' quando la foglia dovra' entrare in un nodo.",
+      compressCovered: (start: string, end: string) =>
+        `Rifiutato: la regione ${start}..${end} e' gia' dentro una foglia dell'indice. Comprimerla di nuovo descriverebbe due volte gli stessi messaggi, e le due descrizioni divergerebbero. Apri la foglia esistente con cwl_open, scegli una regione non coperta, oppure usa cwl_compress_range e lascia che l'intervallo lo scelga l'estensione.`,
     },
     params: {
       delimiterDesc: 'Segna i confini di un episodio CWL. Tipi: "expl" (esplorazione: ricerca, letture, orientamento — il contenuto non serve dopo l\'inferenza) e "act" (azione: scritture, edit, esecuzioni — effetti persistenti, primo candidato all\'eviction). Quando apri un "act", dichiara le esplorazioni da cui dipende. Quando chiudi un "expl", fornisci la descrizione di cosa hai imparato: e\' l\'unico contenuto che sopravvive all\'eviction.',
@@ -2709,6 +2714,32 @@ export default function (pi: ExtensionAPI) {
           details: { ok: false, error: 'unknown-hash', startFound: from, endFound: to },
         };
       }
+      // A hand-picked range must respect the coverage the OFFERED path already enforces: an
+      // interval that intersects a live leaf would describe those messages a second time, and
+      // the two descriptions would drift apart. `cwl_compress_range` cannot do this; this tool
+      // could, and did: it validated the two hashes against `knownHashes` and pushed.
+      const cov = liveCoverage(ctx, st.spans);
+      const richiesta = `${params.startHash}..${params.endHash}`;
+      if (cov === null) {
+        debugLog(cf, `COMPRESS coverage: not verifiable on this context — ${richiesta} let through, NOT checked`);
+      } else {
+        const coperta = cov.covers(params.startHash, params.endHash);
+        if (coperta === 'unknown') {
+          debugLog(
+            cf,
+            `COMPRESS coverage: endpoints of ${richiesta} are not placeable on the ${cov.messages} message(s) read — let through, NOT checked`,
+          );
+        } else if (coperta) {
+          debugLog(
+            cf,
+            `COMPRESS refused ${richiesta}: inside a live leaf (${cov.spans} span(s) resolved, ${cov.messages} message(s) read)`,
+          );
+          return {
+            content: [{ type: 'text', text: t('tools').compressCovered(params.startHash, params.endHash) }],
+            details: { ok: false, error: 'covered-range', spansResolved: cov.spans, messagesRead: cov.messages },
+          };
+        }
+      }
       st.spans.push({
         startHash: params.startHash,
         endHash: params.endHash,
@@ -2727,6 +2758,59 @@ export default function (pi: ExtensionAPI) {
       };
     },
   });
+
+  /**
+   * The coverage the OFFERED path already enforces, brought to the hand-picked one.
+   *
+   * `compressibleRange` skips every index inside a resolved span, so `cwl_compress_range` can
+   * never describe the same messages twice. `cwl_compress` had no such check AND no way to get
+   * one: it never sees the message list, and its own comment says so. But Pi's session manager
+   * is what the hook's context is built from, and `buildContextEntries` belongs to the
+   * read-only API an extension receives, so the tool can rebuild the same ORDER of addresses.
+   * An interval comparison needs nothing more than the order: the absolute indices may differ
+   * from the hook's list, the relative position of two endpoints cannot.
+   *
+   * `null` means the list is not readable at all. The caller must then DECLARE that the range
+   * was not checked — quietly accepting it as if it had been is the silence this project keeps
+   * paying for.
+   */
+  function liveCoverage(
+    ctx: ExtensionContext | null | undefined,
+    spans: CompressedSpan[],
+  ): { messages: number; spans: number; covers: (a: string, b: string) => boolean | 'unknown' } | null {
+    try {
+      const sm = ctx?.sessionManager as
+        | { buildContextEntries?: () => Array<{ type?: string; message?: AgentMessage }> }
+        | undefined;
+      if (typeof sm?.buildContextEntries !== 'function') return null;
+      // Only `type: 'message'` entries carry a message: `compaction` and `branchSummary`
+      // entries carry a `summary` instead, and Pi skips them the same way when it builds the
+      // context. Dropping them shifts every index by the same amount, which is precisely what
+      // an interval comparison tolerates.
+      const messages = sm
+        .buildContextEntries()
+        .filter((e) => !!e && e.type === 'message' && !!e.message)
+        .map((e) => e.message as AgentMessage);
+      if (messages.length === 0) return null;
+      const { exact, legacy } = addressMaps(messages);
+      const ranges = locateSpans(messages, spans).resolved.map((r) => [r.from, r.to] as [number, number]);
+      const place = (h: string): number | undefined => exact.get(h) ?? legacy.get(h);
+      return {
+        messages: messages.length,
+        spans: ranges.length,
+        covers: (a, b) => {
+          const i = place(a);
+          const j = place(b);
+          if (i === undefined || j === undefined) return 'unknown';
+          const lo = Math.min(i, j);
+          const hi = Math.max(i, j);
+          return ranges.some(([from, to]) => lo <= to && from <= hi);
+        },
+      };
+    } catch {
+      return null;
+    }
+  }
 
   pi.registerTool({
     name: 'cwl_compress_range',

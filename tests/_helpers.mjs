@@ -181,15 +181,32 @@ export async function bootExtension(sandbox, { name = 'ext' } = {}) {
   return { tools, hooks, notes };
 }
 
-/** Contesto di sessione: identita' stabile fornita dal transcript. */
-export const sessionCtx = (sessionFile, cwd = '/tmp/progetto') => ({
-  cwd,
-  hasUI: false,
-  sessionManager: {
-    getSessionFile: () => sessionFile,
-    getSessionId: () => 'non-usato-quando-c-e-il-file',
-  },
-});
+/**
+ * Contesto di sessione: identita' stabile fornita dal transcript.
+ *
+ * `buildContextEntries` e' cio' da cui Pi costruisce la lista del contesto, ed e' l'unica via
+ * che un tool ha per rivedere i messaggi: `cwl_compress` la usa per controllare che un
+ * intervallo scelto A MANO non stia dentro una foglia gia' esistente. Il test la riempie con
+ * `ctx.__mostra(lista)`; la lista e' quella che l'hook riceve, perche' le iniezioni delle
+ * estensioni non sono voci di sessione.
+ */
+export const sessionCtx = (sessionFile, cwd = '/tmp/progetto') => {
+  const entries = [];
+  const ctx = {
+    cwd,
+    hasUI: false,
+    sessionManager: {
+      getSessionFile: () => sessionFile,
+      getSessionId: () => 'non-usato-quando-c-e-il-file',
+      buildContextEntries: () => entries,
+    },
+  };
+  ctx.__mostra = (messaggi) => {
+    entries.length = 0;
+    for (const m of messaggi) entries.push({ type: 'message', message: m });
+  };
+  return ctx;
+};
 
 /** Contesto senza alcun identificativo: e' il caso che collassava su "default". */
 export const anonymousCtx = (cwd = '/tmp/progetto') => ({ cwd, hasUI: false });
