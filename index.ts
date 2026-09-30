@@ -2303,7 +2303,14 @@ export default function (pi: ExtensionAPI) {
     // re-added only while the gate is armed, so it can never pile up turn after
     // turn. Measuring AFTER this also keeps the demand from inflating the very
     // number it is about.
-    const messages: AgentMessage[] = eventMessages.filter((m) => !isGateMessage(m));
+    // `let`, not `const`: the span branch below REASSIGNS it to the COMPRESSED
+    // list when the spans did not bring the context back under the trigger, so
+    // that the rest of the hook (trigger check, `reasoningFallback`,
+    // `runEvictionPass`) runs on the list the agent will really see. Every
+    // index-based decision below — the episode ranges and `safetyFloor` — is
+    // resolved against whatever list this variable holds, so the two must never
+    // disagree.
+    let messages: AgentMessage[] = eventMessages.filter((m) => !isGateMessage(m));
 
     // Diagnostic, and free: it only reads a field, it does not hash. It answers
     // ONE question without a debug log — do real messages carry a stable id? —
@@ -2415,6 +2422,12 @@ export default function (pi: ExtensionAPI) {
       st.deduced = 0;
     }
 
+    // Set when the span branch renewed the stored range on the ORIGINAL list:
+    // the tail must not recompute it on the compressed one, where the span
+    // endpoints no longer exist and `covered` would come out empty — the same
+    // region would be offered again.
+    let rangeStoredBySpans = false;
+
     // The spans compressed by the LLM are ALWAYS applied, not only above the
     // threshold: the agent decides when to compress, not the extension estimate.
     if (st.spans.length > 0) {
@@ -2455,7 +2468,28 @@ export default function (pi: ExtensionAPI) {
         // offered again.
         const nextRange = compressibleRange(messages, st.spans, cf.protectedTurns);
         storeRange(st, cf, nextRange, messages);
-        return finish(applied.kept);
+        rangeStoredBySpans = true;
+
+        // THE RETURN HERE USED TO BE UNCONDITIONAL, and that switched the rest of
+        // the hook off for good: `applied.applied > 0` is true on EVERY turn
+        // while one span resolves (a span must be re-applied every time, or the
+        // provider gets the uncompressed history back), so returning here made
+        // the trigger check, `reasoningFallback` and `runEvictionPass`
+        // unreachable for the rest of the session. MEASURED on a real session:
+        // `SPANS re-applied: 3, nothing new to count` + `RANGE none | 178 msgs,
+        // 133852t vs trigger 68000t` on every turn, with ZERO `EVICTION`, ZERO
+        // `CONTEXT`, ZERO `no safe candidate` — 133k tokens against a 68k trigger,
+        // one episode with evictable content, and the extension did nothing at
+        // all. Returning is right only when the spans ALREADY did the job.
+        const afterSpans = applied.kept.reduce((s: number, m: AgentMessage) => s + estimateMessageTokens(m), 0);
+        if (afterSpans <= trigger) return finish(applied.kept);
+        debugLog(cf, `SPANS applied (${afterSpans}t) still above trigger ${Math.round(trigger)}t: the episode pass and the fallback still run`);
+        // Fall through on the COMPRESSED list, not the original one: `applySpans`
+        // REPLACED the messages inside every span with its summary, so a range
+        // resolved on the original list would point the eviction at messages that
+        // no longer exist there.
+        messages = applied.kept;
+        currentTokens = afterSpans;
       }
     }
 
@@ -2475,8 +2509,10 @@ export default function (pi: ExtensionAPI) {
 
     // Addresses of the largest range the agent may ask to compress. Recomputed
     // here because this hook is the only place that sees the real message list.
-    const range = compressibleRange(messages, st.spans, cf.protectedTurns);
-    storeRange(st, cf, range, messages, currentTokens, trigger);
+    if (!rangeStoredBySpans) {
+      const range = compressibleRange(messages, st.spans, cf.protectedTurns);
+      storeRange(st, cf, range, messages, currentTokens, trigger);
+    }
 
     /**
      * Level A — the safety net: strip reasoning blocks, ahead of the safety
