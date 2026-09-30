@@ -1,35 +1,35 @@
 /**
- * Livello A: l'incontro con la compattazione nativa di Pi.
+ * Level A: the encounter with the native compaction of Pi.
  *
- * Perche' esiste. La compattazione nativa di Pi taglia un PREFISSO: tiene
- * `firstKeptEntryId` e tutto cio' che viene dopo, e antepone il proprio
- * riepilogo. Due conseguenze, entrambe verificate qui.
+ * Why it exists. The native compaction of Pi cuts a PREFIX: it keeps
+ * `firstKeptEntryId` and everything that comes after it, and prepends its own
+ * summary. Two consequences, both verified here.
  *
- * 1. Un episodio ancora aperto quando il taglio avviene perde la sua ancora di
- *    APERTURA e conserva quella di chiusura. La sua parte sopravvissuta e'
- *    tutto cio' che la lista tiene ancora fino a quella chiusura, quindi il
- *    range va DEDOTTO ([0, end]) invece che letto.
+ * 1. An episode still open when the cut happens loses its OPENING
+ *    anchor and keeps the closing one. Its surviving part is
+ *    everything the list still holds up to that closing, so the
+ *    range must be DEDUCED ([0, end]) instead of read.
  *
- * 2. Quel range parte dall'indice 0, dove vive il riepilogo della compattazione
- *    nativa: un messaggio con role 'compactionSummary'
- *    (pi/dist/core/messages.js, createCompactionSummaryMessage) che NON e' un
- *    turno utente e che nessuno proteggeva. Evacuarlo distrugge la sola copia
- *    della storia che la compattazione ha sostituito: il transcript la tiene, il
- *    provider no.
+ * 2. That range starts at index 0, where the summary of the native
+ *    compaction lives: a message with role 'compactionSummary'
+ *    (pi/dist/core/messages.js, createCompactionSummaryMessage) which is NOT a
+ *    user turn and which nobody protected. Evacuating it destroys the only copy
+ *    of the history that the compaction replaced: the transcript keeps it, the
+ *    provider does not.
  *
- * La direzione opposta (chiusura persa, apertura viva -> [start, len-1]) e'
- * RIFIUTATA, e c'e' un test che la tiene rifiutata: un taglio di prefisso non
- * puo' portare via la chiusura lasciando l'apertura, quindi quella disposizione
- * non ha spiegazione, e inventare un range per una disposizione inspiegata e'
- * esattamente il modo in cui questa estensione evacuerebbe cio' che non sa
- * contare.
+ * The opposite direction (closing lost, opening alive -> [start, len-1]) is
+ * REJECTED, and there is a test that keeps it rejected: a prefix cut cannot
+ * take away the closing while leaving the opening, so that arrangement
+ * has no explanation, and inventing a range for an unexplained arrangement is
+ * exactly the way this extension would evacuate what it does not know how to
+ * count.
  *
- * MISURATO prima di scrivere il ramo (189 transcript, 202 compattazioni native,
- * 7 episodi chiusi): 5 episodi stavano interamente PRIMA del taglio — le loro
- * DUE ancore erano sparite, e nessuna deduzione puo' salvarli — 2 interamente
- * dopo, 0 a cavallo. Il ramo quindi non ripara niente che sia stato osservato:
- * e' un'assicurazione per la disposizione che il taglio rende possibile. Ecco
- * perche' il test pretende anche che il LOG dica che e' successo.
+ * MEASURED before writing the branch (189 transcripts, 202 native compactions,
+ * 7 closed episodes): 5 episodes stood entirely BEFORE the cut — their
+ * TWO anchors had vanished, and no deduction can save them — 2 entirely
+ * after, 0 straddling. The branch therefore repairs nothing that was observed:
+ * it is an insurance for the arrangement that the cut makes possible. That is
+ * why the test also demands that the LOG says it happened.
  */
 import assert from 'node:assert/strict';
 import test from 'node:test';
@@ -40,9 +40,9 @@ import { makeSandbox, bootExtension, withHome, sessionCtx } from './_helpers.mjs
 let seq = 0;
 
 /**
- * Solo l'evacuazione piena: isola la deduzione dai tre livelli di strip. Con i
- * livelli di strip spenti l'escalation del piano non ha altra scelta che
- * arrivare a `removed`, che e' il livello dove il range conta davvero.
+ * Full evacuation only: it isolates the deduction from the three strip levels. With the
+ * strip levels off, the escalation of the plan has no other choice than
+ * reaching `removed`, which is the level where the range really matters.
  */
 const soloRimozione = (extra = {}) => ({
   tokenBudget: 1000,
@@ -75,13 +75,13 @@ const hook = async (hooks, ctx, messages) => {
 
 const testo = (m) => JSON.stringify(m ?? {});
 const contiene = (out, marker) => out.some((m) => testo(m).includes(marker));
-/** Riempitivo abbastanza grande da rendere necessario il livello `removed`. */
+/** Filler big enough to make the `removed` level necessary. */
 const assistant = (marker) => ({
   role: 'assistant',
   content: [{ type: 'text', text: `${marker} ` + 'X'.repeat(3000) }],
 });
 
-const RIEPILOGO = 'RIEPILOGO NATO DAL TAGLIO ' + 'S'.repeat(4000);
+const RIEPILOGO = 'SUMMARY BORN FROM THE CUT ' + 'S'.repeat(4000);
 const riepilogo = () => ({
   role: 'compactionSummary',
   summary: RIEPILOGO,
@@ -89,101 +89,101 @@ const riepilogo = () => ({
   timestamp: 1,
 });
 
-/** Episodio nato PRIMA del taglio: l'apertura non e' piu' nella lista. */
+/** Episode born BEFORE the cut: its opening is no longer in the list. */
 async function apriEChiudi(tools, ctx, nome, tipo = 'expl') {
   await tools.get('delimiter').execute('call-s', { action: 'start', name: nome, type: tipo }, undefined, undefined, ctx);
-  await tools.get('delimiter').execute('call-e', { action: 'end', name: nome, description: 'imparato' }, undefined, undefined, ctx);
+  await tools.get('delimiter').execute('call-e', { action: 'end', name: nome, description: 'learned' }, undefined, undefined, ctx);
 }
 
-test('un episodio che ha perso l\'apertura viene localizzato per deduzione e evacuato', async () => {
+test('an episode that lost its opening is located by deduction and evacuated', async () => {
   const { sandbox, home, tools, hooks, ctx } = await boot(soloRimozione());
   try {
-    await apriEChiudi(tools, ctx, 'attraversa');
+    await apriEChiudi(tools, ctx, 'crosses');
     const messages = [
       riepilogo(),
-      assistant('DENTRO-1'),
-      assistant('DENTRO-2'),
-      // L'ancora di chiusura, viva: e' l'unico estremo rimasto. Vive all'indice 3,
-      // quindi il range dedotto e' [0, 3].
-      { role: 'toolResult', toolCallId: 'call-e', toolName: 'delimiter', content: [{ type: 'text', text: 'chiuso' }] },
-      { role: 'user', content: 'domanda recente' },
+      assistant('INSIDE-1'),
+      assistant('INSIDE-2'),
+      // The closing anchor, alive: it is the only endpoint left. It lives at index 3,
+      // so the deduced range is [0, 3].
+      { role: 'toolResult', toolCallId: 'call-e', toolName: 'delimiter', content: [{ type: 'text', text: 'closed' }] },
+      { role: 'user', content: 'recent question' },
     ];
     const out = await hook(hooks, ctx, messages);
-    assert.ok(!contiene(out, 'DENTRO-1') && !contiene(out, 'DENTRO-2'),
-      'il range non e\' stato dedotto: l\'episodio e\' rimasto invisibile all\'evacuazione');
-    // Il log deve dirlo. Un range dedotto invece che letto e' una cosa che
-    // l'operatore deve poter vedere, altrimenti la deduzione e' un'assunzione.
-    assert.match(logDi(sandbox), /EPISODES deduced: 1/, 'il log non ha detto che un range e\' stato dedotto');
+    assert.ok(!contiene(out, 'INSIDE-1') && !contiene(out, 'INSIDE-2'),
+      'the range was not deduced: the episode stayed invisible to the evacuation');
+    // The log must say it. A range deduced instead of read is a thing that
+    // the operator must be able to see, otherwise the deduction is an assumption.
+    assert.match(logDi(sandbox), /EPISODES deduced: 1/, 'the log did not say that a range was deduced');
   } finally { home.restore(); sandbox.cleanup(); }
 });
 
-test('il riepilogo della compattazione nativa sopravvive a quel range', async () => {
+test('the summary of the native compaction survives that range', async () => {
   const { sandbox, home, tools, hooks, ctx } = await boot(soloRimozione());
   try {
-    await apriEChiudi(tools, ctx, 'attraversa');
+    await apriEChiudi(tools, ctx, 'crosses');
     const messages = [
       riepilogo(),
-      assistant('DENTRO-1'),
-      assistant('DENTRO-2'),
-      { role: 'toolResult', toolCallId: 'call-e', toolName: 'delimiter', content: [{ type: 'text', text: 'chiuso' }] },
-      { role: 'user', content: 'domanda recente' },
+      assistant('INSIDE-1'),
+      assistant('INSIDE-2'),
+      { role: 'toolResult', toolCallId: 'call-e', toolName: 'delimiter', content: [{ type: 'text', text: 'closed' }] },
+      { role: 'user', content: 'recent question' },
     ];
     const out = await hook(hooks, ctx, messages);
-    // Il range dedotto e' stato applicato (altrimenti questo test non proverebbe
-    // niente sul riepilogo: sarebbe vivo solo perche' nessuno l'ha toccato).
-    assert.ok(!contiene(out, 'DENTRO-1'), 'il range non e\' stato applicato: il test non prova niente');
+    // The deduced range was applied (otherwise this test would prove
+    // nothing about the summary: it would be alive only because nobody touched it).
+    assert.ok(!contiene(out, 'INSIDE-1'), 'the range was not applied: the test proves nothing');
     assert.ok(contiene(out, RIEPILOGO),
-      'il riepilogo della compattazione nativa e\' stato evacuato: era l\'unica copia della storia sostituita');
-    assert.ok(out.some((m) => m.role === 'user'), 'un turno utente e\' stato toccato');
-    assert.match(logDi(sandbox), /SUMMARY GUARD: 1/, 'la guardia non ha contato il riepilogo che ha salvato');
+      'the summary of the native compaction was evacuated: it was the only copy of the replaced history');
+    assert.ok(out.some((m) => m.role === 'user'), 'a user turn was touched');
+    assert.match(logDi(sandbox), /SUMMARY GUARD: 1/, 'the guard did not count the summary it saved');
   } finally { home.restore(); sandbox.cleanup(); }
 });
 
-test('la direzione opposta NON viene dedotta: nessun range inventato per un episodio senza chiusura', async () => {
+test('the opposite direction is NOT deduced: no range invented for an episode without closing', async () => {
   const { sandbox, home, tools, hooks, ctx } = await boot(soloRimozione());
   try {
-    await apriEChiudi(tools, ctx, 'senza-chiusura');
+    await apriEChiudi(tools, ctx, 'without-closing');
     const messages = [
-      { role: 'user', content: 'apertura' },
-      // L'apertura c'e', la chiusura no: un taglio di prefisso non puo' produrre
-      // questa disposizione, quindi non ha spiegazione e non si deduce.
-      { role: 'toolResult', toolCallId: 'call-s', toolName: 'delimiter', content: [{ type: 'text', text: 'aperto' }] },
-      assistant('INTATTO-1'),
-      assistant('INTATTO-2'),
-      { role: 'user', content: 'domanda recente' },
+      { role: 'user', content: 'opening' },
+      // The opening is there, the closing is not: a prefix cut cannot produce
+      // this arrangement, so it has no explanation and is not deduced.
+      { role: 'toolResult', toolCallId: 'call-s', toolName: 'delimiter', content: [{ type: 'text', text: 'open' }] },
+      assistant('INTACT-1'),
+      assistant('INTACT-2'),
+      { role: 'user', content: 'recent question' },
     ];
     const out = await hook(hooks, ctx, messages);
-    assert.ok(contiene(out, 'INTATTO-1') && contiene(out, 'INTATTO-2'),
-      'e\' stato inventato un range [start, len-1] per un episodio la cui chiusura non si spiega');
-    assert.ok(!/EPISODES deduced: [1-9]/.test(logDi(sandbox)), 'il log dichiara una deduzione che non deve esistere');
+    assert.ok(contiene(out, 'INTACT-1') && contiene(out, 'INTACT-2'),
+      'a range [start, len-1] was invented for an episode whose closing is unexplained');
+    assert.ok(!/EPISODES deduced: [1-9]/.test(logDi(sandbox)), 'the log declares a deduction that must not exist');
   } finally { home.restore(); sandbox.cleanup(); }
 });
 
-test('un episodio localizzato vince sulla deduzione dentro il proprio range', async () => {
+test('a located episode wins over the deduction inside its own range', async () => {
   const { sandbox, home, tools, hooks, ctx } = await boot(soloRimozione());
   try {
-    // 'attraversa' nasce per prima, prima del taglio: dedotta, [0, 5].
-    await apriEChiudi(tools, ctx, 'attraversa');
-    // 'dentro' nasce dopo il taglio: entrambe le sue ancore sono vive.
-    await tools.get('delimiter').execute('call-s2', { action: 'start', name: 'dentro', type: 'expl' }, undefined, undefined, ctx);
-    await tools.get('delimiter').execute('call-e2', { action: 'end', name: 'dentro', description: 'dentro' }, undefined, undefined, ctx);
+    // 'crosses' is born first, before the cut: deduced, [0, 5].
+    await apriEChiudi(tools, ctx, 'crosses');
+    // 'inside' is born after the cut: both of its anchors are alive.
+    await tools.get('delimiter').execute('call-s2', { action: 'start', name: 'inside', type: 'expl' }, undefined, undefined, ctx);
+    await tools.get('delimiter').execute('call-e2', { action: 'end', name: 'inside', description: 'inside' }, undefined, undefined, ctx);
 
     const messages = [
       riepilogo(),
-      assistant('ATTRAVERSA-1'),
-      { role: 'toolResult', toolCallId: 'call-s2', toolName: 'delimiter', content: [{ type: 'text', text: 'aperto' }] },
-      assistant('DENTRO-1'),
-      { role: 'toolResult', toolCallId: 'call-e2', toolName: 'delimiter', content: [{ type: 'text', text: 'chiuso' }] },
-      { role: 'toolResult', toolCallId: 'call-e', toolName: 'delimiter', content: [{ type: 'text', text: 'chiuso' }] },
-      { role: 'user', content: 'domanda recente' },
+      assistant('CROSSES-1'),
+      { role: 'toolResult', toolCallId: 'call-s2', toolName: 'delimiter', content: [{ type: 'text', text: 'open' }] },
+      assistant('INSIDE-1'),
+      { role: 'toolResult', toolCallId: 'call-e2', toolName: 'delimiter', content: [{ type: 'text', text: 'closed' }] },
+      { role: 'toolResult', toolCallId: 'call-e', toolName: 'delimiter', content: [{ type: 'text', text: 'closed' }] },
+      { role: 'user', content: 'recent question' },
     ];
     const out = await hook(hooks, ctx, messages);
-    assert.ok(!contiene(out, 'ATTRAVERSA-1'), 'l\'episodio dedotto non e\' stato evacuato');
-    // Questo e' il contratto: il range dedotto arriva fino all'indice 5 e copre
-    // gli indici 2..4 di 'dentro', ma 'dentro' e' localizzato e aperto DOPO il
-    // taglio, quindi scrive per ultimo e rivendica i suoi. Se un giorno il ciclo
-    // venisse riordinato in modo ingenuo, questa riga muore.
-    assert.ok(contiene(out, 'DENTRO-1'),
-      'il range dedotto ha mangiato il contenuto di un episodio localizzato');
+    assert.ok(!contiene(out, 'CROSSES-1'), 'the deduced episode was not evacuated');
+    // This is the contract: the deduced range reaches index 5 and covers
+    // indices 2..4 of 'inside', but 'inside' is located and opened AFTER the
+    // cut, so it writes last and claims its own. If one day the loop
+    // were reordered in a naive way, this line dies.
+    assert.ok(contiene(out, 'INSIDE-1'),
+      'the deduced range ate the content of a located episode');
   } finally { home.restore(); sandbox.cleanup(); }
 });

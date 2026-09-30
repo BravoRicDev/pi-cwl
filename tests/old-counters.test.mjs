@@ -1,27 +1,27 @@
 /**
- * I CONTATORI: la pagina del nodo vecchio mostra le foglie CONSULTATE, non le piu'
- * recenti.
+ * THE COUNTERS: the old-node page shows the leaves CONSULTED, not the most
+ * recent ones.
  *
- * LA REGOLA E' DELL'OPERATORE, e vale la pena riscriverla perche' e' controintuitiva:
- * *"le 30 assorbite piu' recentemente non mi interessano: 'consultate spesso', che
- * devono comunque rimanere visibili dentro il nodo vecchio. Le informazioni delle
- * foglie piu' recenti, se sono state usate, hanno comunque uno strascico di
- * ragionamento nelle 5 piu' giovani e nella parte intoccabile: non hanno bisogno di
- * stare anche li'. Sono le informazioni che SEMBRANO STANTIE che devono essere
- * visibili dentro il nodo vecchio senza andare a cercarle nel nodo giovane assorbito."*
+ * THE RULE IS THE OPERATOR'S, and it is worth restating because it is counterintuitive:
+ * *"the 30 most recently absorbed ones do not interest me: 'consulted often', which
+ * must anyway remain visible inside the old node. The information from the
+ * most recent leaves, if it was used, still leaves a trail of
+ * reasoning in the 5 youngest ones and in the untouchable part: it has no need to
+ * be there too. It is the information that LOOKS STALE that must be
+ * visible inside the old node without going to look for it in the absorbed young node."*
  *
- * PERCHE' IL CONTATORE E' IL SEGNALE GIUSTO, anche se sembra bucato. Registra solo le
- * aperture ESPLICITE: una foglia usata quando era fresca non lascia traccia, perche'
- * il suo corpo era gia' nel contesto e nessuno doveva aprirla. Sembra un buco ed e'
- * il comportamento giusto — una foglia utile da fresca non ha bisogno di aiuto. Il
- * contatore misura esattamente l'altro caso: le foglie RI-CONSULTATE DOPO essere
- * invecchiate. Il buco e il caso che non richiede aiuto coincidono.
+ * WHY THE COUNTER IS THE RIGHT SIGNAL, even if it looks leaky. It records only
+ * EXPLICIT opens: a leaf used while it was fresh leaves no trace, because
+ * its body was already in the context and nobody had to open it. It looks like a hole and it is
+ * the right behaviour — a leaf that is useful while fresh needs no help. The
+ * counter measures exactly the other case: leaves RE-CONSULTED AFTER they
+ * aged. The hole and the case that needs no help coincide.
  *
- * E I CONTATORI NON SONO UNA POLITICA: ordinano una pagina e basta. Non cancellano
- * niente, perche' "mai aperta" non vuol dire "inutile" (una foglia puo' essere stata
- * usata benissimo da fresca). Nel fixture la foglia piu' VECCHIA viene aperta due
- * volte e la piu' recente zero: senza i contatori l'ordine per data metterebbe prima
- * la piu' recente, ed e' esattamente la direzione in cui il test deve morire.
+ * AND THE COUNTERS ARE NOT A POLICY: they order a page and that is it. They delete
+ * nothing, because "never opened" does not mean "useless" (a leaf may have been
+ * used perfectly well while fresh). In the fixture the OLDEST leaf is opened twice
+ * and the most recent one zero times: without the counters the date order would put the
+ * most recent first, and that is exactly the direction in which the test must die.
  */
 import assert from 'node:assert/strict';
 import test from 'node:test';
@@ -44,7 +44,7 @@ const config = () => ({
 });
 
 async function boot() {
-  const sandbox = makeSandbox({ name: `contatori-${seq++}`, config: config() });
+  const sandbox = makeSandbox({ name: `counters-${seq++}`, config: config() });
   const home = withHome(sandbox.dir);
   const { tools, hooks } = await bootExtension(sandbox);
   const ctx = sessionCtx(path.join(sandbox.dir, 'sessione.jsonl'));
@@ -62,15 +62,15 @@ const logDi = (sandbox) => fs.readFileSync(path.join(sandbox.dir, '.pi', 'cwl', 
 const statoDi = (sandbox) => {
   const dir = path.join(sandbox.dir, '.pi', 'cwl', 'state');
   const file = fs.readdirSync(dir).find((f) => f.endsWith('.json'));
-  assert.ok(file, 'lo stato della sessione non e\' stato creato');
+  assert.ok(file, 'the session state was not created');
   return JSON.parse(fs.readFileSync(path.join(dir, file), 'utf8'));
 };
 
 const conversazione = (da, a) => {
   const out = [];
   for (let i = da; i <= a; i++) {
-    out.push({ role: 'user', content: `turno ${i} contenuto ` + 'U'.repeat(200) });
-    out.push({ role: 'assistant', content: `risposta ${i} contenuto ` + 'A'.repeat(200) });
+    out.push({ role: 'user', content: `prompt ${i} content. ` + 'U'.repeat(200) });
+    out.push({ role: 'assistant', content: `answers ${i} content is ` + 'A'.repeat(200) });
   }
   return out;
 };
@@ -78,59 +78,59 @@ const conversazione = (da, a) => {
 const testo = (res) => res.content.map((c) => c.text).join('\n');
 const apri = (tools, ctx, id) => tools.get('cwl_open').execute('t', { id }, undefined, undefined, ctx);
 
-test('la pagina del nodo vecchio ordina le foglie per consultazioni, non per data', async () => {
+test('the old-node page orders the leaves by consultations, not by date', async () => {
   const { sandbox, home, tools, hooks, ctx } = await boot();
   try {
     for (let i = 1; i <= 5; i++) {
       await hook(hooks, ctx, conversazione(1, i + 3));
       const res = await tools.get('cwl_compress_range').execute(
-        't', { summary: `CORPO-${i} ` + 'x'.repeat(300) }, undefined, undefined, ctx,
+        't', { summary: `BLOCK-${i} ` + 'x'.repeat(300) }, undefined, undefined, ctx,
       );
-      assert.equal(res.details.ok, true, `giro ${i}: la foglia non e' nata: ${JSON.stringify(res.details)}`);
+      assert.equal(res.details.ok, true, `round ${i}: the leaf was not born: ${JSON.stringify(res.details)}`);
     }
     const foglie = statoDi(sandbox).spans;
     for (let i = 0; i < 5; i++) {
       const r = await tools.get('cwl_micro').execute('t', { id: foglie[i].id, text: `MICRO-${i + 1}` }, undefined, undefined, ctx);
-      assert.equal(r.details.ok, true, `micro sulla foglia ${i + 1} fallito: ${JSON.stringify(r.details)}`);
+      assert.equal(r.details.ok, true, `micro on leaf ${i + 1} failed: ${JSON.stringify(r.details)}`);
     }
     await hook(hooks, ctx, conversazione(1, 12));
-    const acc = await tools.get('cwl_old').execute('t', { text: 'RIASSUNTONE-1' }, undefined, undefined, ctx);
-    assert.equal(acc.details.ok, true, `il pozzo non si e' formato: ${JSON.stringify(acc.details)}`);
+    const acc = await tools.get('cwl_old').execute('t', { text: 'SUMMARY-ALL-1' }, undefined, undefined, ctx);
+    assert.equal(acc.details.ok, true, `the well was not formed: ${JSON.stringify(acc.details)}`);
     const pozzo = acc.details.id;
 
-    // 1. Storia VUOTA: la pagina elenca comunque le foglie del pozzo (ordine per
-    //    data, il ripiego sensato) e dichiara che nessuna e' mai stata aperta.
+    // 1. EMPTY history: the page still lists the leaves of the well (date order,
+    //    the sensible fallback) and declares that none was ever opened.
     const fredda = await apri(tools, ctx, pozzo);
-    assert.equal(fredda.details.ok, true, `il pozzo non si apre: ${JSON.stringify(fredda.details)}`);
-    assert.equal(fredda.details.opened, 0, `a storia vuota nessuna foglia e' stata aperta, ne dichiara ${fredda.details.opened}`);
-    assert.equal(fredda.details.leaves, 2, `il pozzo tiene 2 foglie, ne dichiara ${fredda.details.leaves}`);
-    assert.match(testo(fredda), /opened 0x/, 'la pagina non dichiara quante volte ogni foglia e\' stata aperta');
+    assert.equal(fredda.details.ok, true, `the well does not open: ${JSON.stringify(fredda.details)}`);
+    assert.equal(fredda.details.opened, 0, `with empty history no leaf was opened, but it declares ${fredda.details.opened}`);
+    assert.equal(fredda.details.leaves, 2, `the well holds 2 leaves, but it declares ${fredda.details.leaves}`);
+    assert.match(testo(fredda), /opened 0x/, 'the page does not declare how many times each leaf was opened');
 
-    // 2. La foglia piu' VECCHIA viene aperta due volte.
+    // 2. The OLDEST leaf is opened twice.
     for (let k = 0; k < 2; k++) await apri(tools, ctx, foglie[0].id);
 
-    // Il contatore vive con la foglia nello stato: e' questo che lo fa sopravvivere
-    // al /reload, ed e' l'unica cosa che il test deve vedere per crederci.
+    // The counter lives with the leaf in the state: that is what makes it survive
+    // /reload, and it is the only thing the test must see to believe it.
     const dopoTurno = statoDi(sandbox).spans.find((s) => s.id === foglie[0].id);
-    assert.equal(dopoTurno.opens, 2, `la foglia aperta due volte ne conta ${dopoTurno.opens}: il contatore non e' nello stato, quindi non sopravvive a un riavvio`);
-    assert.ok(dopoTurno.lastOpen, 'manca l\'istante dell\'ultima apertura');
+    assert.equal(dopoTurno.opens, 2, `the leaf opened twice counts ${dopoTurno.opens}: the counter is not in the state, so it does not survive a restart`);
+    assert.ok(dopoTurno.lastOpen, 'the instant of the last open is missing');
 
-    // 3. Ora la pagina deve metterla PRIMA: e' la regola dell'operatore.
+    // 3. Now the page must put it FIRST: that is the operator's rule.
     const primaDellApertura = logDi(sandbox).length;
     const calda = await apri(tools, ctx, pozzo);
     const log = logDi(sandbox).slice(primaDellApertura);
     const righe = testo(calda).split('\n').filter((l) => l.startsWith('- sp-'));
-    assert.ok(righe.length >= 2, `la pagina non elenca le foglie: ${testo(calda).slice(0, 200)}`);
+    assert.ok(righe.length >= 2, `the page does not list the leaves: ${testo(calda).slice(0, 200)}`);
     assert.ok(
       righe[0].includes(foglie[0].id),
-      `la prima foglia elencata non e' quella piu' consultata: la pagina ordina per data, non per consultazioni. Prima riga: ${righe[0]}`,
+      `the first leaf listed is not the most consulted one: the page orders by date, not by consultations. First line: ${righe[0]}`,
     );
-    assert.ok(righe[0].includes('opened 2x'), `la riga della foglia piu' consultata non dichiara le 2 aperture: ${righe[0]}`);
-    assert.equal(calda.details.opened, 1, `le foglie mai aperte sono 1 (su 2), ne dichiara ${calda.details.opened}`);
+    assert.ok(righe[0].includes('opened 2x'), `the line of the most consulted leaf does not declare the 2 opens: ${righe[0]}`);
+    assert.equal(calda.details.opened, 1, `the never-opened leaves are 1 (out of 2), but it declares ${calda.details.opened}`);
     assert.match(
       log,
       /most opened 2x/,
-      `il log non misura l'uso del pozzo (quante volte la foglia piu' aperta e' stata aperta): ${log.trim().split('\n').slice(-2).join(' | ')}`,
+      `the log does not measure the use of the well (how many times the most opened leaf was opened): ${log.trim().split('\n').slice(-2).join(' | ')}`,
     );
   } finally {
     home.restore();

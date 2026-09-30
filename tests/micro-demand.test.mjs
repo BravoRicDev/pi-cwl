@@ -1,22 +1,22 @@
 /**
- * IL PRIMO PASSO DELL'INDICE DEVE CHIEDERE, NON SOLO REGISTRARE.
+ * THE INDEX'S FIRST STEP MUST ASK, NOT JUST RECORD.
  *
- * MISURATO DAL VIVO, subito dopo la ricarica che ha fatto girare l'indice:
+ * MEASURED LIVE, right after the reload that let the index run:
  *
  *     NODES: 0 node(s) [none], 40 leaf/leaves waiting for a micro — their body is still in
  *     the context
  *
- * a OGNI turno, con 45 span e 90.415t di riassunti ancora nel contesto. Cioe': il codice
- * girava, ma il meccanismo NON poteva partire. La catena e': le foglie senza micro non
- * entrano in un nodo -> zero nodi -> `piano.due` e' zero -> la richiesta del merge
- * (`indexDue`) non compare MAI. E del micro nessuno parlava: il conteggio finiva nel LOG, non
- * nel contesto. L'estensione lo sapeva, l'operatore poteva leggerlo, e l'unico che puo'
- * scrivere un micro — l'agente — non riceveva nessuna domanda.
+ * on EVERY turn, with 45 spans and 90.415t of summaries still in the context. That is: the code
+ * ran, but the mechanism could NOT start. The chain is: leaves without a micro do not
+ * enter a node -> zero nodes -> `piano.due` is zero -> the merge request
+ * (`indexDue`) NEVER appears. And nobody talked about the micro: the count ended up in the LOG, not
+ * in the context. The extension knew it, the operator could read it, and the only one who can
+ * write a micro — the agent — received no question.
  *
- * E' esattamente il difetto che `bd0734c` ha chiuso per `cwl_old` (il riassuntone), rimasto
- * aperto sul passo PRIMA. La richiesta deve dire due cose per essere azionabile: che si deve
- * chiamare `cwl_micro`, e SU QUALI foglie — senza gli id l'agente deve indovinare quale, o
- * andare a leggere il file di stato.
+ * It is exactly the defect that `bd0734c` closed for `cwl_old` (the big summary), left
+ * open on the step BEFORE. The request must say two things to be actionable: that
+ * `cwl_micro` must be called, and ON WHICH leaves — without the ids the agent has to guess which one, or
+ * go read the state file.
  */
 import assert from 'node:assert/strict';
 import test from 'node:test';
@@ -52,48 +52,48 @@ const hook = async (hooks, ctx, messages) => {
 const statoDi = (sandbox) => {
   const dir = path.join(sandbox.dir, '.pi', 'cwl', 'state');
   const file = fs.readdirSync(dir).find((f) => f.endsWith('.json'));
-  assert.ok(file, 'lo stato della sessione non e\' stato creato');
+  assert.ok(file, 'the session state was not created');
   return JSON.parse(fs.readFileSync(path.join(dir, file), 'utf8'));
 };
 
 const conversazione = (da, a) => {
   const out = [];
   for (let i = da; i <= a; i++) {
-    out.push({ role: 'user', content: `turno ${i} contenuto ` + 'U'.repeat(200), timestamp: 1000 + i * 2 });
-    out.push({ role: 'assistant', content: `risposta ${i} contenuto ` + 'A'.repeat(200), timestamp: 1001 + i * 2 });
+    out.push({ role: 'user', content: `turn ${i} content ` + 'U'.repeat(200), timestamp: 1000 + i * 2 });
+    out.push({ role: 'assistant', content: `answer ${i} content ` + 'A'.repeat(200), timestamp: 1001 + i * 2 });
   }
   return out;
 };
 
-test('la richiesta del micro arriva all\'agente, e nomina la foglia', async () => {
+test('the micro request reaches the agent, and names the leaf', async () => {
   const { sandbox, home, tools, hooks, ctx } = await boot();
   try {
-    // SETTE foglie, non una. Con `looseLeaves` = 5 le ultime cinque restano SCIOLTE e non
-    // devono ancora un micro: la richiesta nasce solo quando una foglia esce da quella
-    // finestra, ed e' esattamente il caso che conta (il suo corpo deve lasciare il
-    // contesto). Il mio primo fixture ne faceva UNA e il test era rosso per questo, non per
-    // il codice: la lezione di sempre, il difetto era nel test.
+    // SEVEN leaves, not one. With `looseLeaves` = 5 the last five stay LOOSE and do not
+    // owe a micro yet: the request is born only when a leaf leaves that
+    // window, and that is exactly the case that matters (its body must leave the
+    // context). My first fixture made ONE and the test was red for that reason, not for
+    // the code: the usual lesson, the defect was in the test.
     for (let i = 1; i <= 7; i++) {
       await hook(hooks, ctx, conversazione(1, i + 3));
       const res = await tools.get('cwl_compress_range').execute(
-        't', { summary: `CORPO-${i} ` + 'x'.repeat(300) }, undefined, undefined, ctx,
+        't', { summary: `BODY-${i} ` + 'x'.repeat(300) }, undefined, undefined, ctx,
       );
-      assert.equal(res.details.ok, true, `giro ${i}: la foglia non e' nata: ${JSON.stringify(res.details)}`);
+      assert.equal(res.details.ok, true, `round ${i}: the leaf was not born: ${JSON.stringify(res.details)}`);
     }
     assert.equal(
       statoDi(sandbox).spans.length,
       7,
-      'servono sette foglie: con cinque o meno sono tutte sciolte e nessuna aspetta un micro',
+      'seven leaves are needed: with five or fewer they are all loose and none is waiting for a micro',
     );
 
-    // Il turno dopo: le foglie piu' vecchie non sono piu' sciolte, non hanno un micro, e
-    // l'agente deve SAPERLO.
+    // The turn after: the older leaves are no longer loose, they have no micro, and
+    // the agent must KNOW it.
     const out = await hook(hooks, ctx, conversazione(1, 10));
     const richieste = out.filter((m) => m.customType === 'cwl-demand');
     assert.ok(
       richieste.length > 0,
-      'nessuna richiesta nel contesto: le foglie senza micro finiscono solo nel LOG, quindi l\'agente non sa che deve ' +
-        `scriverli e il meccanismo non parte (0 nodi -> piano.due = 0 -> la richiesta del merge non compare mai). Messaggi: ${out
+      'no request in the context: the leaves without a micro end up only in the LOG, so the agent does not know it must ' +
+        `write them and the mechanism never starts (0 nodes -> piano.due = 0 -> the merge request never appears). Messages: ${out
           .map((m) => m.customType || m.role)
           .join(', ')}`,
     );
@@ -101,14 +101,14 @@ test('la richiesta del micro arriva all\'agente, e nomina la foglia', async () =
     const testo = richieste.map((m) => String(m.content)).join('\n');
     assert.ok(
       testo.includes('cwl_micro'),
-      `la richiesta non nomina lo strumento da usare, quindi non e' azionabile: ${testo.slice(0, 200)}`,
+      `the request does not name the tool to use, so it is not actionable: ${testo.slice(0, 200)}`,
     );
 
     const id = statoDi(sandbox).spans[0].id;
     assert.ok(
       testo.includes(id),
-      `la richiesta non nomina la foglia ${id}: senza l'id l'agente deve indovinare quale, o andare a leggere il file di ` +
-        `stato. Testo: ${testo.slice(0, 300)}`,
+      `the request does not name the leaf ${id}: without the id the agent has to guess which one, or go read the ` +
+        `state file. Text: ${testo.slice(0, 300)}`,
     );
   } finally {
     home.restore();

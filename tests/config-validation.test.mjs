@@ -1,29 +1,29 @@
 /**
- * Regressione: una config.json con tipi sbagliati non deve rompere la policy.
+ * Regression: a config.json with wrong types must not break the policy.
  *
- * Perche' esiste: fino al 30/09/2026 `loadConfig` faceva
- * `{ ...DEFAULT_CONFIG, ...user }` senza validare nulla. Con
- * `thresholdRatio: "high"` il trigger diventava `tokenBudget * "high"` = NaN,
- * quindi `currentTokens <= NaN` era sempre falsa e l'estensione evictava a OGNI
- * turno. Con `thresholdRatio: 5` disattivava l'eviction per sempre. Un errore di
- * battitura nella config, nessun crash, nessun avviso: solo una policy sbagliata
- * in silenzio.
+ * Why it exists: until 2026-09-30 `loadConfig` did
+ * `{ ...DEFAULT_CONFIG, ...user }` without validating anything. With
+ * `thresholdRatio: "high"` the trigger became `tokenBudget * "high"` = NaN,
+ * so `currentTokens <= NaN` was always false and the extension evicted on EVERY
+ * turn. With `thresholdRatio: 5` it disabled eviction for good. A typo
+ * in the config, no crash, no warning: just a wrong policy
+ * in silence.
  *
- * Il test passa dalla `cwl_status` reale, che stampa budget e soglia: cosi'
- * verifica il comportamento osservabile dell'estensione, non una funzione
- * interna che si potrebbe rinominare.
+ * The test goes through the real `cwl_status`, which prints budget and threshold: this way
+ * it verifies the observable behavior of the extension, not an internal
+ * function that could be renamed.
  */
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import { makeSandbox, bootExtension, withHome, sessionCtx, status } from './_helpers.mjs';
 
 /**
- * Carica l'estensione con una data config e restituisce i tool.
+ * Loads the extension with a given config and returns the tools.
  *
- * DEVE spostare la HOME nel sandbox: `loadConfig` legge prima
- * `~/.pi/cwl/config.json` e solo come ripiego la config bundled col pacchetto.
- * Senza `withHome` la config passata qui non veniva mai letta e le asserzioni
- * "ricade sul default" passavano vacuamente, perche' leggeva la bundled.
+ * It MUST move HOME into the sandbox: `loadConfig` reads
+ * `~/.pi/cwl/config.json` first and only as a fallback the config bundled with the package.
+ * Without `withHome` the config passed here was never read and the assertions
+ * "falls back on the default" passed vacuously, because it read the bundled one.
  */
 async function loadWithConfig(config, name) {
   const sandbox = makeSandbox({ name, config });
@@ -36,60 +36,60 @@ async function loadWithConfig(config, name) {
   };
 }
 
-test('una thresholdRatio non numerica non produce NaN e ricade sul default', async () => {
+test('a non-numeric thresholdRatio does not produce NaN and falls back on the default', async () => {
   const { tools, ctx, cleanup } = await loadWithConfig({ thresholdRatio: 'high' }, 'cfg-str');
   try {
     const { text, details } = await status(tools, ctx);
-    assert.doesNotMatch(text, /NaN/, 'il budget non deve mai renderizzare NaN');
-    assert.match(text, /threshold: 85%/, 'una soglia non valida deve ricadere sul default 0.85');
-    assert.equal(details.budget, 80000, 'il budget deve restare il default 80k');
+    assert.doesNotMatch(text, /NaN/, 'the budget must never render NaN');
+    assert.match(text, /threshold: 85%/, 'an invalid threshold must fall back on the default 0.85');
+    assert.equal(details.budget, 80000, 'the budget must stay at the default 80k');
   } finally { cleanup(); }
 });
 
-test('una thresholdRatio fuori range non disattiva in silenzio l\'eviction', async () => {
+test('an out-of-range thresholdRatio does not silently disable eviction', async () => {
   const { tools, ctx, cleanup } = await loadWithConfig({ thresholdRatio: 5 }, 'cfg-range');
   try {
     const { text } = await status(tools, ctx);
-    assert.match(text, /threshold: 85%/, 'una soglia > 1 deve ricadere sul default');
+    assert.match(text, /threshold: 85%/, 'a threshold > 1 must fall back on the default');
   } finally { cleanup(); }
 });
 
-test('un tokenBudget non numerico ricade sul default', async () => {
-  const { tools, ctx, cleanup } = await loadWithConfig({ tokenBudget: 'molti' }, 'cfg-budget');
+test('a non-numeric tokenBudget falls back on the default', async () => {
+  const { tools, ctx, cleanup } = await loadWithConfig({ tokenBudget: 'many' }, 'cfg-budget');
   try {
     const { text, details } = await status(tools, ctx);
     assert.doesNotMatch(text, /NaN/);
-    assert.equal(details.budget, 80000, "un budget non valido deve ricadere sull'80k di default");
+    assert.equal(details.budget, 80000, 'an invalid budget must fall back on the default 80k');
   } finally { cleanup(); }
 });
 
-test('una config.json malformata non uccide l\'estensione', async () => {
-  const { tools, ctx, cleanup } = await loadWithConfig('{ questo non e json', 'cfg-broken');
+test('a malformed config.json does not kill the extension', async () => {
+  const { tools, ctx, cleanup } = await loadWithConfig('{ this is not json', 'cfg-broken');
   try {
     const { text, details } = await status(tools, ctx);
     assert.doesNotMatch(text, /NaN/);
-    assert.equal(typeof details.budget, 'number', 'un JSON rotto deve ricadere su un budget valido');
+    assert.equal(typeof details.budget, 'number', 'a broken JSON must fall back on a valid budget');
   } finally { cleanup(); }
 });
 
-test('una config valida continua a essere rispettata', async () => {
+test('a valid config keeps being honored', async () => {
   const { tools, ctx, cleanup } = await loadWithConfig({ tokenBudget: 123456, thresholdRatio: 0.5 }, 'cfg-valid');
   try {
     const { text, details } = await status(tools, ctx);
-    assert.equal(details.budget, 123456, 'un budget valido non deve essere scartato');
-    assert.match(text, /threshold: 50%/, 'una soglia valida non deve essere scartata');
+    assert.equal(details.budget, 123456, 'a valid budget must not be discarded');
+    assert.match(text, /threshold: 50%/, 'a valid threshold must not be discarded');
   } finally { cleanup(); }
 });
 
-test('i livelli booleani accettano solo veri booleani', async () => {
-  // Un booleano scritto come stringa ("false") e' un errore classico dei file
-  // di configurazione: `!!'false'` vale true, quindi non basta un cast.
+test('the boolean levels accept only real booleans', async () => {
+  // A boolean written as a string ("false") is a classic mistake in
+  // configuration files: `!!'false'` is true, so a cast is not enough.
   const { tools, ctx, cleanup } = await loadWithConfig(
     { levels: { stripBulkOutput: 'false' }, tokenBudget: 1000, thresholdRatio: 0.5 },
     'cfg-boolstr',
   );
   try {
     const { details } = await status(tools, ctx);
-    assert.equal(details.budget, 1000, 'il resto della config deve restare valido');
+    assert.equal(details.budget, 1000, 'the rest of the config must stay valid');
   } finally { cleanup(); }
 });

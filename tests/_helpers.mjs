@@ -1,20 +1,20 @@
 /**
- * Helper condiviso dai test: trova il pacchetto di Pi e prepara un sandbox.
+ * Helper shared by the tests: finds the Pi package and prepares a sandbox.
  *
- * Perche' esiste. Fino al 30/09/2026 i test importavano `typescript` e `typebox`
- * con path ASSOLUTI:
+ * Why it exists. Until 2026-09-30 the tests imported `typescript` and `typebox`
+ * with ABSOLUTE paths:
  *
  *     import ts from '/home/riccardo/.hermes/lsp/node_modules/typescript/lib/typescript.js';
  *
- * Funzionava su una sola macchina con un solo nome utente. Su cubotto l'utente
- * e' `serverino`, quindi `/home/riccardo/...` non esiste e NESSUN test girava:
- * la suite era verde solo dove era stata scritta. Peggio, importava `typescript`
- * per fare a mano il transpile, quando Node lo fa da solo dalla 22.18 (il type
- * stripping e' attivo senza flag), e `index.ts` usa solo sintassi strippabile.
+ * It worked on a single machine with a single user name. On cubotto the user
+ * is `serverino`, so `/home/riccardo/...` does not exist and NO test ran:
+ * the suite was green only where it had been written. Worse, it imported `typescript`
+ * to transpile by hand, while Node does it by itself since 22.18 (type
+ * stripping is on without a flag), and `index.ts` only uses strippable syntax.
  *
- * Qui: zero path assoluti, zero dipendenza da `typescript`. Il pacchetto di Pi
- * viene scoperto a runtime dal binario `pi`, col pacchetto dichiarato come
- * devDependency non ci sarebbe nemmeno bisogno di indovinare dove sta.
+ * Here: zero absolute paths, zero dependency on `typescript`. The Pi package
+ * is discovered at runtime from the `pi` binary; with the package declared as a
+ * devDependency there would be no need to guess where it is.
  */
 import * as fs from 'node:fs';
 import * as os from 'node:os';
@@ -25,10 +25,10 @@ import { pathToFileURL } from 'node:url';
 export const REPO_ROOT = path.resolve(import.meta.dirname, '..');
 
 /**
- * Radice del pacchetto @earendil-works/pi-coding-agent.
+ * Root of the @earendil-works/pi-coding-agent package.
  *
- * Ordine: variabile d'ambiente, poi il binario `pi` (la fonte di verita': e'
- * l'installazione che esegue davvero l'estensione), poi `npm root -g`.
+ * Order: environment variable, then the `pi` binary (the source of truth: it is
+ * the installation that actually runs the extension), then `npm root -g`.
  */
 export function piPackageDir() {
   const override = process.env.PI_PACKAGE_DIR;
@@ -42,14 +42,14 @@ export function piPackageDir() {
       const real = fs.realpathSync(bin);
       candidates.push(path.resolve(path.dirname(real), '..', '..', '..'));
     }
-  } catch { /* pi non nel PATH: si prova altro */ }
+  } catch { /* pi not in PATH: try something else */ }
 
   try {
     const root = execFileSync('npm', ['root', '-g'], { encoding: 'utf8' }).trim();
     if (root) candidates.push(path.join(root, '@earendil-works/pi-coding-agent'));
-  } catch { /* npm assente */ }
+  } catch { /* npm missing */ }
 
-  // Ultima spiaggia: layout noti, senza nomi utente cablati.
+  // Last resort: known layouts, with no hardcoded user names.
   candidates.push(
     path.join(os.homedir(), '.hermes', 'node', 'lib', 'node_modules', '@earendil-works', 'pi-coding-agent'),
     path.join(os.homedir(), '.npm-global', 'lib', 'node_modules', '@earendil-works', 'pi-coding-agent'),
@@ -59,17 +59,17 @@ export function piPackageDir() {
     if (c && fs.existsSync(path.join(c, 'package.json'))) return c;
   }
   throw new Error(
-    'pacchetto @earendil-works/pi-coding-agent non trovato. ' +
-    'Imposta PI_PACKAGE_DIR=/path/al/pacchetto oppure assicurati che `pi` sia nel PATH.',
+    'package @earendil-works/pi-coding-agent not found. ' +
+    'Set PI_PACKAGE_DIR=/path/to/the/package or make sure `pi` is in the PATH.',
   );
 }
 
 /**
- * Collega le dipendenze di Pi dentro node_modules/ del repo.
+ * Links the Pi dependencies inside the repo's node_modules/.
  *
- * `node_modules/` e' gitignorato: sono link derivati, non sorgenti. Serve perche'
- * `typebox` vive annidato nel pacchetto di Pi, e la risoluzione dei moduli di
- * Node non lo troverebbe partendo dalla radice del repo.
+ * `node_modules/` is gitignored: they are derived links, not sources. It is needed
+ * because `typebox` lives nested inside the Pi package, and Node's module
+ * resolution would not find it starting from the repo root.
  */
 export function ensureRepoNodeModules() {
   const pi = piPackageDir();
@@ -86,8 +86,8 @@ export function ensureRepoNodeModules() {
     const link = path.join(nm, rel);
     if (!fs.existsSync(target)) continue;
     try {
-      if (fs.lstatSync(link)) continue; // gia' presente
-    } catch { /* non esiste: lo creo */ }
+      if (fs.lstatSync(link)) continue; // already present
+    } catch { /* does not exist: create it */ }
     fs.mkdirSync(path.dirname(link), { recursive: true });
     fs.symlinkSync(target, link, 'dir');
     created.push(rel);
@@ -95,27 +95,27 @@ export function ensureRepoNodeModules() {
   return { pi, created };
 }
 
-/** Verifica che questo Node sappia importare un modulo .ts senza transpiler. */
+/** Verifies that this Node can import a .ts module without a transpiler. */
 export function assertTypeStrippingWorks() {
   const [major, minor] = process.versions.node.split('.').map(Number);
   const ok = major > 22 || (major === 22 && minor >= 18);
   if (!ok) {
     throw new Error(
-      `Node ${process.versions.node} non importa i .ts senza transpiler: ` +
-      'serve Node >= 22.18 (type stripping attivo di default).',
+      `Node ${process.versions.node} does not import .ts files without a transpiler: ` +
+      'Node >= 22.18 is required (type stripping on by default).',
     );
   }
 }
 
 /**
- * Prepara una HOME temporanea con una copia importabile dell'estensione.
+ * Prepares a temporary HOME with an importable copy of the extension.
  *
- * La copia serve dove occorre una SECONDA istanza indipendente del modulo (il
- * test di persistenza simula un riavvio): Node cachea i moduli per URL, quindi
- * importare due volte lo stesso file darebbe lo stesso oggetto.
+ * The copy is needed where a SECOND independent instance of the module is
+ * required (the persistence test simulates a restart): Node caches modules per
+ * URL, so importing the same file twice would give the same object.
  *
- * `node_modules/typebox` viene collegato anche dentro il sandbox: partendo da
- * /tmp la risoluzione non troverebbe il pacchetto annidato di Pi.
+ * `node_modules/typebox` is linked inside the sandbox too: starting from
+ * /tmp the resolution would not find Pi's nested package.
  */
 export function makeSandbox({ name = 'cwl', config = null } = {}) {
   assertTypeStrippingWorks();
@@ -127,7 +127,7 @@ export function makeSandbox({ name = 'cwl', config = null } = {}) {
     if (fs.existsSync(src)) fs.copyFileSync(src, path.join(dir, f));
   }
 
-  // typebox raggiungibile dal sandbox.
+  // typebox reachable from the sandbox.
   const sbNm = path.join(dir, 'node_modules');
   fs.mkdirSync(path.join(sbNm, '@earendil-works'), { recursive: true });
   const tb = path.join(repoLinks.pi, 'node_modules', 'typebox');
@@ -137,7 +137,7 @@ export function makeSandbox({ name = 'cwl', config = null } = {}) {
     fs.symlinkSync(core, path.join(sbNm, '@earendil-works', 'pi-agent-core'), 'dir');
   }
 
-  // La config passata va nella HOME del sandbox: e' il percorso che loadConfig legge.
+  // The config passed in goes into the sandbox HOME: it is the path loadConfig reads.
   if (config !== null) {
     const cdir = path.join(dir, '.pi', 'cwl');
     fs.mkdirSync(cdir, { recursive: true });
@@ -155,12 +155,12 @@ export function makeSandbox({ name = 'cwl', config = null } = {}) {
 }
 
 /**
- * Istanzia l'estensione in un sandbox e restituisce tool e hook registrati,
- * come li vede il runtime di Pi.
+ * Instantiates the extension in a sandbox and returns the registered tools and hooks,
+ * as Pi's runtime sees them.
  */
 export async function bootExtension(sandbox, { name = 'ext' } = {}) {
-  // Un nome diverso per file evita la cache dei moduli quando serve una
-  // seconda istanza indipendente (simulazione di riavvio).
+  // A different name per file avoids the module cache when a second independent
+  // instance is needed (restart simulation).
   const copy = path.join(sandbox.dir, `${name}.index.ts`);
   if (name !== 'ext') {
     fs.copyFileSync(path.join(sandbox.dir, 'index.ts'), copy);
@@ -182,13 +182,13 @@ export async function bootExtension(sandbox, { name = 'ext' } = {}) {
 }
 
 /**
- * Contesto di sessione: identita' stabile fornita dal transcript.
+ * Session context: stable identity provided by the transcript.
  *
- * `buildContextEntries` e' cio' da cui Pi costruisce la lista del contesto, ed e' l'unica via
- * che un tool ha per rivedere i messaggi: `cwl_compress` la usa per controllare che un
- * intervallo scelto A MANO non stia dentro una foglia gia' esistente. Il test la riempie con
- * `ctx.__mostra(lista)`; la lista e' quella che l'hook riceve, perche' le iniezioni delle
- * estensioni non sono voci di sessione.
+ * `buildContextEntries` is what Pi builds the context list from, and it is the only way
+ * a tool has to review the messages: `cwl_compress` uses it to check that an
+ * interval chosen BY HAND does not sit inside an already existing leaf. The test fills it with
+ * `ctx.__mostra(lista)`; the list is the one the hook receives, because extension
+ * injections are not session entries.
  */
 export const sessionCtx = (sessionFile, cwd = '/tmp/progetto') => {
   const entries = [];
@@ -197,7 +197,7 @@ export const sessionCtx = (sessionFile, cwd = '/tmp/progetto') => {
     hasUI: false,
     sessionManager: {
       getSessionFile: () => sessionFile,
-      getSessionId: () => 'non-usato-quando-c-e-il-file',
+      getSessionId: () => 'unused-when-the-file-exists',
       buildContextEntries: () => entries,
     },
   };
@@ -208,18 +208,18 @@ export const sessionCtx = (sessionFile, cwd = '/tmp/progetto') => {
   return ctx;
 };
 
-/** Contesto senza alcun identificativo: e' il caso che collassava su "default". */
+/** Context without any identifier: it is the case that collapsed onto "default". */
 export const anonymousCtx = (cwd = '/tmp/progetto') => ({ cwd, hasUI: false });
 
-/** Esegue cwl_status e restituisce testo e details (i numeri sono locale-indipendenti). */
+/** Runs cwl_status and returns text and details (the numbers are locale-independent). */
 export async function status(tools, ctx) {
   const res = await tools.get('cwl_status').execute('id', {}, undefined, undefined, ctx);
   return { text: res.content.map((c) => c.text).join('\n'), details: res.details };
 }
 
 /**
- * Rileva una HOME temporanea per il tempo del test.
- * Uso: `const home = withHome(sandbox.dir); ... home.restore();`
+ * Redirects HOME temporarily for the duration of the test.
+ * Usage: `const home = withHome(sandbox.dir); ... home.restore();`
  */
 export function withHome(dir) {
   const previous = process.env.HOME;
@@ -230,9 +230,9 @@ export function withHome(dir) {
 }
 
 // ---------------------------------------------------------------------------
-// Entry point CLI: usato da check.sh per collegare le dipendenze prima dei test.
-// Senza questo, `node tests/_helpers.mjs --link-deps` sarebbe un no-op silenzioso
-// (l'import non esegue nulla) e il gate sembrerebbe verde senza aver fatto nulla.
+// CLI entry point: used by check.sh to link the dependencies before the tests.
+// Without this, `node tests/_helpers.mjs --link-deps` would be a silent no-op
+// (the import runs nothing) and the gate would look green without doing anything.
 // ---------------------------------------------------------------------------
 if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
   const args = process.argv.slice(2);
@@ -240,14 +240,14 @@ if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) 
     try {
       assertTypeStrippingWorks();
       const { pi, created } = ensureRepoNodeModules();
-      console.log(`[deps] pacchetto Pi: ${pi}`);
-      console.log(`[deps] link: ${created.length ? created.join(', ') : "gia' a posto"}`);
+      console.log(`[deps] Pi package: ${pi}`);
+      console.log(`[deps] link: ${created.length ? created.join(', ') : 'already in place'}`);
       process.exit(0);
     } catch (err) {
       console.error(`[deps] ${err instanceof Error ? err.message : String(err)}`);
       process.exit(1);
     }
   }
-  console.log('uso: node tests/_helpers.mjs --link-deps');
+  console.log('usage: node tests/_helpers.mjs --link-deps');
   process.exit(0);
 }

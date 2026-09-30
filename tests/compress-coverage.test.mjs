@@ -1,30 +1,31 @@
 /**
- * UNA REGIONE GIA' DENTRO UNA FOGLIA NON SI RICOMPRIME.
+ * A REGION ALREADY INSIDE A LEAF IS NOT COMPRESSED AGAIN.
  *
- * `compressibleRange` salta ogni indice che sta dentro uno span risolto, quindi la strada
- * OFFERTA (`cwl_compress_range`) non puo' descrivere due volte gli stessi messaggi. Il tool
- * ESPLICITO (`cwl_compress`) no: validava i due hash contro `knownHashes` e spingeva la foglia,
- * senza sapere niente della copertura. Un agente che sceglie gli hash a mano poteva quindi
- * creare una foglia che si sovrappone a una esistente — la regione descritta due volte, e le
- * due descrizioni libere di divergere col tempo.
+ * `compressibleRange` skips every index that lies inside a resolved span, so the OFFERED
+ * road (`cwl_compress_range`) cannot describe the same messages twice. The EXPLICIT tool
+ * (`cwl_compress`) does not: it validated the two hashes against `knownHashes` and pushed the leaf,
+ * knowing nothing about the coverage. An agent choosing the hashes by hand could therefore
+ * create a leaf overlapping an existing one — the region described twice, and the
+ * two descriptions free to diverge over time.
  *
- * Il tool non ha accesso alla lista dei messaggi (lo dice il suo stesso commento), ma il
- * `sessionManager` del contesto espone `buildContextEntries()`, che e' cio' da cui Pi costruisce
- * la lista del contesto: da li' si ricostruisce lo STESSO ORDINE di indirizzi, e per un
- * confronto fra intervalli l'ordine e' tutto cio' che serve.
+ * The tool has no access to the message list (its own comment says so), but the context's
+ * `sessionManager` exposes `buildContextEntries()`, which is what Pi builds
+ * the context list from: from there one rebuilds the SAME ORDER of addresses, and for a
+ * comparison between intervals the order is all that is needed.
  *
- * Due casi, e servono entrambi:
- *  (1) un intervallo dentro una foglia viene RIFIUTATO, con la ragione nel log;
- *  (2) la STESSA chiamata, quando gli estremi non sono collocabili sulla lista letta, PASSA e
- *      dichiara di non aver controllato. Un controllo che rifiuta sempre sarebbe indistinguibile
- *      da un controllo onesto senza questo secondo caso.
+ * Two cases, and both are needed:
+ *  (1) an interval inside a leaf is REFUSED, with the reason in the log;
+ *  (2) the SAME call, when the endpoints are not placeable on the list read, GOES THROUGH and
+ *      declares that it did not check. A check that always refuses would be indistinguishable
+ *      from an honest check without this second case.
  *
- * DICHIARATO — cosa questo test NON uccide: la mutazione che fa rispondere a `covers` sempre
- * "coperto" resta VIVA, perche' il terzo caso che servirebbe — un candidato COLLOCABILE e NON
- * coperto — non esiste in questo fixture: con `protectedTurns: 0` la foglia copre tutta la lista,
- * quindi ogni hash che il tool accetta cade dentro di lei. Il caso (2) non la uccide perche' esce
- * prima, sul ramo `unknown`. Serve un fixture con una coda scoperta (per esempio `protectedTurns`
- * piu' alto, e un hash preso da quella coda). Meglio dirlo che lasciar credere che sia coperto.
+ * DECLARED — what this test does NOT kill: the mutation that makes `covers` always answer
+ * "covered" stays ALIVE, because the third case that would be needed — a candidate that IS
+ * placeable and NOT covered — does not exist in this fixture: with `protectedTurns: 0` the leaf
+ * covers the whole list, so every hash the tool accepts falls inside it. Case (2) does not kill it
+ * because it exits first, on the `unknown` branch. A fixture with an uncovered tail is needed (for
+ * example a higher `protectedTurns`, and a hash taken from that tail). Better to say it than to let
+ * people believe it is covered.
  */
 import assert from 'node:assert/strict';
 import test from 'node:test';
@@ -44,7 +45,7 @@ const config = () => ({
 });
 
 async function boot() {
-  const sandbox = makeSandbox({ name: `copertura-${seq++}`, config: config() });
+  const sandbox = makeSandbox({ name: `coverage-${seq++}`, config: config() });
   const home = withHome(sandbox.dir);
   const { tools, hooks } = await bootExtension(sandbox);
   const ctx = sessionCtx(path.join(sandbox.dir, 'sessione.jsonl'));
@@ -62,77 +63,77 @@ const logDi = (sandbox) => fs.readFileSync(path.join(sandbox.dir, '.pi', 'cwl', 
 const statoDi = (sandbox) => {
   const dir = path.join(sandbox.dir, '.pi', 'cwl', 'state');
   const file = fs.readdirSync(dir).find((f) => f.endsWith('.json'));
-  assert.ok(file, 'lo stato della sessione non e\' stato creato');
+  assert.ok(file, 'the session state was not created');
   return JSON.parse(fs.readFileSync(path.join(dir, file), 'utf8'));
 };
 
 const conversazione = (da, a) => {
   const out = [];
   for (let i = da; i <= a; i++) {
-    out.push({ role: 'user', content: `turno ${i} contenuto ` + 'U'.repeat(200), timestamp: 1000 + i * 2 });
-    out.push({ role: 'assistant', content: `risposta ${i} contenuto ` + 'A'.repeat(200), timestamp: 1001 + i * 2 });
+    out.push({ role: 'user', content: `prompt ${i} content. ` + 'U'.repeat(200), timestamp: 1000 + i * 2 });
+    out.push({ role: 'assistant', content: `answers ${i} content is ` + 'A'.repeat(200), timestamp: 1001 + i * 2 });
   }
   return out;
 };
 
-test('un intervallo dentro una foglia viene rifiutato, e la stessa cosa senza copertura passa', async () => {
+test('an interval inside a leaf is refused, and the same thing without coverage goes through', async () => {
   const { sandbox, home, tools, hooks, ctx } = await boot();
   try {
     const base = conversazione(1, 7);
-    await hook(hooks, ctx, base); // il hook calcola l'indirizzo offerto
-    ctx.__mostra(base); // questa e' la "sessione" che i tool vedranno
+    await hook(hooks, ctx, base); // the hook computes the offered address
+    ctx.__mostra(base); // this is the "session" the tools will see
 
     const primo = await tools
       .get('cwl_compress_range')
-      .execute('t', { summary: 'CORPO-1 ' + 'x'.repeat(300) }, undefined, undefined, ctx);
-    assert.equal(primo.details.ok, true, `la foglia non e' nata: ${JSON.stringify(primo.details)}`);
+      .execute('t', { summary: 'BLOCK-1 ' + 'x'.repeat(300) }, undefined, undefined, ctx);
+    assert.equal(primo.details.ok, true, `the leaf was not born: ${JSON.stringify(primo.details)}`);
 
     const foglia = statoDi(sandbox).spans[0];
-    assert.ok(foglia && foglia.startHash, 'nessuna foglia con indirizzo nello stato: il test non prova niente');
-    // `cwl_compress` valida i due hash contro `knownHashes`, che contiene l'hash del TESTO di
-    // ogni messaggio (non l'indirizzo `id|testo` che portano le foglie: sono due namespace
-    // diversi, e `locateSpans` li risolve entrambi via `addressMaps`). Il test prende quindi un
-    // hash dal set che il tool accetta — il piu' vecchio — e lo usa come estremo.
+    assert.ok(foglia && foglia.startHash, 'no leaf with an address in the state: the test proves nothing');
+    // `cwl_compress` validates the two hashes against `knownHashes`, which holds the hash of the TEXT of
+    // every message (not the `id|testo` address the leaves carry: they are two different
+    // namespaces, and `locateSpans` resolves both through `addressMaps`). The test therefore takes a
+    // hash from the set the tool accepts — the oldest one — and uses it as an endpoint.
     const stato = statoDi(sandbox);
     const h = stato.knownHashes[0];
-    assert.ok(typeof h === 'string' && h.length > 0, 'nessun hash persistito: il tool rifiuterebbe per unknown-hash');
+    assert.ok(typeof h === 'string' && h.length > 0, 'no persisted hash: the tool would refuse with unknown-hash');
 
-    // (1) Un intervallo che cade DENTRO la foglia: rifiutato, con la ragione nel log.
+    // (1) An interval that falls INSIDE the leaf: refused, with the reason in the log.
     const primaDentro = logDi(sandbox).length;
     const dentro = await tools
       .get('cwl_compress')
-      .execute('t', { startHash: h, endHash: h, summary: 'CORPO-2' }, undefined, undefined, ctx);
+      .execute('t', { startHash: h, endHash: h, summary: 'BLOCK-2' }, undefined, undefined, ctx);
     assert.equal(
       dentro.details.error,
       'covered-range',
-      `atteso il rifiuto della copertura, arrivato ${JSON.stringify(dentro.details)}`,
+      `expected the coverage refusal, got ${JSON.stringify(dentro.details)}`,
     );
     assert.match(
       logDi(sandbox).slice(primaDentro),
       /COMPRESS refused [0-9a-f]+\.\.[0-9a-f]+: inside a live leaf \(\d+ span\(s\) resolved, \d+ message\(s\) read\)/,
-      'il rifiuto non dice perche\' e non dichiara su quanti messaggi ha guardato',
+      'the refusal does not say why, and does not declare on how many messages it looked',
     );
-    assert.equal(statoDi(sandbox).spans.length, 1, 'la foglia rifiutata e\' finita nello stato lo stesso');
+    assert.equal(statoDi(sandbox).spans.length, 1, 'the refused leaf ended up in the state anyway');
 
-    // (2) NON-VACUITA': la stessa chiamata con gli estremi NON collocabili sulla lista letta
-    //     passa, e il log deve DICHIARARE che non ha controllato (mai accettare in silenzio).
-    //     La finta sessione mostra solo l'ULTIMO messaggio: il piu' vecchio hash del set non e'
-    //     piu' collocabile su quella lista.
+    // (2) NON-VACUITY: the same call with endpoints NOT placeable on the list read
+    //     goes through, and the log must DECLARE that it did not check (never accept in silence).
+    //     The fake session shows only the LAST message: the oldest hash of the set is no
+    //     longer placeable on that list.
     ctx.__mostra(base.slice(-1));
     const primaFuori = logDi(sandbox).length;
     const fuori = await tools
       .get('cwl_compress')
-      .execute('t', { startHash: h, endHash: h, summary: 'CORPO-3' }, undefined, undefined, ctx);
+      .execute('t', { startHash: h, endHash: h, summary: 'BLOCK-3' }, undefined, undefined, ctx);
     assert.equal(
       fuori.details.ok,
       true,
-      `atteso il passaggio dichiarato, arrivato ${JSON.stringify(fuori.details)}: un controllo che non sa collocare ` +
-        'gli estremi non deve bocciare una richiesta legittima',
+      `expected the declared pass-through, got ${JSON.stringify(fuori.details)}: a check that cannot place ` +
+        'the endpoints must not reject a legitimate request',
     );
     assert.match(
       logDi(sandbox).slice(primaFuori),
       /COMPRESS coverage: endpoints of .* are not placeable on the \d+ message\(s\) read — let through, NOT checked/,
-      'il passaggio non e\' stato dichiarato nel log: un controllo che non gira in silenzio e\' la stessa cosa di un controllo assente',
+      'the pass-through was not declared in the log: a check that does not run silently is the same thing as a missing check',
     );
   } finally {
     home.restore();

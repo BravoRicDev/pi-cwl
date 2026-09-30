@@ -1,15 +1,15 @@
 /**
- * `cwl_compress_range`: l'estensione calcola l'indirizzo, il modello scrive il testo.
+ * `cwl_compress_range`: the extension computes the address, the model writes the text.
  *
- * Perche' esiste. Il budget gate chiedeva di compattare con
- * `cwl_compress(startHash=..., endHash=...)`. In una sessione VERA quella richiesta
- * non era eseguibile: gli hash vivono nello stato, sono opachi e l'agente non ha
- * modo di sapere quale hash corrisponda a quale messaggio. Risultato misurato:
- * gate armato al turno 2, 3 tentativi, zero compattazioni, contesto fermo a 370k
- * contro una soglia di 68k.
+ * Why it exists. The budget gate asked to compact with
+ * `cwl_compress(startHash=..., endHash=...)`. In a REAL session that request
+ * was not executable: the hashes live in the state, they are opaque and the agent
+ * has no way to know which hash corresponds to which message. Measured result:
+ * gate armed at turn 2, 3 attempts, zero compactions, context stuck at 370k
+ * against a threshold of 68k.
  *
- * La divisione che funziona: l'estensione sceglie gli indirizzi (li ha), il
- * modello scrive il riassunto (l'unica parte che solo il modello puo' fare).
+ * The split that works: the extension picks the addresses (it has them), the
+ * model writes the summary (the only part that only the model can do).
  */
 import assert from 'node:assert/strict';
 import test from 'node:test';
@@ -37,12 +37,12 @@ async function boot(cfg) {
   return { sandbox, home, tools, hooks, ctx };
 }
 
-/** Sei turni user+assistant: gli ultimi 2 restano nella finestra di sicurezza. */
+/** Six user+assistant turns: the last 2 stay in the safety window. */
 const conversation = () => {
   const out = [];
   for (let i = 1; i <= 6; i++) {
-    out.push({ role: 'user', content: `turno ${i} contenuto ` + 'U'.repeat(200) });
-    out.push({ role: 'assistant', content: `risposta ${i} contenuto ` + 'A'.repeat(200) });
+    out.push({ role: 'user', content: `turn ${i} content ` + 'U'.repeat(200) });
+    out.push({ role: 'assistant', content: `answer ${i} content ` + 'A'.repeat(200) });
   }
   return out;
 };
@@ -50,61 +50,61 @@ const conversation = () => {
 const call = (tools, ctx, summary) =>
   tools.get('cwl_compress_range').execute('t', { summary }, undefined, undefined, ctx);
 
-test('cwl_compress_range comprime l\'intervallo piu\' vecchio, senza hash', async () => {
+test('cwl_compress_range compresses the oldest range, without hashes', async () => {
   const { sandbox, home, tools, hooks, ctx } = await boot(config());
   try {
     await hooks.get('context')({ messages: conversation() }, ctx);
-    const out = await call(tools, ctx, 'sintesi dei primi turni: obiettivo, decisioni, path');
-    assert.equal(out.details.ok, true, `rifiutato: ${JSON.stringify(out.details)}`);
-    assert.ok(out.details.tokens > 0, 'l\'intervallo compresso deve avere token');
-    // L'indirizzo e' stato consumato: un secondo colpo non puo' ricomprimere lo stesso.
-    const again = await call(tools, ctx, 'secondo tentativo');
+    const out = await call(tools, ctx, 'summary of the first turns: goal, decisions, paths');
+    assert.equal(out.details.ok, true, `rejected: ${JSON.stringify(out.details)}`);
+    assert.ok(out.details.tokens > 0, 'the compressed range must have tokens');
+    // The address has been consumed: a second shot cannot re-compress the same one.
+    const again = await call(tools, ctx, 'second attempt');
     assert.equal(again.details.ok, false);
     assert.equal(again.details.error, 'nothing-to-compress');
   } finally { home.restore(); sandbox.cleanup(); }
 });
 
-test('la finestra di sicurezza non viene toccata: l\'intervallo si ferma prima', async () => {
+test('the safety window is not touched: the range stops earlier', async () => {
   const { sandbox, home, tools, hooks, ctx } = await boot(config({ protectedTurns: 2 }));
   try {
     const messages = conversation();
     await hooks.get('context')({ messages }, ctx);
-    const out = await call(tools, ctx, 'sintesi');
+    const out = await call(tools, ctx, 'summary');
     assert.equal(out.details.ok, true);
 
-    // Verifica diretta: gli hash dell'intervallo NON devono includere i messaggi
-    // degli ultimi 2 turni (gli ultimi 4 messaggi della lista).
+    // Direct check: the range hashes must NOT include the messages
+    // of the last 2 turns (the last 4 messages of the list).
     const { createHash } = await import('node:crypto');
     const hashOf = (s) => createHash('sha256').update(s).digest('hex').slice(0, 12);
     const protetti = messages.slice(-4).map((m) => hashOf(m.content));
-    assert.ok(!protetti.includes(out.details.startHash ?? ''), 'start dentro la finestra');
-    assert.ok(!protetti.includes(out.details.endHash ?? ''), 'end dentro la finestra');
-    // E deve invece includere il primo messaggio (fuori dalla finestra).
+    assert.ok(!protetti.includes(out.details.startHash ?? ''), 'start inside the window');
+    assert.ok(!protetti.includes(out.details.endHash ?? ''), 'end inside the window');
+    // And it must instead include the first message (outside the window).
     assert.equal(out.content[0].text.includes('Compresso'), true);
   } finally { home.restore(); sandbox.cleanup(); }
 });
 
-test('senza niente da comprimere rifiuta invece di inventare un intervallo', async () => {
-  // Due messaggi soli: prima della finestra non c'e' abbastanza materiale per
-  // formare un intervallo (serve una coppia), quindi non c'e' niente da prendere.
-  // Il caso "finestra tanto larga da coprire tutto" NON e' piu' un rifiuto: la
-  // parte piu' vecchia viene liberata apposta, altrimenti l'estensione non
-  // potrebbe mai chiudere il contesto (misurato: 469k token, soglia 68k, nessuna
-  // compattazione possibile).
+test('with nothing to compress it refuses instead of inventing a range', async () => {
+  // Two messages only: before the window there is not enough material to
+  // form a range (a pair is needed), so there is nothing to take.
+  // The case "window so wide it covers everything" is NO longer a refusal: the
+  // oldest part is released on purpose, otherwise the extension could
+  // never close the context (measured: 469k tokens, 68k threshold, no
+  // compaction possible).
   const { sandbox, home, tools, hooks, ctx } = await boot(config({ protectedTurns: 99 }));
   try {
     const minimale = [
-      { role: 'user', content: 'domanda ' + 'U'.repeat(200) },
-      { role: 'assistant', content: 'risposta ' + 'A'.repeat(200) },
+      { role: 'user', content: 'question ' + 'U'.repeat(200) },
+      { role: 'assistant', content: 'answer ' + 'A'.repeat(200) },
     ];
     await hooks.get('context')({ messages: minimale }, ctx);
-    const out = await call(tools, ctx, 'sintesi');
+    const out = await call(tools, ctx, 'summary');
     assert.equal(out.details.ok, false);
     assert.equal(out.details.error, 'nothing-to-compress');
   } finally { home.restore(); sandbox.cleanup(); }
 });
 
-test('un riassunto vuoto viene rifiutato: e\' l\'unica parte che deve scrivere il modello', async () => {
+test('an empty summary is rejected: it is the only part the model must write', async () => {
   const { sandbox, home, tools, hooks, ctx } = await boot(config());
   try {
     await hooks.get('context')({ messages: conversation() }, ctx);
@@ -114,33 +114,33 @@ test('un riassunto vuoto viene rifiutato: e\' l\'unica parte che deve scrivere i
   } finally { home.restore(); sandbox.cleanup(); }
 });
 
-test('un intervallo gia\' compresso non viene riproposto', async () => {
+test('an already-compressed range is not proposed again', async () => {
   const { sandbox, home, tools, hooks, ctx } = await boot(config());
   try {
     const messages = conversation();
     await hooks.get('context')({ messages }, ctx);
-    const first = await call(tools, ctx, 'prima sintesi');
+    const first = await call(tools, ctx, 'first summary');
     assert.equal(first.details.ok, true);
-    // Il hook successivo ricalcola l'intervallo SU QUELLO CHE RESTA.
+    // The next hook recomputes the range ON WHAT REMAINS.
     await hooks.get('context')({ messages }, ctx);
     const status = await tools.get('cwl_status').execute('id', {}, undefined, undefined, ctx);
     const testo = status.content.map((c) => c.text).join('\n');
-    // O non resta niente, o resta un intervallo diverso dal primo.
+    // Either nothing remains, or a range different from the first one remains.
     const hasRange = /Intervallo comprimibile/.test(testo);
     if (hasRange) {
       assert.ok(!testo.includes(`${first.details.startHash}..${first.details.endHash}`),
-        'l\'intervallo gia\' compresso viene riproposto');
+        'the already-compressed range is proposed again');
     }
   } finally { home.restore(); sandbox.cleanup(); }
 });
 
-test('il risparmio si conta UNA volta: riapplicare lo span non gonfia il totale', async () => {
-  // Pi ricostruisce la lista dal transcript a ogni turno, quindi rimanda gli
-  // ORIGINALI: lo span dev'essere riapplicato, ed e' giusto che sia cosi'.
-  // Riapplicare non e' risparmiare di nuovo — il contesto resta quello
-  // compresso, non si comprime due volte. Contare il risparmio a ogni
-  // riapplicazione produce un numero che cresce da solo, turno dopo turno, e
-  // quel numero e' l'unica prova che l'operatore ha che la cosa funzioni.
+test('the saving is counted ONCE: re-applying the span does not inflate the total', async () => {
+  // Pi rebuilds the list from the transcript at each turn, so it hands back the
+  // ORIGINALS: the span must be re-applied, and it is right that it is so.
+  // Re-applying is not saving again — the context stays the compressed
+  // one, it is not compressed twice. Counting the saving at each
+  // re-application produces a number that grows by itself, turn after turn, and
+  // that number is the only proof the operator has that the thing works.
   const { sandbox, home, tools, hooks, ctx } = await boot(config());
   const risparmiati = async () => {
     const s = await tools.get('cwl_status').execute('id', {}, undefined, undefined, ctx);
@@ -151,24 +151,24 @@ test('il risparmio si conta UNA volta: riapplicare lo span non gonfia il totale'
   try {
     const messages = conversation();
     await hooks.get('context')({ messages }, ctx);
-    const out = await call(tools, ctx, 'sintesi dei primi turni: obiettivo, decisioni, path');
+    const out = await call(tools, ctx, 'summary of the first turns: goal, decisions, paths');
     assert.equal(out.details.ok, true);
-    // Il conteggio avviene quando lo span viene APPLICATO, cioe' al turno
-    // successivo: il tool scrive l'indirizzo, l'hook lo applica.
+    // The counting happens when the span is APPLIED, that is at the next
+    // turn: the tool writes the address, the hook applies it.
     await hooks.get('context')({ messages }, ctx);
     const dopoLaCompressione = await risparmiati();
-    assert.ok(dopoLaCompressione > 0, 'la compressione deve aver risparmiato qualcosa');
+    assert.ok(dopoLaCompressione > 0, 'the compression must have saved something');
 
-    // Tre turni in cui si rimanda esattamente la stessa lista: nessuna nuova
-    // compressione, nessuna nuova eviction. Il totale non deve muoversi.
+    // Three turns in which exactly the same list is handed back: no new
+    // compression, no new eviction. The total must not move.
     for (let i = 0; i < 3; i++) await hooks.get('context')({ messages }, ctx);
     const dopoTreTurni = await risparmiati();
     assert.equal(dopoTreTurni, dopoLaCompressione,
-      `il risparmio e' cresciuto senza nuove compressioni: ${dopoLaCompressione} -> ${dopoTreTurni}`);
+      `the saving grew without new compressions: ${dopoLaCompressione} -> ${dopoTreTurni}`);
   } finally { home.restore(); sandbox.cleanup(); }
 });
 
-/** Coppie toolCall/toolResult rotte: sono esattamente cio' che il provider rifiuta. */
+/** Broken toolCall/toolResult pairs: they are exactly what the provider rejects. */
 const orfani = (messages) => {
   const chiamate = new Set();
   const risultati = new Set();
@@ -185,267 +185,267 @@ const orfani = (messages) => {
 };
 
 /**
- * Regressione: la compressione non deve spezzare una coppia toolCall/toolResult.
+ * Regression: the compression must not split a toolCall/toolResult pair.
  *
- * Misurato su una sessione VERA. L'intervallo compresso finiva su un assistant
- * che portava una toolCall (indice 1296) mentre il suo toolResult, 6396 char,
- * restava fuori (indice 1297). Nel contesto sopravviveva un `tool_result` senza
- * il suo `tool_use`, il provider rispondeva `400 status code (no body)` e la
- * sessione si bloccava: nessun messaggio di errore utile, nessun modo di
- * riprendere se non a mano.
+ * Measured on a REAL session. The compressed range ended on an assistant
+ * that carried a toolCall (index 1296) while its toolResult, 6396 char,
+ * stayed outside (index 1297). In the context a `tool_result` survived without
+ * its `tool_use`, the provider answered `400 status code (no body)` and the
+ * session got stuck: no useful error message, no way to
+ * resume except by hand.
  *
- * Il percorso di eviction deterministica conosceva GIA' questo invariante e lo
- * rispettava (H1, `droppedToolCallIds`: "the assistant message that carries the
+ * The deterministic eviction path ALREADY knew this invariant and
+ * respected it (H1, `droppedToolCallIds`: "the assistant message that carries the
  * matching toolCall must not keep it, or the conversation has a dangling...").
- * Il percorso degli span non aveva alcuna guardia.
+ * The span path had no guard at all.
  *
- * Perche' il caso si presenta solo ORA: nel caso normale `protectedFromIndex`
- * restituisce `indice_user + 1`, quindi il range finisce sempre su un messaggio
- * user. Solo nel caso DEGENERATO (meno turni utente della finestra) il pavimento
- * e' una quota arbitraria della lista, e allora puo' cadere subito dopo un
- * assistant. E' la stessa condizione del fix "la finestra di sicurezza copriva
- * TUTTA la lista": 469k token contro 68k di soglia.
+ * Why the case shows up only NOW: in the normal case `protectedFromIndex`
+ * returns `index_user + 1`, so the range always ends on a user message.
+ * Only in the DEGENERATE case (fewer user turns than the window) the floor
+ * is an arbitrary share of the list, and then it can fall right after an
+ * assistant. It is the same condition as the fix "the safety window covered
+ * the WHOLE list": 469k tokens against a 68k threshold.
  */
-test('la compressione non lascia un toolResult orfano', async () => {
-  // protectedTurns 4 con 2 soli turni utente: caso degenerato, il pavimento
-  // cade a meta' lista — esattamente dove e' caduto nella sessione vera.
+test('the compression leaves no orphan toolResult', async () => {
+  // protectedTurns 4 with only 2 user turns: degenerate case, the floor
+  // falls halfway down the list — exactly where it fell in the real session.
   const { sandbox, home, tools, hooks, ctx } = await boot(config({ protectedTurns: 4 }));
   try {
     const testo = (t) => `${t} ` + 'X'.repeat(240);
     const scambio = (n) => ([
-      { role: 'assistant', content: [{ type: 'text', text: testo(`penso ${n}`) }, { type: 'toolCall', id: `tc${n}`, name: 'bash', arguments: { command: 'ls' } }] },
+      { role: 'assistant', content: [{ type: 'text', text: testo(`thinking ${n}`) }, { type: 'toolCall', id: `tc${n}`, name: 'bash', arguments: { command: 'ls' } }] },
       { role: 'toolResult', toolCallId: `tc${n}`, content: [{ type: 'text', text: testo(`output ${n}`) }] },
     ]);
     const messages = [
-      { role: 'user', content: testo('turno 1') },
+      { role: 'user', content: testo('turn 1') },
       ...scambio(1),
       ...scambio(2),
       ...scambio(3),
-      { role: 'user', content: testo('turno 2') },
+      { role: 'user', content: testo('turn 2') },
     ];
 
     await hooks.get('context')({ messages }, ctx);
-    const out = await call(tools, ctx, 'sintesi dei turni con strumenti');
-    assert.equal(out.details.ok, true, `rifiutato: ${JSON.stringify(out.details)}`);
+    const out = await call(tools, ctx, 'summary of the turns with tools');
+    assert.equal(out.details.ok, true, `rejected: ${JSON.stringify(out.details)}`);
 
-    // L'hook e' l'unico punto in cui la lista viene riscritta: e' cio' che va al provider.
+    // The hook is the only point where the list is rewritten: it is what goes to the provider.
     const res = await hooks.get('context')({ messages }, ctx);
     const kept = res.messages;
     const { senzaRisultato, senzaChiamata } = orfani(kept);
     assert.deepEqual(senzaChiamata, [],
-      `tool_result senza il suo tool_use: il provider risponde 400. Orfani: ${senzaChiamata.join(', ')}`);
+      `tool_result without its tool_use: the provider answers 400. Orphans: ${senzaChiamata.join(', ')}`);
     assert.deepEqual(senzaRisultato, [],
-      `tool_use senza il suo risultato: il provider risponde 400. Orfani: ${senzaRisultato.join(', ')}`);
-    // La finestra di sicurezza resta intoccabile: estendere l'intervallo ai
-    // toolResult non deve diventare "mangia tutto fino in fondo".
-    assert.ok(kept.some((m) => m.role === 'user' && String(m.content).includes('turno 2')),
-      'il turno utente protetto deve sopravvivere');
+      `tool_use without its result: the provider answers 400. Orphans: ${senzaRisultato.join(', ')}`);
+    // The safety window stays untouchable: extending the range to the
+    // toolResult must not become "eat everything to the bottom".
+    assert.ok(kept.some((m) => m.role === 'user' && String(m.content).includes('turn 2')),
+      'the protected user turn must survive');
   } finally { home.restore(); sandbox.cleanup(); }
 });
 
-test('i risultati in blocco non si riparano per posizione: la garanzia e\' per id', async () => {
-  // Layout MISURATO in una sessione vera (2026-09-23T07-11-59, righe 1054-1061):
-  // Pi scrive il turno assistant SUCCESSIVO prima del blocco dei risultati,
-  // quindi un assistant puo' stare FRA una toolCall e il suo risultato.
+test('bulk results are not repaired by position: the guarantee is by id', async () => {
+  // Layout MEASURED in a real session (2026-09-23T07-11-59, lines 1054-1061):
+  // Pi writes the FOLLOWING assistant turn before the block of results,
+  // so an assistant can sit BETWEEN a toolCall and its result.
   //   1054 assistant  toolCall x5   (call_00_kzf4is ...)
-  //   1055 assistant  toolCall x1   <- in mezzo, senza risultati
-  //   1056 toolResult del 1054      <- arriva dopo
-  // Qui l'assistant B sta fra la call di A e il risultato di A. L'intervallo
-  // finisce su A, quindi la call di A sparisce e il suo risultato resta orfano:
-  // una regola per posizione NON puo' vederlo (nessun toolResult e' contiguo
-  // all'ultimo messaggio del range). Restare orfani significa che il provider
-  // rifiuta l'intera richiesta: 400 dal gateway, oppure
-  // "No tool call found for function call output with call_id ..." da Codex.
+  //   1055 assistant  toolCall x1   <- in between, without results
+  //   1056 toolResult of 1054       <- arrives after
+  // Here the assistant B sits between the call of A and the result of A. The range
+  // ends on A, so the call of A disappears and its result stays orphan:
+  // a rule by position CANNOT see it (no toolResult is contiguous
+  // with the last message of the range). Staying orphan means that the provider
+  // rejects the whole request: 400 from the gateway, or
+  // "No tool call found for function call output with call_id ..." from Codex.
   const { sandbox, home, tools, hooks, ctx } = await boot(config({ protectedTurns: 4, debug: true }));
   try {
     const testo = (t) => `${t} ` + 'X'.repeat(240);
     const messages = [
-      { role: 'user', content: testo('turno 1') },
-      // Ultimo endpoint valido sotto il pavimento: l'intervallo finisce qui.
-      { role: 'assistant', content: [{ type: 'text', text: testo('A pensa') }, { type: 'toolCall', id: 'ca', name: 'bash', arguments: { command: 'ls' } }] },
-      // Indice >= pavimento: resta fuori, con la sua coppia intatta.
-      { role: 'assistant', content: [{ type: 'text', text: testo('B pensa') }, { type: 'toolCall', id: 'cb', name: 'bash', arguments: { command: 'ls' } }] },
-      // Il risultato di A arriva DOPO l'assistant B: la sua call e' dentro il
-      // range e sparisce, quindi questo risultato e' orfano e va scartato.
-      { role: 'toolResult', toolCallId: 'ca', content: [{ type: 'text', text: testo('output di A') }] },
-      { role: 'toolResult', toolCallId: 'cb', content: [{ type: 'text', text: testo('output di B') }] },
+      { role: 'user', content: testo('turn 1') },
+      // Last valid endpoint below the floor: the range ends here.
+      { role: 'assistant', content: [{ type: 'text', text: testo('A thinks') }, { type: 'toolCall', id: 'ca', name: 'bash', arguments: { command: 'ls' } }] },
+      // Index >= floor: it stays outside, with its pair intact.
+      { role: 'assistant', content: [{ type: 'text', text: testo('B thinks') }, { type: 'toolCall', id: 'cb', name: 'bash', arguments: { command: 'ls' } }] },
+      // The result of A arrives AFTER the assistant B: its call is inside the
+      // range and disappears, so this result is orphan and must be discarded.
+      { role: 'toolResult', toolCallId: 'ca', content: [{ type: 'text', text: testo('output from A') }] },
+      { role: 'toolResult', toolCallId: 'cb', content: [{ type: 'text', text: testo('output from B') }] },
     ];
 
     await hooks.get('context')({ messages }, ctx);
-    const out = await call(tools, ctx, 'sintesi dello scambio A');
-    assert.equal(out.details.ok, true, `rifiutato: ${JSON.stringify(out.details)}`);
+    const out = await call(tools, ctx, 'summary of exchange A');
+    assert.equal(out.details.ok, true, `rejected: ${JSON.stringify(out.details)}`);
 
     const res = await hooks.get('context')({ messages }, ctx);
     const kept = res.messages;
-    // Senza applicazione dello span non ci sarebbe nulla da riparare e il test
-    // passerebbe VUOTO: e' l'errore gia' commesso una volta.
+    // Without applying the span there would be nothing to repair and the test
+    // would pass EMPTY: it is the mistake already made once.
     assert.ok(kept.some((m) => m.customType === 'cwl-compressed'),
-      'lo span deve essere stato applicato, altrimenti il test non prova niente');
+      'the span must have been applied, otherwise the test proves nothing');
 
     const { senzaRisultato, senzaChiamata } = orfani(kept);
     assert.deepEqual(senzaChiamata, [],
-      `tool_result senza il suo tool_use: il provider risponde 400. Orfani: ${senzaChiamata.join(', ')}`);
+      `tool_result without its tool_use: the provider answers 400. Orphans: ${senzaChiamata.join(', ')}`);
     assert.deepEqual(senzaRisultato, [],
-      `tool_use senza il suo risultato: il provider risponde 400. Orfani: ${senzaRisultato.join(', ')}`);
-    // Mutazione opposta ("ripara scartando tutto"): la coppia di B non c'entra
-    // nulla con il range e deve sopravvivere INTERA, call e risultato.
+      `tool_use without its result: the provider answers 400. Orphans: ${senzaRisultato.join(', ')}`);
+    // Opposite mutation ("repair by discarding everything"): the pair of B has nothing
+    // to do with the range and must survive ENTIRE, call and result.
     assert.ok(kept.some((m) => m.role === 'toolResult' && m.toolCallId === 'cb'),
-      'il risultato di B, estraneo al range, non deve essere scartato');
+      'the result of B, extraneous to the range, must not be discarded');
     assert.ok(kept.some((m) => Array.isArray(m.content)
       && m.content.some((b) => b.type === 'toolCall' && b.id === 'cb')),
-      'la toolCall di B deve restare: il suo risultato e\' vivo');
+      'the toolCall of B must stay: its result is alive');
 
-    // La riparazione SCARTA un messaggio: se non lo dicesse sarebbe una modifica
-    // silenziosa, e una modifica silenziosa e' il modo in cui un bug si nasconde.
-    // Il log e' l'unica traccia, quindi va verificato invece che promesso.
+    // The repair DISCARDS a message: if it did not say so it would be a silent
+    // change, and a silent change is the way a bug hides.
+    // The log is the only trace, so it must be verified instead of promised.
     const fs = await import('node:fs');
     const log = fs.readFileSync(path.join(sandbox.dir, '.pi', 'cwl', 'cwl.log'), 'utf8');
     assert.match(log, /PAIR REPAIR: dropped 1 orphan tool result/,
-      `il log deve dire di aver scartato il risultato orfano. Log:\n${log}`);
+      `the log must say it discarded the orphan result. Log:\n${log}`);
   } finally { home.restore(); sandbox.cleanup(); }
 });
 
-test('due messaggi con lo STESSO testo non collassano su un solo indirizzo', async () => {
-  // MISURATO in una sessione vera: 303 messaggi assistant con il testo "*", 51
-  // con "🌙", 40 con la stessa frase da 100 caratteri. Con il solo hash del
-  // testo collassano tutti su UN indirizzo, e la mappa tiene l'ULTIMA occorrenza:
-  // lo span creato sulla prima si risolveva sull'ultima, cioe' su un intervallo
-  // DIVERSO da quello chiesto — anche oltre la finestra di sicurezza.
-  // Il transcript porta un timestamp su ogni messaggio (epoch ms per gli
-  // assistant) ed e' quello a distinguere due testi identici.
+test('two messages with the SAME text do not collapse onto a single address', async () => {
+  // MEASURED in a real session: 303 assistant messages with the text "*", 51
+  // with "🌙", 40 with the same 100-character sentence. With only the text
+  // hash they all collapse onto ONE address, and the map keeps the LAST occurrence:
+  // the span created on the first resolved onto the last, that is onto a range
+  // DIFFERENT from the one requested — even beyond the safety window.
+  // The transcript carries a timestamp on each message (epoch ms for the
+  // assistant) and it is that which distinguishes two identical texts.
   const { sandbox, home, tools, hooks, ctx } = await boot(config({ protectedTurns: 4 }));
   try {
     const testo = (t) => `${t} ` + 'X'.repeat(240);
     const messages = [
-      { role: 'user', content: testo('turno 1'), timestamp: 1000 },
-      // Ultimo endpoint valido sotto il pavimento: l'intervallo finisce qui.
+      { role: 'user', content: testo('turn 1'), timestamp: 1000 },
+      // Last valid endpoint below the floor: the range ends here.
       { role: 'assistant', content: 'ok', timestamp: 2000 },
-      // Un messaggio non-endpoint, per far cadere il pavimento dopo il primo "ok".
-      { role: 'custom', customType: 'altro', content: 'riepilogo iniettato', timestamp: 2500 },
-      // STESSO TESTO del primo, ma oltre la finestra: qui l'indirizzo ambiguo
-      // faceva arrivare lo span fin qui, inghiottendolo.
+      // A non-endpoint message, to make the floor fall after the first "ok".
+      { role: 'custom', customType: 'other', content: 'injected recap', timestamp: 2500 },
+      // SAME TEXT as the first, but beyond the window: here the ambiguous address
+      // made the span reach this far, swallowing it.
       { role: 'assistant', content: 'ok', timestamp: 9000 },
-      { role: 'user', content: testo('turno 2'), timestamp: 9500 },
-      { role: 'assistant', content: testo('risposta recente'), timestamp: 9600 },
+      { role: 'user', content: testo('turn 2'), timestamp: 9500 },
+      { role: 'assistant', content: testo('recent answer'), timestamp: 9600 },
     ];
 
     await hooks.get('context')({ messages }, ctx);
-    const out = await call(tools, ctx, 'sintesi del primo turno');
-    assert.equal(out.details.ok, true, `rifiutato: ${JSON.stringify(out.details)}`);
+    const out = await call(tools, ctx, 'summary of the first turn');
+    assert.equal(out.details.ok, true, `rejected: ${JSON.stringify(out.details)}`);
 
     const res = await hooks.get('context')({ messages }, ctx);
     const kept = res.messages;
     assert.ok(kept.some((m) => m.customType === 'cwl-compressed'),
-      'lo span deve essere stato applicato, altrimenti il test non prova niente');
+      'the span must have been applied, otherwise the test proves nothing');
     const primo = (l) => l.some((m) => m.role === 'assistant' && m.content === 'ok' && m.timestamp === 2000);
     const secondo = (l) => l.some((m) => m.role === 'assistant' && m.content === 'ok' && m.timestamp === 9000);
-    assert.ok(!primo(kept), 'il primo "ok" e\' dentro l\'intervallo: il riassunto lo sostituisce');
+    assert.ok(!primo(kept), 'the first "ok" is inside the range: the summary replaces it');
     assert.ok(secondo(kept),
-      'il secondo "ok" sta OLTRE la finestra: con l\'indirizzo ambiguo lo span arrivava fin li\' e lo cancellava');
+      'the second "ok" is BEYOND the window: with the ambiguous address the span reached that far and erased it');
   } finally { home.restore(); sandbox.cleanup(); }
 });
 
-test('un episodio le cui ancore sono uscite dal contesto viene DETTO, non dato per evacuato', async () => {
-  // MISURATO in una sessione vera: tutti e 4 gli episodi erano a level='removed',
-  // ma le loro ancore delimiter erano state portate via dalla compattazione
-  // nativa. episodeRanges li salta (giusto: senza ancore non sa cosa toccare),
-  // pero' recoverable() esclude gli episodi 'removed', quindi l'estensione
-  // credeva di averli evacuati e si dichiarava a posto. Il difetto vero non era
-  // il contenuto: era il SILENZIO.
+test('an episode whose anchors left the context is STATED, not assumed evacuated', async () => {
+  // MEASURED in a real session: all 4 episodes were at level='removed',
+  // but their delimiter anchors had been taken away by the native
+  // compaction. episodeRanges skips them (right: without anchors it does not know what to touch),
+  // however recoverable() excludes the 'removed' episodes, so the extension
+  // believed it had evacuated them and declared itself fine. The real defect was not
+  // the content: it was the SILENCE.
   const { sandbox, home, tools, hooks, ctx } = await boot(config());
   try {
     const delim = (id, params) => tools.get('delimiter').execute(id, params, undefined, undefined, ctx);
-    const apri = await delim('T1', { action: 'start', name: 'ep-anchore', type: 'expl' });
-    assert.equal(apri.details.ok, true, `apertura rifiutata: ${JSON.stringify(apri.details)}`);
-    const chiudi = await delim('T2', { action: 'end', name: 'ep-anchore', description: 'fatto' });
-    assert.equal(chiudi.details.ok, true, `chiusura rifiutata: ${JSON.stringify(chiudi.details)}`);
+    const apri = await delim('T1', { action: 'start', name: 'ep-anchor', type: 'expl' });
+    assert.equal(apri.details.ok, true, `opening rejected: ${JSON.stringify(apri.details)}`);
+    const chiudi = await delim('T2', { action: 'end', name: 'ep-anchor', description: 'done' });
+    assert.equal(chiudi.details.ok, true, `closing rejected: ${JSON.stringify(chiudi.details)}`);
 
     const corpo = 'X'.repeat(200);
     const completa = [
-      { role: 'user', content: `prima ${corpo}` },
-      { role: 'assistant', content: `lavoro ${corpo}` },
-      { role: 'toolResult', toolCallId: 'T1', content: [{ type: 'text', text: 'inizio episodio' }] },
-      { role: 'assistant', content: `dentro ${corpo}` },
-      { role: 'toolResult', toolCallId: 'T2', content: [{ type: 'text', text: 'fine episodio' }] },
-      { role: 'user', content: `dopo ${corpo}` },
-      { role: 'assistant', content: `ultima ${corpo}` },
+      { role: 'user', content: `before ${corpo}` },
+      { role: 'assistant', content: `work ${corpo}` },
+      { role: 'toolResult', toolCallId: 'T1', content: [{ type: 'text', text: 'episode start' }] },
+      { role: 'assistant', content: `inside ${corpo}` },
+      { role: 'toolResult', toolCallId: 'T2', content: [{ type: 'text', text: 'episode end' }] },
+      { role: 'user', content: `after ${corpo}` },
+      { role: 'assistant', content: `last ${corpo}` },
     ];
 
     await hooks.get('context')({ messages: completa }, ctx);
     const conAncore = await tools.get('cwl_status').execute('t', {}, undefined, undefined, ctx);
     assert.equal(conAncore.details.unlocatable, 0,
-      'con le ancore nel contesto l\'episodio e\' localizzabile: ' + JSON.stringify(conAncore.details));
+      'with the anchors in the context the episode is locatable: ' + JSON.stringify(conAncore.details));
 
-    // La compattazione nativa porta via i due risultati di delimiter: l'episodio
-    // non e' piu' localizzabile, e va DETTO.
+    // The native compaction takes away the two results of delimiter: the episode
+    // is no longer locatable, and it must be STATED.
     const senzaAncore = completa.filter((m) => m.toolCallId !== 'T1' && m.toolCallId !== 'T2');
     await hooks.get('context')({ messages: senzaAncore }, ctx);
     const senza = await tools.get('cwl_status').execute('t', {}, undefined, undefined, ctx);
     assert.equal(senza.details.unlocatable, 1,
-      'un episodio non localizzabile deve essere contato e detto: ' + JSON.stringify(senza.details));
+      'an unlocatable episode must be counted and stated: ' + JSON.stringify(senza.details));
   } finally { home.restore(); sandbox.cleanup(); }
 });
 
-test('dopo la prima compressione l\'indirizzo si rinnova: si puo\' comprimere ancora', async () => {
-  // Il ramo degli span usciva con `return` PRIMA del punto che calcola il
-  // prossimo intervallo (~2290). Ma `cwl_compress_range` non lo ricalcola —
-  // non ha la lista dei messaggi, legge `st.rangeStartHash` — quindi finche'
-  // uno span risolveva, l'indirizzo non veniva MAI rinnovato e l'agente non
-  // poteva piu' comprimere, mentre la conversazione continuava a crescere.
+test('after the first compression the address is renewed: you can compress again', async () => {
+  // The span branch exited with `return` BEFORE the point that computes the
+  // next range (~2290). But `cwl_compress_range` does not recompute it —
+  // it does not have the list of messages, it reads `st.rangeStartHash` — so as long as
+  // a span resolved, the address was NEVER renewed and the agent could no
+  // longer compress, while the conversation kept growing.
   const { sandbox, home, tools, hooks, ctx } = await boot(config());
   try {
     const turno = (i) => ([
-      { role: 'user', content: `turno ${i} contenuto ` + 'U'.repeat(200) },
-      { role: 'assistant', content: `risposta ${i} contenuto ` + 'A'.repeat(200) },
+      { role: 'user', content: `turn ${i} content ` + 'U'.repeat(200) },
+      { role: 'assistant', content: `answer ${i} content ` + 'A'.repeat(200) },
     ]);
     const lista = [];
     for (let i = 1; i <= 6; i++) lista.push(...turno(i));
 
     await hooks.get('context')({ messages: lista }, ctx);
-    const prima = await call(tools, ctx, 'sintesi della prima meta\'');
+    const prima = await call(tools, ctx, 'summary of the first half');
     assert.equal(prima.details.ok, true,
-      `la prima compressione deve passare: ${JSON.stringify(prima.details)}`);
+      `the first compression must pass: ${JSON.stringify(prima.details)}`);
 
-    // La conversazione cresce: nuovi turni entrano nella zona comprimibile.
+    // The conversation grows: new turns enter the compressible zone.
     for (let i = 7; i <= 10; i++) lista.push(...turno(i));
 
     await hooks.get('context')({ messages: lista }, ctx);
-    const seconda = await call(tools, ctx, 'sintesi della seconda meta\'');
+    const seconda = await call(tools, ctx, 'summary of the second half');
     assert.equal(seconda.details.ok, true,
-      'dopo la prima compressione l\'indirizzo deve rinnovarsi, o l\'agente non puo\' piu\' comprimere: '
+      'after the first compression the address must be renewed, or the agent can no longer compress: '
       + JSON.stringify(seconda.details));
   } finally { home.restore(); sandbox.cleanup(); }
 });
 
-test('uno span i cui estremi sono usciti dal contesto viene potato, e si vede', async () => {
-  // Uno span non applicabile non fa danno al contesto, ma la sua esistenza e' un
-  // silenzio: il suo riassunto (migliaia di caratteri) viene ri-salvato nello
-  // stato a ogni turno. MISURATO: nel file di stato di una sessione vera, 4 span
-  // portavano 38.459 caratteri di riassunti su 51.880 byte di file.
+test('a span whose endpoints left the context is pruned, and it shows', async () => {
+  // A non-applicable span does no harm to the context, but its existence is a
+  // silence: its summary (thousands of characters) is re-saved into the
+  // state at every turn. MEASURED: in the state file of a real session, 4 spans
+  // carried 38,459 characters of summaries on 51,880 bytes of file.
   const { sandbox, home, tools, hooks, ctx } = await boot(config());
   try {
     const turno = (i) => ([
-      { role: 'user', content: `turno ${i} contenuto ` + 'U'.repeat(200) },
-      { role: 'assistant', content: `risposta ${i} contenuto ` + 'A'.repeat(200) },
+      { role: 'user', content: `turn ${i} content ` + 'U'.repeat(200) },
+      { role: 'assistant', content: `answer ${i} content ` + 'A'.repeat(200) },
     ]);
     const lista = [];
     for (let i = 1; i <= 6; i++) lista.push(...turno(i));
 
     await hooks.get('context')({ messages: lista }, ctx);
-    const out = await call(tools, ctx, 'sintesi della prima meta\'');
-    assert.equal(out.details.ok, true, `rifiutato: ${JSON.stringify(out.details)}`);
-    assert.equal(out.details.spans, 1, 'lo span appena creato deve esistere');
+    const out = await call(tools, ctx, 'summary of the first half');
+    assert.equal(out.details.ok, true, `rejected: ${JSON.stringify(out.details)}`);
+    assert.equal(out.details.spans, 1, 'the span just created must exist');
 
     const vivo = await tools.get('cwl_status').execute('t', {}, undefined, undefined, ctx);
-    assert.equal(vivo.details.spans, 1, 'uno span con gli estremi nel contesto NON deve essere potato');
+    assert.equal(vivo.details.spans, 1, 'a span with its endpoints in the context must NOT be pruned');
 
-    // Una compattazione nativa sostituisce quella storia: gli estremi dello span
-    // non sono piu' nella lista, e non ci torneranno.
+    // A native compaction replaces that history: the endpoints of the span
+    // are no longer in the list, and they will not come back.
     const dopoCompattazione = lista.slice(-2);
     await hooks.get('context')({ messages: dopoCompattazione }, ctx);
 
     const stat = await tools.get('cwl_status').execute('t', {}, undefined, undefined, ctx);
     assert.equal(stat.details.spans, 0,
-      'lo span i cui estremi sono usciti dal contesto deve essere potato: ' + JSON.stringify(stat.details));
+      'the span whose endpoints left the context must be pruned: ' + JSON.stringify(stat.details));
   } finally { home.restore(); sandbox.cleanup(); }
 });

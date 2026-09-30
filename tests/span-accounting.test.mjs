@@ -1,36 +1,36 @@
 /**
- * Il risparmio che uno span DICHIARA deve essere quello che il contesto ha perso.
+ * The saving a span DECLARES must be what the context has lost.
  *
- * IL DIFETTO. In `applySpans` il guadagno di uno span era calcolato su tutto il
+ * THE DEFECT. In `applySpans` the gain of a span was computed over the whole
  * range:
  *
  *   for (let i = from; i <= to; i++) { replaced.add(i); original += estimateMessageTokens(messages[i]); }
  *   const gain = Math.max(0, original - estimateTokens(sp.summary));
  *
- * ma il range NON viene rimosso per intero: piu' sotto, quando la lista viene
- * ricostruita, i messaggi `user`, `system`, `developer` e `custom` che cadono
- * dentro lo span vengono TENUTI (`if (role === 'user' || ...) { kept.push(m); }`).
- * Quei token restano nel contesto e continuano a costare, ma il guadagno li
- * contava come risparmiati. MISURATO in un sandbox con una conversazione di 12
- * messaggi (6 `user` + 6 `assistant`, ~756 token): il log dichiarava
- * `SPANS applied: 1 (new 1), saved 749t` mentre i sei messaggi `user` erano
- * ancora presenti nella lista restituita, quindi il contesto era sceso di ~338t.
- * Lo span dichiarava piu' del doppio di quanto aveva liberato.
+ * but the range is NOT removed entirely: further down, when the list is
+ * rebuilt, the `user`, `system`, `developer` and `custom` messages that fall
+ * inside the span are KEPT (`if (role === 'user' || ...) { kept.push(m); }`).
+ * Those tokens stay in the context and keep costing, but the gain counted them as
+ * saved. MEASURED in a sandbox with a conversation of 12
+ * messages (6 `user` + 6 `assistant`, ~756 tokens): the log declared
+ * `SPANS applied: 1 (new 1), saved 749t` while the six `user` messages were
+ * still present in the returned list, so the context had dropped by ~338t.
+ * The span declared more than double what it had freed.
  *
- * E' la stessa famiglia del difetto chiuso nella contabilita' dell'evacuazione
- * (`saved` era la stima del piano invece di `B-A`): un numero che afferma piu' del
- * lavoro fatto. La conseguenza non e' cosmetica: `cwl_status` somma quei
- * risparmi, quindi l'estensione crede di aver liberato spazio che ha ancora, e
- * smette di cercare leve proprio quando il contesto e' ancora sopra il trigger
- * (dal vivo: ~142.000 token misurati contro un trigger di 68.000).
+ * It is the same family as the defect closed in the eviction accounting
+ * (`saved` was the plan's estimate instead of `B-A`): a number claiming more than
+ * the work done. The consequence is not cosmetic: `cwl_status` adds up those
+ * savings, so the extension believes it has freed space it still has, and
+ * stops looking for levers exactly when the context is still above the trigger
+ * (live: ~142,000 tokens measured against a trigger of 68,000).
  *
- * Lo stesso numero sbagliato finiva nel messaggio iniettato al posto dei
- * messaggi compressi, che dichiara `(~N token risparmiati)` passando la
- * dimensione del RANGE.
+ * The same wrong number ended up in the message injected in place of the
+ * compressed messages, which declares `(~N token risparmiati)` by passing the
+ * size of the RANGE.
  *
- * Il rimedio e' quello dell'evacuazione: contare cio' che si e' DAVVERO rimosso,
- * con un'unica definizione dei ruoli che sopravvivono usata sia dal conto sia
- * dalla ricostruzione della lista, cosi' i due non possono piu' divergere.
+ * The remedy is the one of the eviction: count what has REALLY been removed,
+ * with a single definition of the surviving roles used both by the count and
+ * by the rebuild of the list, so that the two can no longer diverge.
  */
 import assert from 'node:assert/strict';
 import test from 'node:test';
@@ -41,9 +41,9 @@ import { makeSandbox, bootExtension, withHome, sessionCtx } from './_helpers.mjs
 let seq = 0;
 
 /**
- * Budget basso di proposito: il trigger (300) deve restare sotto il contesto
- * anche DOPO lo span, perche' e' la riga che l'estensione scrive in quel caso
- * (`SPANS applied (Nt) still above trigger Mt`) a darci la misura del dopo.
+ * Deliberately low budget: the trigger (300) must stay below the context
+ * even AFTER the span, because it is the line the extension writes in that case
+ * (`SPANS applied (Nt) still above trigger Mt`) that gives us the after measure.
  */
 const config = () => ({
   tokenBudget: 600,
@@ -70,26 +70,26 @@ const hook = async (hooks, ctx, messages) => {
   return (res && res.messages) || messages;
 };
 
-/** 6 `user` + 6 `assistant`: meta' del range sopravvive allo span (i turni utente). */
+/** 6 `user` + 6 `assistant`: half of the range survives the span (the user turns). */
 const conversazione = () => {
   const out = [];
   for (let i = 1; i <= 6; i++) {
-    out.push({ role: 'user', content: `turno ${i} contenuto ` + 'U'.repeat(200) });
-    out.push({ role: 'assistant', content: `risposta ${i} contenuto ` + 'A'.repeat(200) });
+    out.push({ role: 'user', content: `turn ${i} content ` + 'U'.repeat(200) });
+    out.push({ role: 'assistant', content: `reply ${i} content ` + 'A'.repeat(200) });
   }
   return out;
 };
 
-test('il risparmio dichiarato da uno span e\' quello che il contesto ha davvero perso', async () => {
+test('the saving declared by a span is what the context has really lost', async () => {
   const { sandbox, home, tools, hooks, ctx } = await boot();
   try {
     const base = conversazione();
-    // Turno 1: l'estensione prende le misure e memorizza l'indirizzo da comprimere.
+    // Turn 1: the extension takes the measurements and stores the address to compress.
     await hook(hooks, ctx, base);
-    const comp = await tools.get('cwl_compress_range').execute('t', { summary: 'SINTESI-1 dei primi turni' }, undefined, undefined, ctx);
-    assert.equal(comp.details.ok, true, `lo span non e' stato creato (senza span il test non prova niente): ${JSON.stringify(comp.details)}`);
+    const comp = await tools.get('cwl_compress_range').execute('t', { summary: 'SINTESI-1 of the first turns' }, undefined, undefined, ctx);
+    assert.equal(comp.details.ok, true, `the span was not created (without a span the test proves nothing): ${JSON.stringify(comp.details)}`);
 
-    // Turno 2: lo span si applica per la prima volta.
+    // Turn 2: the span is applied for the first time.
     const out = await hook(hooks, ctx, base);
     const log = logDi(sandbox);
 
@@ -98,48 +98,48 @@ test('il risparmio dichiarato da uno span e\' quello che il contesto ha davvero 
     const dopo = /SPANS applied \((\d+)t\) still above trigger/.exec(log);
     assert.ok(
       prima && dichiarato && dopo,
-      'servono tutte e tre le righe (misura prima, risparmio dichiarato, misura dopo): ' +
+      'all three lines are needed (measure before, declared saving, measure after): ' +
       `prima=${!!prima} dichiarato=${!!dichiarato} dopo=${!!dopo}`,
     );
 
-    // NON-VACUITA': i turni `user` dentro lo span sopravvivono davvero, quindi il
-    // dichiarato ha modo di esagerare. Se un giorno lo span li rimuovesse, questo
-    // test va ripensato invece di restare verde per caso.
-    assert.ok(JSON.stringify(out).includes('turno 1 contenuto'),
-      'i turni `user` dentro lo span risultano rimossi: la premessa del test non vale piu\'');
+    // NON-VACUITY: the `user` turns inside the span really survive, so the
+    // declared figure has a chance to overshoot. If one day the span removed them, this
+    // test must be rethought instead of staying green by accident.
+    assert.ok(JSON.stringify(out).includes('turn 1 content'),
+      'the `user` turns inside the span turn out to be removed: the test\'s premise no longer holds');
 
     assert.equal(
       Number(dichiarato[1]),
       Number(prima[1]) - Number(dopo[1]),
-      `lo span dichiara di aver risparmiato ${dichiarato[1]}t ma il contesto e' sceso da ${prima[1]}t a ${dopo[1]}t, ` +
-      `cioe' ${Number(prima[1]) - Number(dopo[1])}t: i turni utente dentro lo span restano nel contesto e continuano a costare`,
+      `the span declares it saved ${dichiarato[1]}t but the context dropped from ${prima[1]}t to ${dopo[1]}t, ` +
+      `that is ${Number(prima[1]) - Number(dopo[1])}t: the user turns inside the span stay in the context and keep costing`,
     );
   } finally { home.restore(); sandbox.cleanup(); }
 });
 
-test('il messaggio iniettato non dichiara piu\' token di quanti il contesto ne abbia persi', async () => {
+test('the injected message no longer declares more tokens than the context has lost', async () => {
   const { sandbox, home, tools, hooks, ctx } = await boot();
   try {
     const base = conversazione();
     await hook(hooks, ctx, base);
-    const comp = await tools.get('cwl_compress_range').execute('t', { summary: 'SINTESI-1 dei primi turni' }, undefined, undefined, ctx);
-    assert.equal(comp.details.ok, true, `lo span non e' stato creato: ${JSON.stringify(comp.details)}`);
+    const comp = await tools.get('cwl_compress_range').execute('t', { summary: 'SINTESI-1 of the first turns' }, undefined, undefined, ctx);
+    assert.equal(comp.details.ok, true, `the span was not created: ${JSON.stringify(comp.details)}`);
 
     const out = await hook(hooks, ctx, base);
     const log = logDi(sandbox);
     const prima = /RANGE \S+ \(~\d+t\) \| 12 msgs, (\d+)t vs trigger/.exec(log);
     const dopo = /SPANS applied \((\d+)t\) still above trigger/.exec(log);
-    assert.ok(prima && dopo, 'misure mancanti: il test non prova niente');
+    assert.ok(prima && dopo, 'measurements missing: the test proves nothing');
     const persi = Number(prima[1]) - Number(dopo[1]);
 
     const iniettato = out.find((m) => m?.customType === 'cwl-compressed');
-    assert.ok(iniettato, 'il riepilogo compresso non e\' stato iniettato');
+    assert.ok(iniettato, 'the compressed summary was not injected');
     const claim = /~(\d+) token risparmiati/.exec(JSON.stringify(iniettato));
-    assert.ok(claim, 'il messaggio iniettato non dichiara i token risparmiati');
+    assert.ok(claim, 'the injected message does not declare the saved tokens');
     assert.ok(
       Number(claim[1]) <= persi,
-      `il messaggio iniettato dichiara ~${claim[1]} token risparmiati ma il contesto ne ha persi ${persi}: ` +
-      'il numero era la dimensione del RANGE, non il risparmio',
+      `the injected message declares ~${claim[1]} token risparmiati but the context has lost ${persi}: ` +
+      'the number was the size of the RANGE, not the saving',
     );
   } finally { home.restore(); sandbox.cleanup(); }
 });

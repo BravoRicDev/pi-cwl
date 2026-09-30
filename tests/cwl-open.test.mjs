@@ -1,23 +1,23 @@
 /**
- * `cwl_open`: una foglia si riapre INTERA, e se non c'e' lo dice.
+ * `cwl_open`: a leaf reopens WHOLE, and if it is not there it says so.
  *
- * IL PROBLEMA CHE RISOLVE. Un riassunto vive SOLO nello stato: il transcript e'
- * append-only e tiene i MESSAGGI ORIGINALI, non i riassunti. Finche' l'unica via
- * per rileggere cio' che una compressione ha messo da parte era ricomprare i
- * messaggi dal transcript, il lavoro dell'agente (il riassunto) era scrivibile e
- * non rileggibile. `cwl_open` chiude quel cerchio.
+ * THE PROBLEM IT SOLVES. A summary lives ONLY in the state: the transcript is
+ * append-only and holds the ORIGINAL MESSAGES, not the summaries. As long as the only way
+ * to reread what a compression had set aside was to buy the messages back
+ * from the transcript, the agent's work (the summary) was writable and
+ * not rereadable. `cwl_open` closes that circle.
  *
- * DUE REGOLE, e sono entrambe richieste dell'operatore:
- *  1. il corpo torna INTERO, senza troncamento. Non e' un dettaglio di comodo:
- *     i suoi modelli hanno finestre da 1M di token e un agente che vuole vedere
- *     qualcosa deve VEDERLO. L'unico obbligo del tool e' dichiarare la dimensione
- *     PRIMA di consegnarla, non tagliarla;
- *  2. un id che non esiste viene DICHIARATO. Il silenzio e' il modo in cui i bug
- *     si nascondono, e qui sarebbe il peggiore: l'agente crederebbe di avere in
- *     mano il contenuto e non ce l'ha.
+ * TWO RULES, and both are the operator's requests:
+ *  1. the body comes back WHOLE, without truncation. It is not a convenience detail:
+ *     his models have 1M-token windows and an agent that wants to see
+ *     something must SEE it. The tool's only duty is to declare the size
+ *     BEFORE handing it over, not to cut it;
+ *  2. an id that does not exist is DECLARED. Silence is how bugs
+ *     hide, and here it would be the worst: the agent would believe it had the
+ *     content in hand and it does not.
  *
- * Il secondo caso e' quello che rende onesto il primo: senza, un `cwl_open` che
- * risponde "ecco il corpo" a un id inesistente passerebbe il test.
+ * The second case is what makes the first honest: without it, a `cwl_open` that
+ * answers "here is the body" to a nonexistent id would pass the test.
  */
 import assert from 'node:assert/strict';
 import test from 'node:test';
@@ -53,78 +53,78 @@ const hook = async (hooks, ctx, messages) => {
 const statoDi = (sandbox) => {
   const dir = path.join(sandbox.dir, '.pi', 'cwl', 'state');
   const file = fs.readdirSync(dir).find((f) => f.endsWith('.json'));
-  assert.ok(file, 'lo stato della sessione non e\' stato creato');
+  assert.ok(file, 'the session state was not created');
   return JSON.parse(fs.readFileSync(path.join(dir, file), 'utf8'));
 };
 
 const conversazione = () => {
   const out = [];
   for (let i = 1; i <= 6; i++) {
-    out.push({ role: 'user', content: `turno ${i} contenuto ` + 'U'.repeat(200) });
-    out.push({ role: 'assistant', content: `risposta ${i} contenuto ` + 'A'.repeat(200) });
+    out.push({ role: 'user', content: `round ${i} paragraph ` + 'U'.repeat(200) });
+    out.push({ role: 'assistant', content: `response ${i} paragraph ` + 'A'.repeat(200) });
   }
   return out;
 };
 
 const testo = (res) => res.content.map((c) => c.text).join('\n');
 
-test('cwl_open restituisce il corpo INTERO e dichiara un id che non esiste', async () => {
+test('cwl_open returns the WHOLE body and declares an id that does not exist', async () => {
   const { sandbox, home, tools, hooks, ctx } = await boot();
   try {
     await hook(hooks, ctx, conversazione());
 
-    // Un corpo molto piu' lungo di qualunque anteprima: se il tool tronca, si vede.
-    const corpo = 'RIASSUNTO-INTEGRALE ' + 'x'.repeat(8000) + ' FINE-DEL-CORPO';
+    // A body far longer than any preview: if the tool truncates, it shows.
+    const corpo = 'ENTIRE-SUMMARY-BODY ' + 'x'.repeat(8000) + ' BODY-ENDS-HERE';
     const comp = await tools.get('cwl_compress_range').execute('t', { summary: corpo }, undefined, undefined, ctx);
-    assert.equal(comp.details.ok, true, `lo span non e' stato creato: ${JSON.stringify(comp.details)}`);
+    assert.equal(comp.details.ok, true, `the span was not created: ${JSON.stringify(comp.details)}`);
 
     const sp = statoDi(sandbox).spans[0];
-    assert.ok(sp && typeof sp.id === 'string' && sp.id.length > 0, `lo span non ha un id stabile: ${JSON.stringify(sp)}`);
+    assert.ok(sp && typeof sp.id === 'string' && sp.id.length > 0, `the span has no stable id: ${JSON.stringify(sp)}`);
 
     const res = await tools.get('cwl_open').execute('t', { id: sp.id }, undefined, undefined, ctx);
     const out = testo(res);
-    assert.equal(res.details.ok, true, `cwl_open ha rifiutato un id che esiste: ${JSON.stringify(res.details)}`);
+    assert.equal(res.details.ok, true, `cwl_open refused an id that exists: ${JSON.stringify(res.details)}`);
 
-    // 1. Il corpo torna INTERO: non "un estratto", non "i primi N caratteri".
+    // 1. The body comes back WHOLE: not "an extract", not "the first N characters".
     assert.ok(
       out.includes(corpo),
-      `il corpo non e' tornato intero: il tool ha risposto con ${out.length} caratteri, il corpo ne ha ${corpo.length}. ` +
-        'Un riassunto troncato e\' un riassunto perso: il testo originale sta nel transcript, il riassunto no.',
+      `the body did not come back whole: the tool answered with ${out.length} characters, the body has ${corpo.length}. ` +
+        'A truncated summary is a lost summary: the original text sits in the transcript, the summary does not.',
     );
 
-    // 2. La dimensione e' dichiarata PRIMA di consegnarlo (l'unico obbligo).
-    assert.match(out, /~\d+ token/, `il tool non dichiara la dimensione del corpo: ${out.slice(0, 120)}`);
+    // 2. The size is declared BEFORE handing it over (the only duty).
+    assert.match(out, /~\d+ token/, `the tool does not declare the body size: ${out.slice(0, 120)}`);
 
-    // 3. Un id inesistente viene DICHIARATO, non taciuto.
+    // 3. A nonexistent id is DECLARED, not kept silent.
     const nessuno = await tools.get('cwl_open').execute('t', { id: 'sp-00000000' }, undefined, undefined, ctx);
     assert.equal(
       nessuno.details.ok,
       false,
-      'un id inesistente e\' stato accettato: l\'agente crederebbe di avere in mano un contenuto che non esiste',
+      'a nonexistent id was accepted: the agent would believe it had in hand a content that does not exist',
     );
     assert.match(
       testo(nessuno),
       /sp-00000000/,
-      `la dichiarazione non nomina l'id chiesto: ${testo(nessuno).slice(0, 160)}`,
+      `the declaration does not name the requested id: ${testo(nessuno).slice(0, 160)}`,
     );
 
-    // 4. La foglia deve essere RAGGIUNGIBILE: l'id che l'agente vede nel contesto
-    //    (l'avviso iniettato al posto dei messaggi compressi) deve essere quello che
-    //    `cwl_open` accetta. Un id che nessuno vede e' un tool che nessuno puo'
-    //    usare, e nessun test se ne accorgerebbe finche' non ci si prova davvero.
+    // 4. The leaf must be REACHABLE: the id the agent sees in the context
+    //    (the notice injected in place of the compressed messages) must be the one
+    //    `cwl_open` accepts. An id nobody sees is a tool nobody can
+    //    use, and no test would notice until one really tries.
     const conAvviso = await hook(hooks, ctx, conversazione());
     const iniettato = conAvviso.find((m) => m && m.customType === 'cwl-compressed');
-    assert.ok(iniettato, 'nessun messaggio di compressione nel contesto: la foglia non e\' nemmeno nominata');
+    assert.ok(iniettato, 'no compression message in the context: the leaf is not even named');
     const visto = /(sp-[0-9a-f]{8})/.exec(String(iniettato.content ?? ''));
     assert.ok(
       visto,
-      `l'avviso nel contesto non dice quale id aprire: ${String(iniettato.content).slice(0, 140)}`,
+      `the notice in the context does not say which id to open: ${String(iniettato.content).slice(0, 140)}`,
     );
     const riaperto = await tools.get('cwl_open').execute('t', { id: visto[1] }, undefined, undefined, ctx);
     assert.equal(
       riaperto.details.ok,
       true,
-      `l'id visto nel contesto (${visto[1]}) non e' apribile: ${JSON.stringify(riaperto.details)}`,
+      `the id seen in the context (${visto[1]}) is not openable: ${JSON.stringify(riaperto.details)}`,
     );
   } finally {
     home.restore();

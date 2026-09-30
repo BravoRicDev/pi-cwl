@@ -1,38 +1,39 @@
 /**
- * L'INVARIANTE DELL'INDICE — il primo test del piano (`PIANO-INDICE-RIASSUNTI.md`, sez. 3).
+ * THE INDEX INVARIANT — the first test of the plan (`PIANO-INDICE-RIASSUNTI.md`, sec. 3).
  *
- * Il progetto sta per costruire un indice di riassunti (foglie -> nodo a 30 -> nodo
- * vecchio) che deve restare CONTIGUO e NON SOVRAPPOSTO: nessun buco (niente perso) e
- * nessuna sovrapposizione (niente contato due volte). Prima di scrivere quel codice,
- * l'invariante va provato su cio' che c'e' gia': gli span.
+ * The project is about to build an index of summaries (leaves -> node of 30 -> old
+ * node) that must stay CONTIGUOUS and NON-OVERLAPPING: no hole (nothing lost) and
+ * no overlap (nothing counted twice). Before writing that code, the invariant
+ * must be tried on what already exists: the spans.
  *
- * DUE BUCHI TROVATI LEGGENDO IL CODICE, e questo test li fissa.
+ * TWO HOLES FOUND BY READING THE CODE, and this test pins them down.
  *
- * 1. `locateSpans` (index.ts 1772-1831) scarta in SILENZIO lo span contenuto in un
- *    altro:
+ * 1. `locateSpans` (index.ts 1772-1831) SILENTLY discards the span contained in
+ *    another:
  *
  *      .filter((x, _all, arr) => !arr.some((o) => o !== x && o.from <= x.from && o.to >= x.to))
  *
- *    Il `dead` viene riempito prima, nella `map`, quindi uno span contenuto non
- *    finisce ne' in `resolved` ne' in `dead`: sparisce da tutti i conteggi. E il
- *    log dice `SPANS applied: ${applied.applied}`, cioe' `resolved.length`, quindi
- *    non esiste una riga che dichiari la sparizione. Il suo riassunto resta nello
- *    stato e viene risalvato a ogni turno: peso morto che nessuno conta.
+ *    The `dead` set is filled earlier, in the `map`, so a contained span ends up
+ *    neither in `resolved` nor in `dead`: it disappears from every count. And the
+ *    log says `SPANS applied: ${applied.applied}`, that is, `resolved.length`, so
+ *    there is no line declaring the disappearance. Its summary stays in the
+ *    state and is re-saved on every turn: dead weight nobody counts.
  *
- * 2. Non esiste alcun controllo sulle sovrapposizioni PARZIALI. Il filtro qui sopra
- *    copre solo il contenimento: due span che si intersecano senza contenersi
- *    sopravvivono ENTRAMBI, e la regione condivisa viene contata due volte (anche
- *    da `declareFloor`, che somma `spanTokens`).
+ * 2. There is no check at all on PARTIAL overlaps. The filter above
+ *    covers only containment: two spans that intersect without containing each
+ *    other survive BOTH, and the shared region is counted twice (also
+ *    by `declareFloor`, which adds up `spanTokens`).
  *
- * E' la stessa famiglia dei difetti gia' chiusi in questa sessione (`saved` che era
- * la stima del piano, il risparmio degli span gonfiato): un numero che afferma piu'
- * del lavoro fatto, o una cosa che scompare senza essere dichiarata.
+ * It is the same family as the defects already closed in this session (`saved` that
+ * was the plan's estimate, the inflated span saving): a number claiming more
+ * than the work done, or something disappearing without being declared.
  *
- * Il test costruisce i due span CON GLI STRUMENTI DELL'AGENTE, non a mano: la domanda
- * non e' se `locateSpans` sappia gestire un caso teorico, ma se l'agente possa
- * produrlo. `cwl_compress` (index.ts ~2159-2197) controlla solo che i tre parametri
- * ci siano, che la coppia start+end non esista gia' (allora revoca) e che entrambi
- * gli hash siano in `knownHashes`: nessuna guardia sulle regioni gia' coperte.
+ * The test builds the two spans WITH THE AGENT'S TOOLS, not by hand: the question
+ * is not whether `locateSpans` can handle a theoretical case, but whether the agent
+ * can produce it. `cwl_compress` (index.ts ~2159-2197) only checks that the three
+ * parameters are there, that the start+end pair does not already exist (then it
+ * revokes) and that both hashes are in `knownHashes`: no guard on already covered
+ * regions.
  */
 import assert from 'node:assert/strict';
 import test from 'node:test';
@@ -52,7 +53,7 @@ const config = () => ({
 });
 
 async function boot() {
-  const sandbox = makeSandbox({ name: `invariante-${seq++}`, config: config() });
+  const sandbox = makeSandbox({ name: `invariant-${seq++}`, config: config() });
   const home = withHome(sandbox.dir);
   const { tools, hooks } = await bootExtension(sandbox);
   const ctx = sessionCtx(path.join(sandbox.dir, 'sessione.jsonl'));
@@ -67,64 +68,64 @@ const hook = async (hooks, ctx, messages) => {
   return (res && res.messages) || messages;
 };
 
-/** Lo stato della sessione: il sandbox ne tiene uno solo, quindi non serve l'hash della chiave. */
+/** The session state: the sandbox holds only one, so the key hash is not needed. */
 const statoDi = (sandbox) => {
   const dir = path.join(sandbox.dir, '.pi', 'cwl', 'state');
   const file = fs.readdirSync(dir).find((f) => f.endsWith('.json'));
-  assert.ok(file, 'lo stato della sessione non e\' stato creato');
+  assert.ok(file, 'the session state was not created');
   return JSON.parse(fs.readFileSync(path.join(dir, file), 'utf8'));
 };
 
 const compress = (tools, ctx, startHash, endHash, summary) =>
   tools.get('cwl_compress').execute('t', { startHash, endHash, summary }, undefined, undefined, ctx);
 
-/** Il percorso con cui l'agente comprime: lo sceglie l'estensione, e il tool SALVA lo stato. */
+/** The path by which the agent compresses: the extension picks it, and the tool SAVES the state. */
 const compressRange = (tools, ctx, summary) =>
   tools.get('cwl_compress_range').execute('t', { summary }, undefined, undefined, ctx);
 
-/** Coppie `user`/`assistant`: i turni utente sopravvivono agli span, gli assistant no. */
+/** `user`/`assistant` pairs: the user turns survive the spans, the assistants do not. */
 const conversazione = (da, a) => {
   const out = [];
   for (let i = da; i <= a; i++) {
-    out.push({ role: 'user', content: `turno ${i} contenuto ` + 'U'.repeat(200) });
-    out.push({ role: 'assistant', content: `risposta ${i} contenuto ` + 'A'.repeat(200) });
+    out.push({ role: 'user', content: `turn ${i} content ` + 'U'.repeat(200) });
+    out.push({ role: 'assistant', content: `reply ${i} content ` + 'A'.repeat(200) });
   }
   return out;
 };
 
-test('uno span contenuto in un altro non puo\' sparire senza essere dichiarato', async () => {
+test('a span contained in another cannot disappear without being declared', async () => {
   const { sandbox, home, tools, hooks, ctx } = await boot();
   try {
-    // Turno 1: l'estensione prende le misure e sa quale regione comprimere.
+    // Turn 1: the extension takes the measurements and knows which region to compress.
     await hook(hooks, ctx, conversazione(1, 6));
 
-    // Span A: il primo, sulla regione che l'estensione ha scelto. Il tool salva lo
-    // stato, quindi da qui in poi lo stato e' leggibile su disco.
+    // Span A: the first, on the region the extension chose. The tool saves the
+    // state, so from here on the state is readable on disk.
     const a = await compressRange(tools, ctx, 'SINTESI-A');
-    assert.equal(a.details.ok, true, `span A non creato: ${JSON.stringify(a.details)}`);
+    assert.equal(a.details.ok, true, `span A not created: ${JSON.stringify(a.details)}`);
     await hook(hooks, ctx, conversazione(1, 6));
 
-    // La conversazione CRESCE, cosi' esiste una seconda regione comprimibile: senza
-    // di lei non ci sarebbe niente con cui contenere A.
+    // The conversation GROWS, so that a second compressible region exists: without
+    // it there would be nothing with which to contain A.
     await hook(hooks, ctx, conversazione(1, 9));
     const b = await compressRange(tools, ctx, 'SINTESI-B');
-    assert.equal(b.details.ok, true, `span B non creato: ${JSON.stringify(b.details)}`);
+    assert.equal(b.details.ok, true, `span B not created: ${JSON.stringify(b.details)}`);
 
     const dopoB = statoDi(sandbox).spans;
-    assert.equal(dopoB.length, 2, `servono DUE span distinti perche' l'invariante abbia un oggetto: ${JSON.stringify(dopoB)}`);
+    assert.equal(dopoB.length, 2, `TWO distinct spans are needed for the invariant to have an object: ${JSON.stringify(dopoB)}`);
     const [spanA, spanB] = dopoB;
 
-    // Span OUTER: da A.start a B.end. CONTIENE sia A sia B.
+    // Span OUTER: from A.start to B.end. It CONTAINS both A and B.
     const outer = await compress(tools, ctx, spanA.startHash, spanB.endHash, 'SINTESI-OUTER');
-    assert.equal(outer.details.ok, true, `span OUTER non creato: ${JSON.stringify(outer.details)}`);
-    assert.equal(statoDi(sandbox).spans.length, 3, 'il terzo span non e\' finito nello stato: la premessa del test non regge');
+    assert.equal(outer.details.ok, true, `span OUTER not created: ${JSON.stringify(outer.details)}`);
+    assert.equal(statoDi(sandbox).spans.length, 3, 'the third span did not make it into the state: the test\'s premise does not hold');
 
-    // Turno finale: `locateSpans` vede A e B dentro OUTER. Si guarda SOLO cio' che
-    // questo turno ha scritto — il log accumula i turni precedenti, e leggere la
-    // PRIMA riga invece dell'ultima fa passare il test per il motivo sbagliato.
-    // E' successo davvero: la mutazione che applicava E potava gli stessi span
-    // (resolved = tutti, dead = i contenuti) passava, perche' la prima riga
-    // applicata del log era quella del turno in cui A era nato.
+    // Final turn: `locateSpans` sees A and B inside OUTER. Only what
+    // this turn wrote is looked at — the log accumulates previous turns, and reading
+    // the FIRST line instead of the last makes the test pass for the wrong reason.
+    // It really happened: the mutation that applied AND pruned the same spans
+    // (resolved = all, dead = the contained ones) passed, because the first applied
+    // line of the log was the one from the turn in which A was born.
     const primaDelTurno = logDi(sandbox).length;
     await hook(hooks, ctx, conversazione(1, 9));
     const log = logDi(sandbox).slice(primaDelTurno);
@@ -134,53 +135,53 @@ test('uno span contenuto in un altro non puo\' sparire senza essere dichiarato',
     assert.equal(
       applicati + potati,
       3,
-      `tre span nello stato, ma il log ne dichiara ${applicati} applicati e ${potati} potati: gli altri sono spariti in silenzio. ` +
-        'Il filtro di contenimento di locateSpans li scarta senza registrarli in `dead` (index.ts 1772-1831), ' +
-        'quindi non sono ne\' applicati ne\' dichiarati: i loro riassunti restano nello stato a pesare su ogni turno.',
+      `three spans in the state, but the log declares ${applicati} applied and ${potati} pruned: the others vanished silently. ` +
+        'The containment filter of locateSpans discards them without recording them in `dead` (index.ts 1772-1831), ' +
+        'so they are neither applied nor declared: their summaries stay in the state weighing on every turn.',
     );
   } finally {
     home.restore();
   }
 });
 
-test('due span che si sovrappongono senza contenersi vengono DICHIARATI', async () => {
+test('two spans that overlap without containing each other are DECLARED', async () => {
   const { sandbox, home, tools, hooks, ctx } = await boot();
   try {
     await hook(hooks, ctx, conversazione(1, 6));
     const a = await compressRange(tools, ctx, 'SINTESI-A');
-    assert.equal(a.details.ok, true, `span A non creato: ${JSON.stringify(a.details)}`);
+    assert.equal(a.details.ok, true, `span A not created: ${JSON.stringify(a.details)}`);
     await hook(hooks, ctx, conversazione(1, 6));
 
     await hook(hooks, ctx, conversazione(1, 9));
     const b = await compressRange(tools, ctx, 'SINTESI-B');
-    assert.equal(b.details.ok, true, `span B non creato: ${JSON.stringify(b.details)}`);
+    assert.equal(b.details.ok, true, `span B not created: ${JSON.stringify(b.details)}`);
     const [spanA, spanB] = statoDi(sandbox).spans;
-    assert.ok(spanA && spanB, 'servono DUE span distinti per costruire la sovrapposizione');
+    assert.ok(spanA && spanB, 'TWO distinct spans are needed to build the overlap');
 
-    // OVER parte dalla FINE di A: condivide con A l'ultimo indirizzo (un turno
-    // utente, che sopravvive) e contiene B. Il filtro del contenimento non ha
-    // niente da dire: A e OVER non si contengono a vicenda.
+    // OVER starts from the END of A: it shares with A the last address (a user
+    // turn, which survives) and contains B. The containment filter has
+    // nothing to say: A and OVER do not contain each other.
     const over = await compress(tools, ctx, spanA.endHash, spanB.endHash, 'SINTESI-OVER');
-    assert.equal(over.details.ok, true, `span OVER non creato: ${JSON.stringify(over.details)}`);
-    assert.equal(statoDi(sandbox).spans.length, 3, 'il terzo span non e\' finito nello stato');
+    assert.equal(over.details.ok, true, `span OVER not created: ${JSON.stringify(over.details)}`);
+    assert.equal(statoDi(sandbox).spans.length, 3, 'the third span did not make it into the state');
 
     const primaDelTurno = logDi(sandbox).length;
     await hook(hooks, ctx, conversazione(1, 9));
     const log = logDi(sandbox).slice(primaDelTurno);
 
-    // Niente si perde: A e OVER restano applicati (buttare A riporterebbe nel
-    // contesto i messaggi che solo A copre), B e' contenuto in OVER e viene potatto.
+    // Nothing is lost: A and OVER stay applied (discarding A would bring back into
+    // the context the messages only A covers), B is contained in OVER and gets pruned.
     const applicati = Number((/SPANS applied: (\d+)/.exec(log) || [0, 0])[1]);
     const potati = Number((/SPANS pruned: (\d+)/.exec(log) || [0, 0])[1]);
-    assert.equal(applicati + potati, 3, `niente puo' sparire: applicati ${applicati} + potati ${potati} invece di 3`);
+    assert.equal(applicati + potati, 3, `nothing can vanish: applied ${applicati} + pruned ${potati} instead of 3`);
 
-    // Ma la regione condivisa e' descritta da DUE riassunti: va detto, non subito.
+    // But the shared region is described by TWO summaries: it must be said, not undergone.
     const sovrapposti = /SPANS overlap: (\d+)/.exec(log);
     assert.ok(
       sovrapposti && Number(sovrapposti[1]) === 1,
-      `una coppia di span condivide una regione e nessuna riga lo dichiara: A=[0..A.end] e OVER=[A.end..B.end] ` +
-        'si toccano su un indice, quindi quel messaggio e\' dentro due riassunti. Oggi `locateSpans` non ha alcun ' +
-        `controllo sulle sovrapposizioni parziali e nessun conto le vede. Log del turno: ${log.trim().split('\n').slice(-4).join(' | ')}`,
+      `a pair of spans shares a region and no line declares it: A=[0..A.end] and OVER=[A.end..B.end] ` +
+        'touch at one index, so that message is inside two summaries. Today `locateSpans` has no ' +
+        `check on partial overlaps and no count sees them. Turn log: ${log.trim().split('\n').slice(-4).join(' | ')}`,
     );
   } finally {
     home.restore();

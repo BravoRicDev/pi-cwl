@@ -1,29 +1,29 @@
 /**
- * `cwl_micro`: il corpo esce dal contesto, il micro prende il suo posto, e il
- * corpo resta INTERO a una chiamata di distanza.
+ * `cwl_micro`: the body leaves the context, the micro takes its place, and the
+ * body remains WHOLE one call away.
  *
- * E' la leva da cui e' nato tutto il progetto. MISURATO in una sessione vera
+ * It is the lever the whole project was born from. MEASURED in a real session
  * (commit de9672a):
  *
  *   SPANS content: 52535t inside the spans = 52027t of summaries + 508t of user
  *   turns + 0t of other roles
  *
- * 52.027 token su 114.327 erano i riassunti che l'estensione aveva scritto LEI
- * (30 foglie, media 1.707t), e nessuna via poteva toccarli: `keptInsideSpan` tiene
- * `custom` e l'applier dell'evacuazione protegge `custom`. L'estensione sapeva
- * SCRIVERE un riassunto e non sapeva ASSORBIRNE uno vecchio: ogni compressione
- * aggiungeva un racconto, nessuna leva ne ritirava mai uno.
+ * 52,027 tokens out of 114,327 were the summaries the extension had written ITSELF
+ * (30 leaves, 1,707t on average), and no path could touch them: `keptInsideSpan` keeps
+ * `custom` and the eviction applier protects `custom`. The extension knew how to
+ * WRITE a summary and did not know how to ABSORB an old one: every compression
+ * added a story, no lever ever withdrew one.
  *
- * LE DUE COSE CHE QUESTO TEST DIFENDE:
- *  1. assorbire fa DIMINUIRE il contesto: il corpo esce, il micro entra. Se il
- *     corpo restasse, l'assorbimento non farebbe nulla;
- *  2. il micro NON tocca il corpo. Se lo scrivesse dentro, `cwl_open` tornerebbe
- *     corto e la promessa "non si perde niente" sarebbe falsa con una riga: e'
- *     l'unico modo di rompere questo design che non si vede dal contesto.
+ * THE TWO THINGS THIS TEST DEFENDS:
+ *  1. absorbing makes the context SMALLER: the body leaves, the micro enters. If the
+ *     body stayed, the absorption would do nothing;
+ *  2. the micro does NOT touch the body. If it wrote itself inside it, `cwl_open` would come
+ *     back short and the promise "nothing is lost" would be false in one line: it is
+ *     the only way of breaking this design that cannot be seen from the context.
  *
- * C'e' anche la via di ritorno: un testo VUOTO rimuove il micro e rimette il
- * corpo intero nel contesto. Un assorbimento che nessuno puo' annullare e' una
- * porta a senso unico, e questa ce l'ha.
+ * There is also the way back: an EMPTY text removes the micro and puts the
+ * whole body back in the context. An absorption nobody can undo is a
+ * one-way door, and this one has a way back.
  */
 import assert from 'node:assert/strict';
 import test from 'node:test';
@@ -59,84 +59,84 @@ const hook = async (hooks, ctx, messages) => {
 const statoDi = (sandbox) => {
   const dir = path.join(sandbox.dir, '.pi', 'cwl', 'state');
   const file = fs.readdirSync(dir).find((f) => f.endsWith('.json'));
-  assert.ok(file, 'lo stato della sessione non e\' stato creato');
+  assert.ok(file, 'the session state was not created');
   return JSON.parse(fs.readFileSync(path.join(dir, file), 'utf8'));
 };
 
 const conversazione = () => {
   const out = [];
   for (let i = 1; i <= 6; i++) {
-    out.push({ role: 'user', content: `turno ${i} contenuto ` + 'U'.repeat(200) });
-    out.push({ role: 'assistant', content: `risposta ${i} contenuto ` + 'A'.repeat(200) });
+    out.push({ role: 'user', content: `prompt ${i} content. ` + 'U'.repeat(200) });
+    out.push({ role: 'assistant', content: `answers ${i} content is ` + 'A'.repeat(200) });
   }
   return out;
 };
 
-/** Cio' che il provider riceverebbe: i blocchi iniettati al posto dei compressi. */
+/** What the provider would receive: the blocks injected in place of the compressed ones. */
 const inContesto = (msgs) =>
   msgs.filter((m) => m && m.customType === 'cwl-compressed').map((m) => String(m.content)).join('\n');
 
 const testo = (res) => res.content.map((c) => c.text).join('\n');
 
-test('il micro sostituisce il corpo nel contesto senza distruggerlo', async () => {
+test('the micro replaces the body in the context without destroying it', async () => {
   const { sandbox, home, tools, hooks, ctx } = await boot();
   try {
     await hook(hooks, ctx, conversazione());
 
-    const corpo = 'RIASSUNTO-INTEGRALE ' + 'x'.repeat(8000) + ' FINE-DEL-CORPO';
-    const micro = 'MICRO-BREVE: i punti che contano davvero.';
+    const corpo = 'COMPLETED-SUMMARIES ' + 'x'.repeat(8000) + ' BODY-ENDS-HERE';
+    const micro = 'MICRO-SHORT: the points that matter most.';
     const comp = await tools.get('cwl_compress_range').execute('t', { summary: corpo }, undefined, undefined, ctx);
-    assert.equal(comp.details.ok, true, `lo span non e' stato creato: ${JSON.stringify(comp.details)}`);
+    assert.equal(comp.details.ok, true, `the span was not created: ${JSON.stringify(comp.details)}`);
     const sp = statoDi(sandbox).spans[0];
-    assert.ok(sp && sp.id, `lo span non ha un id: ${JSON.stringify(sp)}`);
+    assert.ok(sp && sp.id, `the span has no id: ${JSON.stringify(sp)}`);
 
-    // Prima dell'assorbimento il corpo e' nel contesto, per intero.
+    // Before the absorption the body is in the context, in full.
     const prima = await hook(hooks, ctx, conversazione());
     assert.ok(
-      inContesto(prima).includes('FINE-DEL-CORPO'),
-      'la premessa del test non regge: il corpo non era nel contesto nemmeno prima dell\'assorbimento',
+      inContesto(prima).includes('BODY-ENDS-HERE'),
+      'the premise of the test does not hold: the body was not in the context even before the absorption',
     );
 
     const ass = await tools.get('cwl_micro').execute('t', { id: sp.id, text: micro }, undefined, undefined, ctx);
-    assert.equal(ass.details.ok, true, `l'assorbimento e' fallito: ${JSON.stringify(ass.details)}`);
+    assert.equal(ass.details.ok, true, `the absorption failed: ${JSON.stringify(ass.details)}`);
 
     const dopo = await hook(hooks, ctx, conversazione());
     const contesto = inContesto(dopo);
 
-    // 1. Il corpo e' USCITO dal contesto e il micro e' entrato: e' tutto il punto.
-    assert.ok(contesto.includes(micro), `il micro non e' nel contesto: ${contesto.slice(0, 160)}`);
+    // 1. The body has GONE out of the context and the micro has entered: that is the whole point.
+    assert.ok(contesto.includes(micro), `the micro is not in the context: ${contesto.slice(0, 160)}`);
     assert.ok(
-      !contesto.includes('FINE-DEL-CORPO'),
-      'il corpo e\' ancora nel contesto: l\'assorbimento non ha liberato niente, ' +
-        'quindi l\'estensione continua a pagare per la stessa storia',
+      !contesto.includes('BODY-ENDS-HERE'),
+      'the body is still in the context: the absorption freed nothing, ' +
+        'so the extension keeps paying for the same story',
     );
 
-    // 2. Il corpo NON e' stato distrutto: `cwl_open` lo restituisce tutto.
+    // 2. The body was NOT destroyed: `cwl_open` gives it back whole.
     const riaperto = await tools.get('cwl_open').execute('t', { id: sp.id }, undefined, undefined, ctx);
-    assert.equal(riaperto.details.ok, true, `la foglia non si riapre piu': ${JSON.stringify(riaperto.details)}`);
+    assert.equal(riaperto.details.ok, true, `the leaf no longer reopens: ${JSON.stringify(riaperto.details)}`);
     assert.ok(
       testo(riaperto).includes(corpo),
-      `il micro ha mangiato il corpo: cwl_open risponde con ${testo(riaperto).length} caratteri, il corpo ne ha ${corpo.length}. ` +
-        'La promessa "non si perde niente" sarebbe falsa, e dal contesto non si vedrebbe.',
+      `the micro ate the body: cwl_open answers with ${testo(riaperto).length} characters, the body has ${corpo.length}. ` +
+        'The promise "nothing is lost" would be false, and from the context one would not see it.',
     );
 
-    // 3. Un micro PIU' LUNGO del corpo e' dichiarato per quello che e'.
+    // 3. A micro LONGER than the body is declared for what it is.
     const lungo = await tools.get('cwl_micro').execute(
       't', { id: sp.id, text: 'y'.repeat(corpo.length + 100) }, undefined, undefined, ctx,
     );
     assert.equal(
       lungo.details.shorter,
       false,
-      'un micro piu\' lungo del corpo che sostituisce e\' passato come un risparmio: il contesto non si riduce, e l\'agente non lo saprebbe',
+      'a micro longer than the body it replaces was accepted as a saving: the context does not shrink, and the agent would not know',
     );
 
-    // 4. La via di ritorno: un testo vuoto rimette il corpo intero nel contesto.
+    // 4. The way back: an empty text puts the whole body back in the context.
     const via = await tools.get('cwl_micro').execute('t', { id: sp.id, text: '' }, undefined, undefined, ctx);
-    assert.equal(via.details.ok, true, `la rimozione del micro e' fallita: ${JSON.stringify(via.details)}`);
+    assert.equal(via.details.ok, true, `removing the micro failed: ${JSON.stringify(via.details)}`);
     const ritorno = inContesto(await hook(hooks, ctx, conversazione()));
     assert.ok(
-      ritorno.includes('FINE-DEL-CORPO'),
-      'togliendo il micro il corpo non e\' tornato nel contesto: l\'assorbimento era una porta a senso unico',
+      ritorno.includes('BODY-ENDS-HERE'),
+      'removing the micro did not put the body back in the context: the absorption was a one-way door',
     );
   } finally {
     home.restore();

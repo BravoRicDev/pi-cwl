@@ -1,30 +1,30 @@
 /**
- * Smoke load: l'estensione si carica e registra i suoi tool.
+ * Smoke load: the extension loads and registers its tools.
  *
- * Perche' esiste: il 29/09/2026 `const I18N = { ... t('params').description ... }`
- * (auto-riferimento dentro il literal I18N) faceva fallire il caricamento con
- * "Cannot access 'I18N' before initialization". Il typecheck era PULITO: l'errore
- * e' a runtime, in fase di valutazione del modulo. Nessuna suite lo copriva.
- * Qui si importa l'estensione vera: se il corpo del modulo esplode, il test esplode.
+ * Why it exists: on 2026-09-29 `const I18N = { ... t('params').description ... }`
+ * (self-reference inside the I18N literal) made the load fail with
+ * "Cannot access 'I18N' before initialization". The typecheck was CLEAN: the error
+ * is at runtime, during module evaluation. No suite covered it.
+ * Here the real extension is imported: if the module body blows up, the test blows up.
  *
- * Importa `index.ts` DIRETTAMENTE: Node >= 22.18 strippa i tipi da solo. Prima
- * questo file importava `typescript` con un path assoluto per fare il transpile
- * a mano, e la suite girava su una sola macchina.
+ * Imports `index.ts` DIRECTLY: Node >= 22.18 strips the types by itself. Before,
+ * this file imported `typescript` with an absolute path to transpile
+ * by hand, and the suite ran on a single machine.
  */
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import { makeSandbox, bootExtension, withHome } from './_helpers.mjs';
 
-test('il modulo si carica e registra i suoi tool', async () => {
+test('the module loads and registers its tools', async () => {
   const sandbox = makeSandbox({ name: 'smoke' });
   const home = withHome(sandbox.dir);
   try {
-    // Se il corpo del modulo lancia (TDZ, binding non inizializzato, import
-    // rotto), questo boot lancia e il test fallisce con l'errore vero.
+    // If the module body throws (TDZ, uninitialized binding, broken
+    // import), this boot throws and the test fails with the real error.
     const { tools } = await bootExtension(sandbox);
 
     for (const name of ['delimiter', 'cwl_status', 'cwl_compress', 'cwl_recall']) {
-      assert.ok(tools.has(name), `tool "${name}" non registrato`);
+      assert.ok(tools.has(name), `tool "${name}" is not registered`);
     }
   } finally {
     home.restore();
@@ -32,7 +32,7 @@ test('il modulo si carica e registra i suoi tool', async () => {
   }
 });
 
-test('le descrizioni dei parametri sono leggibili a runtime', async () => {
+test('the parameter descriptions are readable at runtime', async () => {
   const sandbox = makeSandbox({ name: 'smoke-desc' });
   const home = withHome(sandbox.dir);
   try {
@@ -40,9 +40,9 @@ test('le descrizioni dei parametri sono leggibili a runtime', async () => {
     const delimiter = tools.get('delimiter');
     for (const param of ['action', 'name', 'type', 'dependencies', 'description']) {
       const p = delimiter.parameters?.properties?.[param];
-      assert.ok(p, `parametro "${param}" assente da delimiter`);
-      assert.equal(typeof p.description, 'string', `descrizione di "${param}" non e' una stringa`);
-      assert.ok(p.description.length > 0, `descrizione di "${param}" vuota`);
+      assert.ok(p, `parameter "${param}" missing from delimiter`);
+      assert.equal(typeof p.description, 'string', `description of "${param}" is not a string`);
+      assert.ok(p.description.length > 0, `description of "${param}" is empty`);
     }
   } finally {
     home.restore();
@@ -50,15 +50,15 @@ test('le descrizioni dei parametri sono leggibili a runtime', async () => {
   }
 });
 
-test('ogni tool espone un nome e una descrizione non vuota', async () => {
+test('every tool exposes a name and a non-empty description', async () => {
   const sandbox = makeSandbox({ name: 'smoke-tools' });
   const home = withHome(sandbox.dir);
   try {
     const { tools } = await bootExtension(sandbox);
     for (const [name, tool] of tools) {
       assert.ok(typeof tool.description === 'string' && tool.description.length > 0,
-        `tool "${name}" senza descrizione`);
-      assert.ok(tool.parameters, `tool "${name}" senza schema dei parametri`);
+        `tool "${name}" without a description`);
+      assert.ok(tool.parameters, `tool "${name}" without a parameter schema`);
     }
   } finally {
     home.restore();

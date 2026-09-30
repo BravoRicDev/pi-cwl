@@ -1,25 +1,25 @@
 /**
- * Livello B: il gate che chiede all'AGENTE di compattare.
+ * Level B: the gate that asks the AGENT to compact.
  *
- * Perche' esiste. L'eviction deterministica e' cieca: taglia per eta', non per
- * significato. Il gate e' l'unico canale che puo' ottenere dal modello una
- * decisione semantica.
+ * Why it exists. Deterministic eviction is blind: it cuts by age, not by
+ * meaning. The gate is the only channel that can get a semantic decision out of
+ * the model.
  *
- * Differenza chiave da anti-amnesia: la' il gate si chiude quando il modello
- * ECCHEGGIA un token `[CARD OK]`; qui si chiude per EFFETTO, perche' la cosa che
- * vogliamo (meno token) e' direttamente misurabile. Una conferma inventata non
- * vale niente: conta solo il contesto misurato.
+ * Key difference from anti-amnesia: there the gate closes when the model
+ * ECHOES a `[CARD OK]` token; here it closes by EFFECT, because the thing we
+ * want (fewer tokens) is directly measurable. An invented confirmation is worth
+ * nothing: only the measured context counts.
  *
- * Il gate e' una PREFERENZA, mai una garanzia: se il modello lo ignora, il
- * paracadute del Livello A e' quello che continua a tenere il contesto.
+ * The gate is a PREFERENCE, never a guarantee: if the model ignores it, the
+ * Level A parachute is what keeps holding the context.
  */
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import * as path from 'node:path';
 import { makeSandbox, bootExtension, withHome, sessionCtx } from './_helpers.mjs';
 
-// Nessun livello attivo: cosi' NIENTE viene compattato in modo deterministico e
-// il contesto resta sopra budget, che e' la condizione in cui il gate deve agire.
+// No active level: so NOTHING gets compacted deterministically and the context
+// stays above budget, which is the condition in which the gate must act.
 const overBudgetConfig = (extra = {}) => ({
   tokenBudget: 100,
   thresholdRatio: 0.5,
@@ -41,146 +41,146 @@ async function boot(config) {
   return { sandbox, home, tools, hooks, ctx };
 }
 
-/** Messaggi senza thinking: niente da compattare, quindi si resta sopra budget. */
+/** Messages without thinking: nothing to compact, so it stays above budget. */
 const heavy = (n = 6) =>
-  Array.from({ length: n }, (_, i) => ({ role: 'user', content: `messaggio ${i} ` + 'P'.repeat(400) }));
+  Array.from({ length: n }, (_, i) => ({ role: 'user', content: `message ${i} ` + 'P'.repeat(400) }));
 
 const gateOf = (res) => (res?.messages ?? []).filter((m) => m.customType === 'cwl-budget-gate');
-/** Un giro completo: hook di contesto + fine turno. */
+/** A full round: context hook + end of turn. */
 async function round(hooks, ctx, messages) {
   const res = await hooks.get('context')({ messages }, ctx);
   await hooks.get('turn_end')({}, ctx);
   return res;
 }
 
-test('il gate inietta la richiesta di compattare quando il budget non scende', async () => {
+test('the gate injects the compact request when the budget does not drop', async () => {
   const { sandbox, home, hooks, ctx } = await boot(overBudgetConfig());
   try {
     const messages = heavy();
-    // Turni 1 e 2: sopra budget ma il gate non e' ancora armato.
+    // Turns 1 and 2: above budget but the gate is not armed yet.
     const r1 = await round(hooks, ctx, messages);
-    assert.equal(gateOf(r1).length, 0, 'il gate non deve chiedere nulla al primo turno');
+    assert.equal(gateOf(r1).length, 0, 'the gate must not ask for anything on the first turn');
     const r2 = await round(hooks, ctx, messages);
-    assert.equal(gateOf(r2).length, 0, 'il gate non deve chiedere nulla al secondo turno');
+    assert.equal(gateOf(r2).length, 0, 'the gate must not ask for anything on the second turn');
 
-    // Turno 3: turn_end ha armato il gate, quindi l'hook successivo lo rende.
+    // Turn 3: turn_end armed the gate, so the next hook raises it.
     const r3 = await round(hooks, ctx, messages);
     const demands = gateOf(r3);
-    assert.equal(demands.length, 1, 'il gate doveva iniettare la richiesta');
+    assert.equal(demands.length, 1, 'the gate should have injected the request');
     const text = String(demands[0].content);
-    assert.match(text, /cwl_compress/, 'la richiesta non dice cosa fare');
+    assert.match(text, /cwl_compress/, 'the request does not say what to do');
   } finally { home.restore(); sandbox.cleanup(); }
 });
 
-test('la richiesta non si accumula: viene sostituita, non impilata', async () => {
+test('the request does not pile up: it is replaced, not stacked', async () => {
   const { sandbox, home, hooks, ctx } = await boot(overBudgetConfig());
   try {
-    // Si incatena la RISPOSTA dell'hook dentro quello SUCCESSIVO, come fa Pi:
-    // e' l'unico modo per accorgersi di un accumulo. Passando sempre lo stesso
-    // array di partenza la richiesta precedente non entrerebbe mai nel giro
-    // successivo, e un filtro mancante resterebbe invisibile.
+    // The hook's RESPONSE is chained into the NEXT one, as Pi does: it is the
+    // only way to notice a pile-up. Always passing the same starting array, the
+    // previous request would never enter the next round, and a missing filter
+    // would stay invisible.
     let cur = heavy();
     for (let i = 0; i < 5; i++) {
       const res = await hooks.get('context')({ messages: cur }, ctx);
       cur = res?.messages ?? cur;
       assert.ok(gateOf(res).length <= 1,
-        `giro ${i}: nel contesto ci sono ${gateOf(res).length} richieste insieme`);
+        `round ${i}: the context holds ${gateOf(res).length} requests together`);
       await hooks.get('turn_end')({}, ctx);
     }
     assert.equal(gateOf({ messages: cur }).length, 1,
-      'dopo l\'armamento la richiesta deve esserci, ed essere una sola');
+      'after arming the request must be there, and be a single one');
   } finally { home.restore(); sandbox.cleanup(); }
 });
 
-test('il gate si chiude per EFFETTO: contesto sotto budget = nessuna richiesta', async () => {
+test('the gate closes by EFFECT: context under budget = no request', async () => {
   const { sandbox, home, hooks, ctx } = await boot(overBudgetConfig());
   try {
     const messages = heavy();
     for (let i = 0; i < 3; i++) await round(hooks, ctx, messages);
     const attivo = await round(hooks, ctx, messages);
-    assert.equal(gateOf(attivo).length, 1, 'il gate doveva essere attivo');
+    assert.equal(gateOf(attivo).length, 1, 'the gate should have been active');
 
-    // Il contesto scende sotto la soglia (trigger = 100 * 0.5 = 50 token).
-    const leggero = [{ role: 'user', content: 'corto' }];
+    // The context drops below the threshold (trigger = 100 * 0.5 = 50 tokens).
+    const leggero = [{ role: 'user', content: 'short' }];
     const sotto = await hooks.get('context')({ messages: leggero }, ctx);
-    assert.equal(gateOf(sotto).length, 0, 'sotto budget la richiesta non deve comparire');
+    assert.equal(gateOf(sotto).length, 0, 'under budget the request must not appear');
 
-    // E il gate e' DISINNESCATO: il hook successivo, di nuovo sopra budget, non
-    // deve chiedere nulla. Senza il disarmo resterebbe armato e tornerebbe a
-    // chiedere subito, il che e' esattamente cio' che questo test deve cogliere.
+    // And the gate is DISARMED: the next hook, again above budget, must not ask
+    // for anything. Without the disarm it would stay armed and ask again
+    // immediately, which is exactly what this test must catch.
     const dopo = await hooks.get('context')({ messages: messages }, ctx);
     assert.equal(gateOf(dopo).length, 0,
-      'il gate e\' rimasto armato dopo essere stato soddisfatto');
+      'the gate stayed armed after being satisfied');
   } finally { home.restore(); sandbox.cleanup(); }
 });
 
-test('dopo N tentativi senza risposta il gate si arrende (con cooldown)', async () => {
+test('after N attempts without an answer the gate gives up (with cooldown)', async () => {
   const { sandbox, home, hooks, ctx } = await boot(overBudgetConfig());
   try {
     const messages = heavy();
-    // Si arriva al gate attivo, poi si lasciano passare i tentativi.
+    // You reach the active gate, then let the attempts go by.
     for (let i = 0; i < 3; i++) await round(hooks, ctx, messages);
-    assert.equal(gateOf(await round(hooks, ctx, messages)).length, 1, 'gate non attivo');
+    assert.equal(gateOf(await round(hooks, ctx, messages)).length, 1, 'gate not active');
 
-    // GATE_MAX_ATTEMPTS = 3: si supera il limite.
+    // GATE_MAX_ATTEMPTS = 3: the limit is exceeded.
     for (let i = 0; i < 5; i++) await round(hooks, ctx, messages);
     const r = await round(hooks, ctx, messages);
     assert.equal(gateOf(r).length, 0,
-      'dopo il numero massimo di tentativi il gate deve tacere invece di insistere per sempre');
+      'after the maximum number of attempts the gate must fall silent instead of insisting forever');
   } finally { home.restore(); sandbox.cleanup(); }
 });
 
-test('con gate=false non viene mai iniettata nessuna richiesta', async () => {
+test('with gate=false no request is ever injected', async () => {
   const { sandbox, home, hooks, ctx } = await boot(overBudgetConfig({ gate: false }));
   try {
     const messages = heavy();
     for (let i = 0; i < 6; i++) {
       const r = await round(hooks, ctx, messages);
-      assert.equal(gateOf(r).length, 0, 'gate=false deve disattivare del tutto il canale');
+      assert.equal(gateOf(r).length, 0, 'gate=false must disable the channel entirely');
     }
   } finally { home.restore(); sandbox.cleanup(); }
 });
 
-test('senza NIENTE da fare il gate non chiede: non deve mai chiedere l\'impossibile', async () => {
-  // Riproduce una sessione vera. Misurato li': il gate chiedeva di compattare, ma
-  //  - nessun episodio era aperto (tutti e 4 chiusi)  -> opzione 1 indisponibile
-  //  - cwl_compress_range rispondeva "non resta niente da comprimere"
-  //    -> opzione 2 indisponibile
-  // Chiedeva quindi una cosa impossibile a ogni turno, bruciando contesto.
+test('with NOTHING to do the gate does not ask: it must never ask the impossible', async () => {
+  // Reproduces a real session. Measured there: the gate asked to compact, but
+  //  - no episode was open (all 4 closed)  -> option 1 unavailable
+  //  - cwl_compress_range answered "non resta niente da comprimere"
+  //    -> option 2 unavailable
+  // So it asked for something impossible every turn, burning context.
   //
-  // Qui: DUE messaggi soli. Prima della finestra non c'e' abbastanza materiale
-  // per formare un intervallo (serve una coppia), e nessun episodio e' aperto:
-  // non c'e' davvero nulla da fare.
+  // Here: just TWO messages. Before the window there is not enough material
+  // to form a range (a pair is needed), and no episode is open:
+  // there is really nothing to do.
   const { sandbox, home, hooks, ctx } = await boot(overBudgetConfig({ protectedTurns: 10 }));
   try {
     const messages = [
-      { role: 'user', content: 'domanda ' + 'P'.repeat(400) },
-      { role: 'assistant', content: 'risposta ' + 'R'.repeat(400) },
+      { role: 'user', content: 'question ' + 'P'.repeat(400) },
+      { role: 'assistant', content: 'reply ' + 'R'.repeat(400) },
     ];
     for (let i = 0; i < 8; i++) {
       const r = await round(hooks, ctx, messages);
       assert.equal(gateOf(r).length, 0,
-        `turno ${i}: il gate ha chiesto di compattare senza avere nulla da proporre`);
+        `turn ${i}: the gate asked to compact without having anything to propose`);
     }
   } finally { home.restore(); sandbox.cleanup(); }
 });
 
-test('con un episodio APERTO il gate chiede, e propone solo l\'opzione disponibile', async () => {
+test('with an OPEN episode the gate asks, and proposes only the available option', async () => {
   const { sandbox, home, tools, hooks, ctx } = await boot(overBudgetConfig({ protectedTurns: 10 }));
   try {
-    // Un episodio aperto e' l'unica azione realmente disponibile qui.
-    await tools.get('delimiter').execute('call-s', { action: 'start', name: 'lavoro-in-corso', type: 'act' }, undefined, undefined, ctx);
+    // An open episode is the only action really available here.
+    await tools.get('delimiter').execute('call-s', { action: 'start', name: 'work-in-progress', type: 'act' }, undefined, undefined, ctx);
     const messages = [
-      { role: 'user', content: 'domanda ' + 'P'.repeat(400) },
-      { role: 'assistant', content: 'risposta ' + 'R'.repeat(400) },
+      { role: 'user', content: 'question ' + 'P'.repeat(400) },
+      { role: 'assistant', content: 'reply ' + 'R'.repeat(400) },
     ];
     for (let i = 0; i < 3; i++) await round(hooks, ctx, messages);
     const r = await round(hooks, ctx, messages);
     const demands = gateOf(r);
-    assert.equal(demands.length, 1, 'con un episodio aperto il gate deve chiedere');
+    assert.equal(demands.length, 1, 'with an open episode the gate must ask');
     const text = String(demands[0].content);
-    assert.match(text, /delimiter/, 'deve proporre la chiusura degli episodi');
+    assert.match(text, /delimiter/, 'it must propose closing the episodes');
     assert.doesNotMatch(text, /cwl_compress_range/,
-      'non deve proporre un\'opzione che non e\' disponibile (niente intervallo comprimibile)');
+      'it must not propose an option that is not available (no compressible range)');
   } finally { home.restore(); sandbox.cleanup(); }
 });

@@ -1,17 +1,17 @@
 /**
- * IL TETTO DI UN'ETICHETTA, E L'ECCESSO DETTO FUORI.
+ * THE CEILING OF A LABEL, AND THE EXCESS TOLD OUTSIDE.
  *
- * MISURATO su 42 etichette reali: ~722t l'una (~1.900 caratteri) contro le ~300t che il design
- * dava per scontate. La cima dell'indice e' fatta di etichette, quindi costava 30k invece di
- * ~12k. Il prompt diceva "~200 parole" e non vincolava niente: 42 etichette sono uscite a ~300
- * parole l'una. Un tetto in CARATTERI e' una cosa che un modello puo' contare mentre scrive.
+ * MEASURED on 42 real labels: ~722t each (~1.900 characters) against the ~300t the design
+ * took for granted. The top of the index is made of labels, so it cost 30k instead of
+ * ~12k. The prompt said "~200 words" and constrained nothing: 42 labels came out at ~300
+ * words each. A ceiling in CHARACTERS is something a model can count while writing.
  *
- * L'eccesso NON viene rifiutato: rifiutarlo bloccherebbe il lavoro, e un'etichetta troppo lunga
- * resta un'etichetta. Viene DICHIARATO, nel risultato del tool e nel log. Cio' che non e'
- * accettabile e' il silenzio.
+ * The excess is NOT rejected: rejecting it would block the work, and an overly long label
+ * is still a label. It is DECLARED, in the tool result and in the log. What is not
+ * acceptable is silence.
  *
- * Due casi, e servono entrambi: sopra il tetto la dichiarazione DEVE esserci; sotto il tetto NON
- * deve esserci, altrimenti "dichiara l'eccesso" sarebbe indistinguibile da "dichiara sempre".
+ * Two cases, and both are needed: above the ceiling the declaration MUST be there; below the ceiling it
+ * must NOT be, otherwise "declare the excess" would be indistinguishable from "always declare".
  */
 import assert from 'node:assert/strict';
 import test from 'node:test';
@@ -45,51 +45,51 @@ const logDi = (sandbox) => fs.readFileSync(path.join(sandbox.dir, '.pi', 'cwl', 
 const conversazione = (da, a) => {
   const out = [];
   for (let i = da; i <= a; i++) {
-    out.push({ role: 'user', content: `turno ${i} contenuto ` + 'U'.repeat(200), timestamp: 1000 + i * 2 });
-    out.push({ role: 'assistant', content: `risposta ${i} contenuto ` + 'A'.repeat(200), timestamp: 1001 + i * 2 });
+    out.push({ role: 'user', content: `turn ${i} content ` + 'U'.repeat(200), timestamp: 1000 + i * 2 });
+    out.push({ role: 'assistant', content: `answer ${i} content ` + 'A'.repeat(200), timestamp: 1001 + i * 2 });
   }
   return out;
 };
 
-/** Guida l'hook (che calcola l'indirizzo) e poi comprime con l'etichetta richiesta. */
+/** Drives the hook (which computes the address) and then compresses with the requested label. */
 async function comprimi(sandbox, hooks, ctx, tools, etichetta) {
   const base = conversazione(1, 7);
   await hooks.get('context')({ messages: base }, ctx);
   const prima = logDi(sandbox).length;
   const res = await tools
     .get('cwl_compress_range')
-    .execute('t', { summary: 'CORPO-1 ' + 'x'.repeat(300), micro: etichetta }, undefined, undefined, ctx);
+    .execute('t', { summary: 'BODY-1 ' + 'x'.repeat(300), micro: etichetta }, undefined, undefined, ctx);
   const testo = res.content.map((c) => c.text).join('\n');
   return { res, testo, dopo: logDi(sandbox).slice(prima) };
 }
 
-test("un'etichetta oltre il tetto viene REGISTRATA e l'eccesso DICHIARATO nel risultato e nel log", async () => {
+test("a label over the ceiling is RECORDED and the excess DECLARED in the result and in the log", async () => {
   const { sandbox, home, hooks, ctx, tools } = await boot();
   try {
     const { res, testo, dopo } = await comprimi(sandbox, hooks, ctx, tools, 'E'.repeat(TETTO + 100));
-    assert.equal(res.details.ok, true, `la compressione non e' passata: ${JSON.stringify(res.details)}`);
+    assert.equal(res.details.ok, true, `the compression did not go through: ${JSON.stringify(res.details)}`);
     assert.match(
       testo,
       new RegExp(String(TETTO)),
-      "il risultato non nomina il tetto: l'agente non sa che ha sfondato la misura, e la prossima etichetta sara' lunga uguale",
+      "the result does not name the ceiling: the agent does not know it blew the measure, and the next label will be just as long",
     );
     assert.match(
       dopo,
       /MICRO over ceiling: \S+ is \d+ characters \(~\d+t\) against a ceiling of \d+ \(~\d+t\)/,
-      'il log non ha misurato l\'eccesso: nessuna riga, nessun numero, nessun modo di accorgersene',
+      'the log did not measure the excess: no line, no number, no way to notice it',
     );
   } finally {
     home.restore();
   }
 });
 
-test("un'etichetta sotto il tetto non produce nessuna dichiarazione (la misura non e' un rito)", async () => {
+test("a label under the ceiling produces no declaration (measuring is not a ritual)", async () => {
   const { sandbox, home, hooks, ctx, tools } = await boot();
   try {
     const { res, testo, dopo } = await comprimi(sandbox, hooks, ctx, tools, 'E'.repeat(TETTO - 100));
-    assert.equal(res.details.ok, true, `la compressione non e' passata: ${JSON.stringify(res.details)}`);
-    assert.doesNotMatch(testo, new RegExp(String(TETTO)), 'il risultato nomina il tetto anche quando non e\' stato sfondato');
-    assert.doesNotMatch(dopo, /MICRO over ceiling/, 'il log dichiara un eccesso che non c\'e\' stato');
+    assert.equal(res.details.ok, true, `the compression did not go through: ${JSON.stringify(res.details)}`);
+    assert.doesNotMatch(testo, new RegExp(String(TETTO)), 'the result names the ceiling even when it was not blown');
+    assert.doesNotMatch(dopo, /MICRO over ceiling/, 'the log declares an excess that did not happen');
   } finally {
     home.restore();
   }

@@ -24,6 +24,13 @@ CWL treats the session as a **graph of typed episodes** that the agent labels it
 `delimiter` tool. When the token budget is exceeded, a **deterministic, LLM-free policy** applies
 graduated eviction, ordered by recoverability and causal dependency.
 
+A compressed range does not disappear: it becomes a **leaf** carrying a short label, and labels are
+gathered into **nodes** (up to 30 leaves each) and eventually into an **old node** that keeps the
+oldest history. What the context shows is the index — labels, not bodies — and bodies stay
+recoverable on demand: `cwl_open` returns one in full (never truncated), `cwl_micro` swaps a body
+for its label, `cwl_old` folds the oldest nodes together. Nothing is lost, because every leaf can
+still be reopened down to the original messages in the session transcript.
+
 ### Design principles
 
 - **Zero LLM overhead.** Compression never calls the model. It is purely algorithmic and structural —
@@ -65,6 +72,20 @@ Each level is independently toggleable in `levels`.
 **`cwl_status`** — current token budget, measured context size, episode counts, evictions performed
 and tokens saved.
 
+**`cwl_compress`** / **`cwl_compress_range`** — compress an explicit range of the conversation into
+a summary. `cwl_compress_range` picks the oldest eligible interval for you, and accepts an optional
+`micro` (the label that will represent the leaf in the index).
+
+**`cwl_open`** — reopen a leaf: returns the full body, never truncated, and declares its size first.
+
+**`cwl_micro`** — replace a leaf body with a short label (ceiling: 1,200 characters, ~300 tokens);
+an empty `text` gives the body back.
+
+**`cwl_old`** — fold the oldest young nodes into the old node: the summary of summaries.
+
+**`cwl_recall`** / **`cwl_recall_episode`** — find compressed text by keyword, or retrieve an evicted
+episode by name, straight from the transcript.
+
 ### Installation
 
 Pi loads the extension from `index.ts` at the repository root. Link or copy the extension into your
@@ -88,6 +109,7 @@ Optional, at `~/.pi/cwl/config.json`:
     "stripIntermediate": true,
     "removeEpisode": true
   },
+  "protectedTurns": 4,
   "showWidget": true,
   "debug": false
 }
@@ -96,6 +118,13 @@ Optional, at `~/.pi/cwl/config.json`:
 - `tokenBudget` — active token budget. `80000` is roughly 30% of a 256k context window. Raise it for
   larger windows.
 - `thresholdRatio` — eviction triggers at `tokenBudget × thresholdRatio`.
+- `protectedTurns` — how many of the most recent turn boundaries are inviolable (default `4`). Each
+  boundary also carries everything that follows it, wake-ups and memory cards included, so this is
+  the single knob that decides how much context can actually be compressed.
+- `looseLeaves` — how many leaves stay loose, fully visible, before one is absorbed into a node
+  (default `5`).
+- `nodeCapacity` — how many leaves a node holds before it is full (default `30`).
+- `mergeNodesAt` — how many young nodes trigger a merge into the old node (default `3`).
 
 Missing keys fall back to defaults, so a partial file is valid.
 
@@ -130,6 +159,14 @@ agenti autonomi:
 CWL tratta la sessione come un **grafo di episodi tipizzati** che l'agente etichetta da sé tramite
 il tool `delimiter`. Quando il budget di token viene superato, una **politica deterministica e
 LLM-free** applica un'eviction graduata, ordinata per recuperabilità e dipendenza causale.
+
+Un intervallo compresso non sparisce: diventa una **foglia** che porta con sé un'etichetta breve.
+Le etichette si raccolgono in **nodi** (fino a 30 foglie l'uno) e prima o poi in un **nodo vecchio**
+che conserva la storia più antica. Quello che il contesto mostra è l'indice — le etichette, non i
+corpi — e i corpi restano recuperabili a richiesta: `cwl_open` ne restituisce uno intero (mai
+troncato), `cwl_micro` scambia un corpo con la sua etichetta, `cwl_old` accorpa i nodi più vecchi.
+Niente va perso, perché ogni foglia si può riaprire fino ai messaggi originali nel transcript della
+sessione.
 
 ### Principi di design
 
@@ -172,6 +209,21 @@ Ogni livello è attivabile/disattivabile indipendentemente in `levels`.
 **`cwl_status`** — budget corrente, dimensione misurata del contesto, conteggio episodi, eviction
 eseguite e token risparmiati.
 
+**`cwl_compress`** / **`cwl_compress_range`** — comprimono un intervallo esplicito della
+conversazione in un riassunto. `cwl_compress_range` sceglie per te l'intervallo più vecchio
+disponibile e accetta un `micro` opzionale: l'etichetta che rappresenterà la foglia nell'indice.
+
+**`cwl_open`** — riapre una foglia: restituisce il corpo intero, mai troncato, e ne dichiara prima la
+dimensione.
+
+**`cwl_micro`** — sostituisce il corpo di una foglia con un'etichetta breve (tetto: 1.200
+caratteri, ~300 token); un `text` vuoto restituisce il corpo.
+
+**`cwl_old`** — accorpa i nodi giovani più vecchi nel nodo vecchio: il riassunto dei riassunti.
+
+**`cwl_recall`** / **`cwl_recall_episode`** — cercano testo compresso per parola chiave, oppure
+recuperano un episodio evictato per nome, direttamente dal transcript.
+
 ### Installazione
 
 Pi carica l'estensione da `index.ts` nella root del repository. Collega o copia l'estensione nella
@@ -195,6 +247,7 @@ Opzionale, in `~/.pi/cwl/config.json`:
     "stripIntermediate": true,
     "removeEpisode": true
   },
+  "protectedTurns": 4,
   "showWidget": true,
   "debug": false
 }
@@ -203,6 +256,13 @@ Opzionale, in `~/.pi/cwl/config.json`:
 - `tokenBudget` — budget di token attivi. `80000` è circa il 30% di una finestra di contesto da
   256k. Alzalo per finestre più grandi.
 - `thresholdRatio` — l'eviction scatta a `tokenBudget × thresholdRatio`.
+- `protectedTurns` — quanti dei confini di turno più recenti sono inviolabili (default `4`). Ogni
+  confine porta con sé anche tutto ciò che lo segue, risvegli e carte di memoria compresi: è quindi
+  la manopola che decide quanto contesto si riesce davvero a comprimere.
+- `looseLeaves` — quante foglie restano sciolte, cioè visibili per intero, prima che una venga
+  assorbita in un nodo (default `5`).
+- `nodeCapacity` — quante foglie tiene un nodo prima di essere pieno (default `30`).
+- `mergeNodesAt` — quanti nodi giovani fanno scattare l'accorpamento nel nodo vecchio (default `3`).
 
 Le chiavi mancanti ricadono sui valori di default, quindi un file parziale è valido.
 
