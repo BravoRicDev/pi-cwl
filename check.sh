@@ -20,6 +20,7 @@ fi
 #    i test, che importano il modulo reale. Senza tsc si perde il controllo dei
 #    tipi ma non la regressione.
 TSC="${TSC:-}"
+TYPECHECK=skipped
 if [ -z "$TSC" ] && [ -x node_modules/.bin/tsc ]; then
   TSC="node_modules/.bin/tsc"
 fi
@@ -28,6 +29,7 @@ if [ -z "$TSC" ] && command -v tsc >/dev/null 2>&1; then
 fi
 if [ -n "$TSC" ] && [ -x "$TSC" ]; then
   "$TSC" -p tsconfig.check.json "$@"
+  TYPECHECK=run
 else
   echo "[check.sh] tsc non trovato: salto il typecheck, eseguo i test." >&2
   echo "[check.sh] (installa typescript, o esporta TSC=/path/to/tsc, per il controllo dei tipi)" >&2
@@ -38,4 +40,22 @@ fi
 #    inizializzato, import rotto), e un errore del genere uccide l'estensione in
 #    silenzio: nessun tool registrato, nessun messaggio, typecheck verde.
 #    Importa index.ts direttamente: Node >= 22.18 strippa i tipi da solo.
-node --test tests/*.test.mjs
+STATUS=0
+node --test tests/*.test.mjs || STATUS=$?
+
+# 4. Se il typecheck NON e' stato eseguito, dirlo in modo IMPOSSIBILE da non
+#    vedere. Prima usciva solo su stderr, e un `grep` dei risultati lo
+#    nascondeva: per tre giri ho letto "green" e ho creduto che i tipi fossero
+#    controllati. Un errore vero e' passato cosi' (`st.tokenBudgetX`, un campo
+#    che non esiste). Un gate che salta un controllo in silenzio e' peggio di un
+#    gate che non lo fa.
+if [ "$TYPECHECK" = "skipped" ]; then
+  echo ""
+  echo "================================================================"
+  echo "ATTENZIONE: TYPECHECK SALTATO — nessun tsc disponibile."
+  echo "Verde qui significa: i TEST passano. NON significa: i tipi sono a posto."
+  echo "Per il controllo dei tipi: esporta TSC=/percorso/del/tsc, oppure"
+  echo "installa typescript come devDependency."
+  echo "================================================================"
+fi
+exit $STATUS

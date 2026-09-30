@@ -149,6 +149,7 @@ type CwlMessages = {
   statusRange: (tokens: number, start: string, end: string) => string;
   statusAddresses: (eligible: number, withId: number) => string;
   statusSpans: (n: number) => string;
+  statusUnlocatable: (n: number) => string;
   /** Strings of the cwl_recall tool. */
   recallNotLoaded: string;
   recallNoTranscript: string;
@@ -225,6 +226,7 @@ const I18N: Record<Lang, CwlMessages> = {
     statusRange: (tokens, start, end) => `Compressible range: ~${tokens} tokens (${start}..${end})`,
     statusAddresses: (eligible, withId) => `Addresses: ${withId}/${eligible} endpoint messages carry a stable id`,
     statusSpans: (n) => `Compressed spans held: ${n}`,
+    statusUnlocatable: (n) => `Episodes whose anchors left the context: ${n} (their content is not verifiable)`,
     recallNotLoaded: 'The recall index is not loaded; /reload the extension.',
     recallNoTranscript: 'Transcript not found for this session.',
     recallUnreadable: 'Transcript unreadable.',
@@ -332,6 +334,7 @@ const I18N: Record<Lang, CwlMessages> = {
     statusRange: (tokens, start, end) => `Intervallo comprimibile: ~${tokens} token (${start}..${end})`,
     statusAddresses: (eligible, withId) => `Indirizzi: ${withId}/${eligible} messaggi-endpoint con un id stabile`,
     statusSpans: (n) => `Span di compressione tenuti: ${n}`,
+    statusUnlocatable: (n) => `Episodi le cui ancore sono uscite dal contesto: ${n} (contenuto non verificabile)`,
     recallNotLoaded: "L'indice di recall non e' caricato; fai /reload dell'estensione.",
     recallNoTranscript: 'Transcript non trovato per questa sessione.',
     recallUnreadable: 'Transcript illeggibile.',
@@ -716,6 +719,12 @@ interface CwlState {
    */
   addrEligible: number;
   addrWithId: number;
+  /**
+   * Closed episodes the eviction can no longer locate (their delimiters left the
+   * list). Reported, not assumed: see the hook.
+   */
+  unlocatable: number;
+  unlocatableSeen: number;
   /** Spans compressed by the LLM: hash of the first/last message + summary. */
   spans: CompressedSpan[];
   /** Text hashes of the messages seen: anchor for cwl_compress. */
@@ -755,6 +764,8 @@ function newState(): CwlState {
     lastMeasuredTokens: 0,
     addrEligible: 0,
     addrWithId: 0,
+    unlocatable: 0,
+    unlocatableSeen: -1,
     spans: [],
     knownHashes: new Set(),
     recallIndex: null,
@@ -1362,6 +1373,35 @@ function compressibleRange(
   };
 }
 
+/**
+ * Stores the range the agent may ask to compress, and LOGS the decision.
+ *
+ * The log line is the instrument every future diagnosis of "why is nothing on
+ * offer" depends on, so BOTH places that compute the range must emit it. This
+ * hook has two exits that matter — the normal path and the spans branch — and the
+ * first version of the line covered only one of them: its silence proved
+ * nothing, and that gap cost a whole diagnosis.
+ */
+function storeRange(
+  st: CwlState,
+  cf: CwlConfig,
+  range: ReturnType<typeof compressibleRange>,
+  messages: AgentMessage[],
+  currentTokens?: number,
+  trigger?: number,
+): void {
+  st.rangeStartHash = range?.startHash ?? null;
+  st.rangeEndHash = range?.endHash ?? null;
+  st.rangeTokens = range?.tokens ?? 0;
+  // The spans branch runs before `trigger` exists, so fall back to the numbers
+  // the state already carries.
+  const tokens = currentTokens ?? st.lastMeasuredTokens;
+  const trig = trigger ?? cf.tokenBudget * cf.thresholdRatio;
+  debugLog(cf, `RANGE ${range
+    ? `${range.startHash}..${range.endHash} (~${range.tokens}t)`
+    : 'none'} | ${messages.length} msgs, ${tokens}t vs trigger ${Math.round(trig)}t, ${st.spans.length} span(s)`);
+}
+
 function globalReasoningStrip(
   messages: AgentMessage[],
   floor: number = messages.length,
@@ -1949,6 +1989,9 @@ export default function (pi: ExtensionAPI) {
         lines.push(t('statusAddresses')(st.addrEligible, st.addrWithId));
       }
       lines.push(t('statusSpans')(st.spans.length));
+      if (st.unlocatable > 0) {
+        lines.push(t('statusUnlocatable')(st.unlocatable));
+      }
       if (active.length > 0) {
         lines.push(t('statusActive')(active.map(e => `${e.name}(${e.type})`).join(', ')));
       }
@@ -1969,6 +2012,7 @@ export default function (pi: ExtensionAPI) {
           addrEligible: st.addrEligible,
           addrWithId: st.addrWithId,
           spans: st.spans.length,
+          unlocatable: st.unlocatable,
         },
       };
     },
@@ -2307,6 +2351,24 @@ export default function (pi: ExtensionAPI) {
       };
     };
 
+    // Episodes the eviction can no longer locate, said out loud instead of
+    // assumed. Their delimiters are gone from the list (native compaction
+    // replaced that history), so the eviction skips them — correctly: without
+    // anchors it cannot know what to touch. But a `removed` one is ALSO excluded
+    // from `recoverable()`, so the state claims it was evicted while nobody can
+    // verify its content is gone. MEASURED in a live session: 4 of 4.
+    const closedEps = st.graph.closed();
+    if (closedEps.length > 0) {
+      const locatable = episodeRanges(messages, closedEps);
+      st.unlocatable = closedEps.filter((ep) => !locatable.has(ep.name)).length;
+      if (st.unlocatable !== st.unlocatableSeen) {
+        st.unlocatableSeen = st.unlocatable;
+        debugLog(cf, `EPISODES unlocatable: ${st.unlocatable} of ${closedEps.length} (their anchors left the context)`);
+      }
+    } else {
+      st.unlocatable = 0;
+    }
+
     // The spans compressed by the LLM are ALWAYS applied, not only above the
     // threshold: the agent decides when to compress, not the extension estimate.
     if (st.spans.length > 0) {
@@ -2346,9 +2408,7 @@ export default function (pi: ExtensionAPI) {
         // resolve, or `covered` would be empty and the same region would be
         // offered again.
         const nextRange = compressibleRange(messages, st.spans, cf.protectedTurns);
-        st.rangeStartHash = nextRange?.startHash ?? null;
-        st.rangeEndHash = nextRange?.endHash ?? null;
-        st.rangeTokens = nextRange?.tokens ?? 0;
+        storeRange(st, cf, nextRange, messages);
         return finish(applied.kept);
       }
     }
@@ -2370,16 +2430,7 @@ export default function (pi: ExtensionAPI) {
     // Addresses of the largest range the agent may ask to compress. Recomputed
     // here because this hook is the only place that sees the real message list.
     const range = compressibleRange(messages, st.spans, cf.protectedTurns);
-    st.rangeStartHash = range?.startHash ?? null;
-    st.rangeEndHash = range?.endHash ?? null;
-    st.rangeTokens = range?.tokens ?? 0;
-    // One line that answers, from a real session, WHY no range is on offer. Its
-    // ABSENCE is the answer too: it means the hook returned before this point
-    // (the spans branch, or under budget), which is a different defect from
-    // "there is nothing to compress".
-    debugLog(cf, `RANGE ${range
-      ? `${range.startHash}..${range.endHash} (~${range.tokens}t)`
-      : 'none'} | ${messages.length} msgs, ${currentTokens}t vs trigger ${Math.round(trigger)}t, ${st.spans.length} span(s)`);
+    storeRange(st, cf, range, messages, currentTokens, trigger);
 
     /**
      * Level A — the safety net: strip reasoning blocks, ahead of the safety

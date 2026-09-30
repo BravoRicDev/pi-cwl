@@ -345,6 +345,47 @@ test('due messaggi con lo STESSO testo non collassano su un solo indirizzo', asy
   } finally { home.restore(); sandbox.cleanup(); }
 });
 
+test('un episodio le cui ancore sono uscite dal contesto viene DETTO, non dato per evacuato', async () => {
+  // MISURATO in una sessione vera: tutti e 4 gli episodi erano a level='removed',
+  // ma le loro ancore delimiter erano state portate via dalla compattazione
+  // nativa. episodeRanges li salta (giusto: senza ancore non sa cosa toccare),
+  // pero' recoverable() esclude gli episodi 'removed', quindi l'estensione
+  // credeva di averli evacuati e si dichiarava a posto. Il difetto vero non era
+  // il contenuto: era il SILENZIO.
+  const { sandbox, home, tools, hooks, ctx } = await boot(config());
+  try {
+    const delim = (id, params) => tools.get('delimiter').execute(id, params, undefined, undefined, ctx);
+    const apri = await delim('T1', { action: 'start', name: 'ep-anchore', type: 'expl' });
+    assert.equal(apri.details.ok, true, `apertura rifiutata: ${JSON.stringify(apri.details)}`);
+    const chiudi = await delim('T2', { action: 'end', name: 'ep-anchore', description: 'fatto' });
+    assert.equal(chiudi.details.ok, true, `chiusura rifiutata: ${JSON.stringify(chiudi.details)}`);
+
+    const corpo = 'X'.repeat(200);
+    const completa = [
+      { role: 'user', content: `prima ${corpo}` },
+      { role: 'assistant', content: `lavoro ${corpo}` },
+      { role: 'toolResult', toolCallId: 'T1', content: [{ type: 'text', text: 'inizio episodio' }] },
+      { role: 'assistant', content: `dentro ${corpo}` },
+      { role: 'toolResult', toolCallId: 'T2', content: [{ type: 'text', text: 'fine episodio' }] },
+      { role: 'user', content: `dopo ${corpo}` },
+      { role: 'assistant', content: `ultima ${corpo}` },
+    ];
+
+    await hooks.get('context')({ messages: completa }, ctx);
+    const conAncore = await tools.get('cwl_status').execute('t', {}, undefined, undefined, ctx);
+    assert.equal(conAncore.details.unlocatable, 0,
+      'con le ancore nel contesto l\'episodio e\' localizzabile: ' + JSON.stringify(conAncore.details));
+
+    // La compattazione nativa porta via i due risultati di delimiter: l'episodio
+    // non e' piu' localizzabile, e va DETTO.
+    const senzaAncore = completa.filter((m) => m.toolCallId !== 'T1' && m.toolCallId !== 'T2');
+    await hooks.get('context')({ messages: senzaAncore }, ctx);
+    const senza = await tools.get('cwl_status').execute('t', {}, undefined, undefined, ctx);
+    assert.equal(senza.details.unlocatable, 1,
+      'un episodio non localizzabile deve essere contato e detto: ' + JSON.stringify(senza.details));
+  } finally { home.restore(); sandbox.cleanup(); }
+});
+
 test('dopo la prima compressione l\'indirizzo si rinnova: si puo\' comprimere ancora', async () => {
   // Il ramo degli span usciva con `return` PRIMA del punto che calcola il
   // prossimo intervallo (~2290). Ma `cwl_compress_range` non lo ricalcola —
