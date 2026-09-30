@@ -50,6 +50,8 @@ interface RealContentBlock {
   text?: string;
   thinking?: string;
   data?: string;
+  name?: string;
+  arguments?: unknown;
 }
 
 interface RealMessage {
@@ -143,12 +145,20 @@ type CwlMessages = {
   recallUnreadable: string;
   recallNoMatch: (query: string) => string;
   recallFound: (hits: number, indexed: number, query: string, body: string) => string;
+  /** Strings of the cwl_recall_episode tool. */
+  episodeRecallNotKnown: (name: string) => string;
+  episodeRecallStillOpen: (name: string) => string;
+  episodeRecallAnchorLost: (name: string) => string;
+  episodeRecallEmpty: (name: string) => string;
+  episodeRecallTruncatedHint: string;
+  episodeRecallFound: (name: string, tokens: number, body: string) => string;
   /** Texts that end up in the LLM context. */
-  snippets: { delimiter: string; status: string; compress: string; recall: string };
-  /** Texts of the two autonomous compression tools. */
+  snippets: { delimiter: string; status: string; compress: string; recall: string; recallEpisode: string };
+  /** Texts of the autonomous tools. */
   tools: {
     compressDesc: string; compressStart: string; compressEnd: string; compressSummary: string;
     recallDesc: string; recallQuery: string; recallLimit: string;
+    recallEpisodeDesc: string; recallEpisodeName: string; recallEpisodeFull: string;
   };
   /** Parameter descriptions: read by the LLM on every invocation. */
   params: {
@@ -168,7 +178,8 @@ const I18N: Record<Lang, CwlMessages> = {
     strippedReasoning: '[CWL: reasoning evicted]',
     truncatedString: (len, level) => `[CWL: content reduced from ${len} chars (level ${level})]`,
     truncatedArray: (len, level) => `[CWL: text reduced from ${len} chars to a marker (level ${level}) — use arc_recall or reopen the episode if needed]`,
-    evictedEpisode: (name, desc) => `Content of "${name}" evicted. Notes kept: ${desc}`,
+    evictedEpisode: (name, desc) => `[CWL episode "${name}" evicted — recover the original with cwl_recall_episode("${name}")]` +
+      (desc ? ` Notes kept: ${desc}` : ' No notes were kept.'),
     startNeedsNameType: 'action=start requires name and type.',
     endNeedsName: 'action=end requires name.',
     duplicateName: (name) => `Episode "${name}" already exists. Use a unique name.`,
@@ -199,11 +210,18 @@ const I18N: Record<Lang, CwlMessages> = {
     recallUnreadable: 'Transcript unreadable.',
     recallNoMatch: (query) => `No match for "${query}".`,
     recallFound: (hits, indexed, query, body) => `Found ${hits} of ${indexed} indexed messages for "${query}":\n\n${body}`,
+    episodeRecallNotKnown: (name) => `No episode named "${name}" in this session.`,
+    episodeRecallStillOpen: (name) => `Episode "${name}" is still open: its content is in the active context.`,
+    episodeRecallAnchorLost: (name) => `Episode "${name}" has no anchor in the transcript: the original cannot be recovered.`,
+    episodeRecallEmpty: (name) => `Episode "${name}" resolved to no readable text.`,
+    episodeRecallTruncatedHint: '\n\n… (truncated; pass full=true for the whole episode)',
+    episodeRecallFound: (name, tokens, body) => `Original content of episode "${name}" (~${tokens} tokens):\n\n${body}`,
     snippets: {
       delimiter: 'delimiter: marks the boundaries of a CWL episode (expl/act)',
       status: 'cwl_status: CWL context lifecycle status',
       compress: 'cwl_compress: compress a range of messages in the active context',
       recall: 'cwl_recall: retrieve a conversation excerpt by BM25 query',
+      recallEpisode: 'cwl_recall_episode: recover the original text of an evicted episode by name',
     },
     tools: {
       compressDesc: 'Replaces, in the active context, the messages between two hashes with your summary, leaving the original intact in the transcript. Use it only when the extension asks you to.',
@@ -213,6 +231,9 @@ const I18N: Record<Lang, CwlMessages> = {
       recallDesc: 'Searches the session messages (user and assistant) and returns the pieces most relevant to a BM25 query. Use it to bring compressed text back into view.',
       recallQuery: 'Keywords to search for: paths, function names, technical terms.',
       recallLimit: 'How many results to return (default 5, minimum 1, maximum 50).',
+      recallEpisodeDesc: 'Recovers the ORIGINAL text of an episode that was evicted from the context, by its name. The episode content still lives in the append-only transcript: eviction moves it out of the CONTEXT, it does not delete it. Use it when a marker says an episode was evicted and you need its detail.',
+      recallEpisodeName: 'Name of the evicted episode, as it appears in the eviction marker.',
+      recallEpisodeFull: 'false (default) returns a truncated preview; true returns the whole episode.',
     },
     params: {
       delimiterDesc: 'Marks the boundaries of a CWL episode. Types: "expl" (exploration: searches, reads, orientation — the content is not needed after the inference) and "act" (action: writes, edits, executions — persistent effects, first candidate for eviction). When you open an "act", declare the explorations it depends on. When you close an "expl", give the description of what you learned: it is the only content that survives eviction.',
@@ -234,7 +255,8 @@ const I18N: Record<Lang, CwlMessages> = {
     strippedReasoning: '[CWL: reasoning evictato]',
     truncatedString: (len, level) => `[CWL: contenuto ridotto da ${len} chars (livello ${level})]`,
     truncatedArray: (len, level) => `[CWL: testo ridotto da ${len} chars a marker (livello ${level}) — usa arc_recall o riapri l'episodio se serve]`,
-    evictedEpisode: (name, desc) => `Contenuto di "${name}" evictato. Appunti conservati: ${desc}`,
+    evictedEpisode: (name, desc) => `[CWL episodio "${name}" evictato — recupera l'originale con cwl_recall_episode("${name}")]` +
+      (desc ? ` Appunti conservati: ${desc}` : ' Nessun appunto conservato.'),
     startNeedsNameType: 'action=start richiede name e type.',
     endNeedsName: 'action=end richiede name.',
     duplicateName: (name) => `Episodio "${name}" gia' esiste. Usa un nome univoco.`,
@@ -265,11 +287,18 @@ const I18N: Record<Lang, CwlMessages> = {
     recallUnreadable: 'Transcript illeggibile.',
     recallNoMatch: (query) => `Nessuna corrispondenza per "${query}".`,
     recallFound: (hits, indexed, query, body) => `Trovati ${hits} di ${indexed} messaggi indicizzati per "${query}":\n\n${body}`,
+    episodeRecallNotKnown: (name) => `Nessun episodio chiamato "${name}" in questa sessione.`,
+    episodeRecallStillOpen: (name) => `L'episodio "${name}" e' ancora aperto: il suo contenuto e' nel contesto attivo.`,
+    episodeRecallAnchorLost: (name) => `L'episodio "${name}" non ha ancora un'ancora nel transcript: l'originale non e' recuperabile.`,
+    episodeRecallEmpty: (name) => `L'episodio "${name}" non ha prodotto testo leggibile.`,
+    episodeRecallTruncatedHint: '\n\n… (troncato; passa full=true per l\'episodio intero)',
+    episodeRecallFound: (name, tokens, body) => `Contenuto originale dell'episodio "${name}" (~${tokens} token):\n\n${body}`,
     snippets: {
       delimiter: 'delimiter: segna i confini di un episodio CWL (expl/act)',
       status: 'cwl_status: stato del context lifecycle CWL',
       compress: 'cwl_compress: comprimi un intervallo di messaggi nel contesto attivo',
       recall: 'cwl_recall: recupera un pezzo di conversazione per query BM25',
+      recallEpisode: 'cwl_recall_episode: recupera il testo originale di un episodio evictato, per nome',
     },
     tools: {
       compressDesc: "Sostituisce nel contesto attivo i messaggi fra due hash con il tuo riassunto, lasciando l'originale intatto nel transcript. Usalo solo se l'estensione te lo chiede.",
@@ -279,6 +308,9 @@ const I18N: Record<Lang, CwlMessages> = {
       recallDesc: "Cerca nei messaggi della sessione (user e assistant) e restituisce i pezzi piu' pertinenti per una query BM25. Usalo per riportare alla luce testo compresso.",
       recallQuery: 'Le parole chiave da cercare: path, nomi di funzione, termini tecnici.',
       recallLimit: 'Quanti risultati restituire (default 5, minimo 1, massimo 50).',
+      recallEpisodeDesc: "Recupera il testo ORIGINALE di un episodio evictato dal contesto, per nome. Il contenuto dell'episodio vive ancora nel transcript append-only: l'eviction lo sposta fuori dal CONTESTO, non lo cancella. Usalo quando un marker ti dice che un episodio e' stato evictato e te ne serve il dettaglio.",
+      recallEpisodeName: "Nome dell'episodio evictato, come appare nel marker di eviction.",
+      recallEpisodeFull: 'false (default) restituisce un estratto troncato; true restituisce l\'episodio intero.',
     },
     params: {
       delimiterDesc: 'Segna i confini di un episodio CWL. Tipi: "expl" (esplorazione: ricerca, letture, orientamento — il contenuto non serve dopo l\'inferenza) e "act" (azione: scritture, edit, esecuzioni — effetti persistenti, primo candidato all\'eviction). Quando apri un "act", dichiara le esplorazioni da cui dipende. Quando chiudi un "expl", fornisci la descrizione di cosa hai imparato: e\' l\'unico contenuto che sopravvive all\'eviction.',
@@ -774,6 +806,13 @@ function dropState(key: string) {
 const STRIP_BLOCK_CHARS = 2000;
 
 /**
+ * Characters of an episode returned by `cwl_recall_episode` when `full` is not
+ * set. Same idea as arc_recall's 500-char preview: a recall is a DECISION of the
+ * agent, and the default must not be able to blow the context it just freed.
+ */
+const EPISODE_PREVIEW_CHARS = 4000;
+
+/**
  * Reduces a message according to the requested stripping level.
  *
  * Handles the real pi-ai shape:
@@ -869,7 +908,12 @@ const LEVEL_SAVINGS: Record<StripLevel, number> = {
   reasoning: 0.2,
   bulk: 0.5,
   intermediate: 0.35,
-  removed: 0.7,
+  // `removed` drops every message of the episode and keeps only a one-line
+  // marker, so the real saving is ~1.0 — measured on a 211-token episode: 205
+  // tokens gone, 6 left. The old 0.7 under-stated it, so `projected` moved
+  // more slowly than reality and the pass evicted MORE episodes than needed to
+  // reach the threshold.
+  removed: 1.0,
 };
 
 function levelEnabled(cfg: CwlConfig, level: StripLevel): boolean {
@@ -1055,9 +1099,24 @@ function readFileOrNull(p: string): string | null {
   try { return fs.readFileSync(p, 'utf-8'); } catch { return null; }
 }
 
+/**
+ * Resolves a session key to the JSONL transcript on disk.
+ *
+ * The key can be either the transcript PATH itself — `sessionKey()` prefers
+ * `sessionManager.getSessionFile()` — or a bare session id, the older shape.
+ * The previous version handled only the bare id: it built `_${key}.jsonl` and
+ * looked for a file ending with it. With a path as key the suffix became
+ * `_/home/.../sessione.jsonl.jsonl`, which matches nothing, so `cwl_recall`
+ * answered "transcript not found" while the transcript was right there on disk.
+ */
 function findTranscript(sessionKey: string): string | null {
+  if (path.isAbsolute(sessionKey) && sessionKey.endsWith('.jsonl') && fs.existsSync(sessionKey)) {
+    return sessionKey;
+  }
+  // `<cwd>::<sid>` and `<sid>` both resolve by the `_<sid>.jsonl` suffix.
+  const id = sessionKey.includes('::') ? sessionKey.split('::')[1] : sessionKey;
   const sessionsDir = path.join(os.homedir(), '.pi', 'agent', 'sessions');
-  const suffix = `_${sessionKey}.jsonl`;
+  const suffix = `_${id}.jsonl`;
   let dirs: string[];
   try { dirs = fs.readdirSync(sessionsDir); } catch { return null; }
   for (const dir of dirs) {
@@ -1069,6 +1128,78 @@ function findTranscript(sessionKey: string): string | null {
     } catch { /* unreadable directory: try the next one */ }
   }
   return null;
+}
+
+/**
+ * Concatenates the readable parts of a content block array: text, thinking and
+ * the tool calls (with their arguments), so a recalled episode shows WHAT was
+ * done and not only what was said.
+ */
+function blocksToText(content: unknown): string {
+  if (typeof content === 'string') return content;
+  if (!Array.isArray(content)) return '';
+  const out: string[] = [];
+  for (const part of content as RealContentBlock[]) {
+    if (!part || typeof part !== 'object') continue;
+    if (typeof part.text === 'string') out.push(part.text);
+    else if (typeof part.thinking === 'string') out.push(`[thinking] ${part.thinking}`);
+    else if (part.type === 'toolCall') {
+      out.push(`[toolCall ${part.name ?? '?'}] ${JSON.stringify(part.arguments ?? {})}`);
+    }
+  }
+  return out.join('\n');
+}
+
+/**
+ * Reads one transcript record.
+ *
+ * Two shapes exist in the wild: the session log nests the message under
+ * `message`, while subagent artifacts keep `role`/`text` at the top level. Both
+ * are accepted, so the same reader works on either.
+ */
+function transcriptRecordText(
+  rec: unknown,
+): { role: string; toolCallId?: string; text: string } | null {
+  if (!rec || typeof rec !== 'object') return null;
+  const r = rec as Record<string, unknown>;
+  const src = (r.message ?? r) as RealMessage;
+  const role = typeof src?.role === 'string' ? src.role : '';
+  if (!role) return null;
+  const toolCallId = typeof src.toolCallId === 'string' ? src.toolCallId : undefined;
+  const text = blocksToText(src.content) || (typeof r.text === 'string' ? r.text : '');
+  return { role, toolCallId, text };
+}
+
+/**
+ * Reads an episode back from the append-only transcript.
+ *
+ * The anchors are the toolCallIds of the two `delimiter` results: they are real
+ * records in the transcript, so the span they delimit is exact and does NOT
+ * shift with the context (which is why the episode stores them instead of the
+ * indices). Returns null when the OPENING anchor is missing — a dangling
+ * pointer, reported as such rather than as an empty episode.
+ */
+function extractEpisodeText(
+  raw: string,
+  startToolCallId: string,
+  endToolCallId: string | null,
+): string | null {
+  const parts: string[] = [];
+  let started = false;
+  for (const line of raw.split(/\r?\n/)) {
+    if (!line) continue;
+    let rec: unknown;
+    try { rec = JSON.parse(line); } catch { continue; }
+    const info = transcriptRecordText(rec);
+    if (!info) continue;
+    if (!started) {
+      if (info.toolCallId === startToolCallId) started = true;
+      continue;
+    }
+    if (endToolCallId !== null && info.toolCallId === endToolCallId) break;
+    if (info.text.trim()) parts.push(`[${info.role}] ${info.text}`);
+  }
+  return started ? parts.join('\n\n') : null;
 }
 
 /**
@@ -1376,7 +1507,7 @@ export default function (pi: ExtensionAPI) {
       if (!recall) {
         return { content: [{ type: 'text', text: t('recallNotLoaded') }], details: { ok: false, error: 'not-loaded' } };
       }
-      const file = findTranscript(key.split('::')[1] || key);
+      const file = findTranscript(key);
       if (!file) {
         return { content: [{ type: 'text', text: t('recallNoTranscript') }], details: { ok: false, error: 'no-transcript' } };
       }
@@ -1401,6 +1532,54 @@ export default function (pi: ExtensionAPI) {
       return {
         content: [{ type: 'text', text: t('recallFound')(hits.length, idx.size, params.query, body) }],
         details: { ok: true, hits: hits.length, indexed: idx.size, ids: hits.map((h) => h.id) },
+      };
+    },
+  });
+
+  pi.registerTool({
+    name: 'cwl_recall_episode',
+    label: 'CWL Recall Episode',
+    description:
+      t('tools').recallEpisodeDesc,
+    promptSnippet: t('snippets').recallEpisode,
+    parameters: Type.Object({
+      name: Type.String({ description: t('tools').recallEpisodeName }),
+      full: Type.Optional(Type.Boolean({ description: t('tools').recallEpisodeFull })),
+    }),
+    async execute(_toolCallId, params, _signal, _onUpdate, ctx) {
+      const key = sessionKey(ctx);
+      const st = getState(key);
+      // The name is the address: the state is per session, so it already scopes
+      // the lookup. No index is used, because indices shift as the context is
+      // evicted — the toolCallId anchors do not.
+      const ep = st.graph.all.find((e) => e.name === params.name);
+      if (!ep) {
+        return { content: [{ type: 'text', text: t('episodeRecallNotKnown')(params.name) }], details: { ok: false, error: 'episode-not-found' } };
+      }
+      if (ep.endToolCallId === null) {
+        return { content: [{ type: 'text', text: t('episodeRecallStillOpen')(params.name) }], details: { ok: false, error: 'episode-still-open' } };
+      }
+      const file = findTranscript(key);
+      if (!file) {
+        return { content: [{ type: 'text', text: t('recallNoTranscript') }], details: { ok: false, error: 'no-transcript' } };
+      }
+      const raw = readFileOrNull(file);
+      if (raw === null) {
+        return { content: [{ type: 'text', text: t('recallUnreadable') }], details: { ok: false, error: 'unreadable' } };
+      }
+      const text = extractEpisodeText(raw, ep.startToolCallId, ep.endToolCallId);
+      if (text === null) {
+        return { content: [{ type: 'text', text: t('episodeRecallAnchorLost')(params.name) }], details: { ok: false, error: 'anchor-lost' } };
+      }
+      if (!text.trim()) {
+        return { content: [{ type: 'text', text: t('episodeRecallEmpty')(params.name) }], details: { ok: false, error: 'empty' } };
+      }
+      const full = params.full === true;
+      const tokens = estimateTokens(text);
+      const body = full ? text : text.slice(0, EPISODE_PREVIEW_CHARS) + t('episodeRecallTruncatedHint');
+      return {
+        content: [{ type: 'text', text: t('episodeRecallFound')(params.name, tokens, body) }],
+        details: { ok: true, episode: params.name, tokens, chars: text.length, full },
       };
     },
   });
@@ -1609,8 +1788,13 @@ export default function (pi: ExtensionAPI) {
         // public AgentMessage union does not declare it.
         const droppedId = (msg as unknown as RealMessage).toolCallId;
         if (typeof droppedId === 'string') droppedToolCallIds.add(droppedId);
-        // For an expl with a description, keep ONE re-entry marker.
-        if (ep.type === 'expl' && ep.description && !markedEpisodes.has(ep.name)) {
+        // ONE re-entry marker per episode — emitted for `act` too. The marker
+        // used to carry only the prose description, so an evicted `act` (whose
+        // description is always empty) left NOTHING behind, and an `expl`
+        // without a description lost its content for good. It now carries the
+        // episode NAME, which is the address: the transcript is append-only and
+        // the episode can be read back with cwl_recall_episode.
+        if (!markedEpisodes.has(ep.name)) {
           markedEpisodes.add(ep.name);
           // SAFETY: Pi accepts the custom role in the context hook although the
           // AgentMessage union does not declare it; the extra keys are its own
