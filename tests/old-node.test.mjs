@@ -20,15 +20,20 @@
  * THE KNOBS. The test does not build 90 leaves to fill 3 nodes of 30: it uses
  * `looseLeaves: 1`, `nodeCapacity: 2`, `mergeNodesAt: 2`, which exist as config
  * exactly for this (and because the shape of the index is a preference
- * of the operator, like `protectedTurns`).
+ * of the operator, like `protectedTurns`). `mergeMinRatio` and `mergeMinChars` are
+ * config for the same reason: the real values (3x, 6,000 characters) are measured
+ * against labels of ~1,200 characters, which no test here builds.
  *
  * THE FOUR DIRECTIONS IN WHICH THE TEST MUST DIE:
  *  1. the pit's leaves are still injected one by one -> no saving;
  *  2. the synthesis does not enter the context -> the leaves vanish from the head and NOTHING
  *     stands for them: the thread of the conversation is cut, which is worse than not
  *     compressing;
- *  3. `cwl_old` also merges the YOUNGEST node -> the present ends up in the pit;
- *  4. `cwl_old` merges when it is not due -> the synthesis of nothing.
+ *  3. `cwl_old` merges the YOUNGEST node while the index is DUE -> the present ends up
+ *     in the pit. (Archiving EARLIER is allowed, and then the node in progress goes too:
+ *     that is the point of calling it by hand, to put away material you no longer need
+ *     without losing it.)
+ *  4. `cwl_old` merges when there is no node at all -> the synthesis of nothing.
  */
 import assert from 'node:assert/strict';
 import test from 'node:test';
@@ -48,6 +53,13 @@ const config = () => ({
   looseLeaves: 1,
   nodeCapacity: 2,
   mergeNodesAt: 2,
+  // The size guards of a merge, LOWERED on purpose. They are measured against labels
+  // of ~1,200 characters; this test writes labels like `MICRO-1`. With the real
+  // defaults (3x the synthesis, and never less than 6,000 characters) the merge below
+  // would be refused. `0` turns the guard off entirely. — correctly — and this test is about WHAT a merge does, not about
+  // when it is worth doing. The guard has its own test, right after.
+  mergeMinRatio: 0,
+  mergeMinChars: 0,
 });
 
 async function boot() {
@@ -172,6 +184,86 @@ test('the old node replaces the micros with the synthesis, and does not lose the
       text(reopened).includes('BLOCK-1'),
       'the body of the merged leaf does not come back whole: the saving would be a throwing away, not a compressing',
     );
+  } finally {
+    home.restore();
+  }
+});
+
+// ---------------------------------------------------------------- the SIZE guard
+
+/**
+ * A merge COSTS a synthesis, so it has to free more than it costs — and BOTH guards must
+ * be tried in the direction in which they REFUSE, or they are decoration.
+ *
+ * The numbers here: the labels are 7 characters each (`MICRO-1`), so the oldest node
+ * that would enter the pit leaves 14 characters, against a default guard of
+ * `max(3 x 3,600, 6,000)` = 10,800.
+ */
+const guardConfig = (extra = {}) => ({
+  tokenBudget: 600,
+  thresholdRatio: 0.5,
+  protectedTurns: 0,
+  levels: { stripReasoning: false, stripBulkOutput: false, stripIntermediate: false, removeEpisode: false },
+  showWidget: false,
+  debug: true,
+  looseLeaves: 1,
+  nodeCapacity: 2,
+  mergeNodesAt: 2,
+  ...extra,
+});
+
+async function bootWith(extra) {
+  const sandbox = makeSandbox({ name: `guard-${seq++}`, config: guardConfig(extra) });
+  const home = withHome(sandbox.dir);
+  const { tools, hooks } = await bootExtension(sandbox);
+  const ctx = sessionCtx(path.join(sandbox.dir, 'session.jsonl'));
+  await hooks.get('session_start')({}, ctx);
+  return { sandbox, home, tools, hooks, ctx };
+}
+
+/** Five leaves with a micro each: with looseLeaves 1 and nodeCapacity 2 that is two nodes. */
+async function fiveLabelledLeaves(sandbox, hooks, ctx, tools) {
+  for (let i = 1; i <= 5; i++) {
+    await hook(hooks, ctx, conversation(1, i + 3));
+    const res = await tools.get('cwl_compress_range').execute(
+      't', { summary: `BLOCK-${i} ` + 'x'.repeat(300) }, undefined, undefined, ctx,
+    );
+    assert.equal(res.details.ok, true, `round ${i}: the leaf was not born: ${JSON.stringify(res.details)}`);
+  }
+  const leaves = stateOf(sandbox).spans;
+  assert.equal(leaves.length, 5, `expected 5 leaves, ${leaves.length} in the state`);
+  for (let i = 0; i < 5; i++) {
+    const r = await tools.get('cwl_micro').execute('t', { id: leaves[i].id, text: `MICRO-${i + 1}` }, undefined, undefined, ctx);
+    assert.equal(r.details.ok, true, `micro on leaf ${i + 1} failed: ${JSON.stringify(r.details)}`);
+  }
+  await hook(hooks, ctx, conversation(1, 12));
+}
+
+test('the ratio guard refuses a merge that would free less than it writes', async () => {
+  const { sandbox, home, tools, hooks, ctx } = await bootWith();
+  try {
+    await fiveLabelledLeaves(sandbox, hooks, ctx, tools);
+    const res = await tools.get('cwl_old').execute('t', { text: 'TOO-EARLY-SYNTHESIS' }, undefined, undefined, ctx);
+    assert.equal(res.details.ok, false, 'a merge freeing 14 characters against a 10,800 guard was accepted');
+    assert.equal(res.details.error, 'too-small');
+    const body = text(res);
+    assert.ok(body.includes('10800'), `the refusal does not say what it needed: ${body}`);
+    assert.ok(body.includes('14'), `the refusal does not say what it would free: ${body}`);
+    const st = stateOf(sandbox);
+    assert.equal(st.oldNode, null, 'a refused merge left a pit behind: the refusal half-merged');
+  } finally {
+    home.restore();
+  }
+});
+
+test('the absolute floor refuses even when the ratio would pass', async () => {
+  const { sandbox, home, tools, hooks, ctx } = await bootWith({ mergeMinRatio: 1, mergeMinChars: 1_000_000 });
+  try {
+    await fiveLabelledLeaves(sandbox, hooks, ctx, tools);
+    const res = await tools.get('cwl_old').execute('t', { text: 'FLOOR-SYNTHESIS' }, undefined, undefined, ctx);
+    assert.equal(res.details.ok, false, 'a merge below the absolute floor was accepted');
+    assert.equal(res.details.error, 'too-small');
+    assert.ok(text(res).includes('1000000'), `the floor is not the binding constraint here: ${text(res)}`);
   } finally {
     home.restore();
   }

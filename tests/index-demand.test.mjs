@@ -34,6 +34,11 @@ const config = () => ({
   looseLeaves: 1,
   nodeCapacity: 2,
   mergeNodesAt: 2,
+  // The size guards of a merge are OFF here: this test writes labels of a few characters,
+  // and the real guard (3x a 3,600-character synthesis, and never less than 6,000) would
+  // refuse the very merge the test is about. The guard has its own test in old-node.test.mjs.
+  mergeMinRatio: 0,
+  mergeMinChars: 0,
 });
 
 async function boot() {

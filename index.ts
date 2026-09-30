@@ -149,6 +149,10 @@ type CwlMessages = {
   statusRange: (tokens: number, start: string, end: string) => string;
   statusAddresses: (eligible: number, withId: number) => string;
   statusSpans: (n: number) => string;
+  /** A merge that would free less than it costs: refused, with the numbers said. */
+  oldTooSmall: (leaves: number, microChars: number, needChars: number) => string;
+  /** The index shape in one line: the TUI widget and `cwl_status` show the same one. */
+  indexLine: (pitNodes: number, pitLeaves: number, youngNodes: number, youngLeaves: number, loose: number, waiting: number, headTokens: string, evictions: number, savedTokens: string) => string;
   statusUnlocatable: (n: number) => string;
   /** Strings of the cwl_recall tool. */
   recallNotLoaded: string;
@@ -258,6 +262,10 @@ const I18N: Record<Lang, CwlMessages> = {
     statusRange: (tokens, start, end) => `Compressible range: ~${tokens} tokens (${start}..${end})`,
     statusAddresses: (eligible, withId) => `Addresses: ${withId}/${eligible} endpoint messages carry a stable id`,
     statusSpans: (n) => `Compressed spans held: ${n}`,
+    oldTooSmall: (leaves, microChars, needChars) =>
+      `\n\nNothing was recorded: the ${leaves} leaf/leaves that would leave the context hold ${microChars} characters, and a merge must free at least ${needChars}. A merge COSTS a synthesis: the pit's summary is rewritten, so what leaves has to be worth more than what replaces it. Compress more first, or merge when the nodes are full.`,
+    indexLine: (pitNodes, pitLeaves, youngNodes, youngLeaves, loose, waiting, headTokens, evictions, savedTokens) =>
+      `pit ${pitNodes}n/${pitLeaves}l │ young ${youngNodes}n/${youngLeaves}l │ loose ${loose} │ waiting micro ${waiting} │ head ~${headTokens}t │ ${evictions} evict │ ${savedTokens} saved`,
     statusUnlocatable: (n) => `Episodes whose anchors left the context: ${n} (their content is not verifiable)`,
     recallNotLoaded: 'The recall index is not loaded; /reload the extension.',
     recallNoTranscript: 'Transcript not found for this session.',
@@ -334,7 +342,7 @@ const I18N: Record<Lang, CwlMessages> = {
       microId: 'Id of the leaf to absorb, as it appears in the compression notice.',
       microText: 'The micro-summary that REPLACES the body in the context. The body is NOT touched: cwl_open still returns all of it. Write the pieces that matter; ~1.200 characters (≈300 tokens) is the size this design is built for — and the ceiling is measured: going over it is said in the result.',
       oldDesc: 'Writes the RIASSUNTONE and merges the oldest young nodes into the old node: their micros leave the context and the synthesis stands for all of them. The nodes and their leaves stay readable — cwl_open pages through them.',
-      oldText: 'The synthesis (merge summary) that replaces the micros of the merged nodes in the context. Write WHOLE PIECES: it is what the agent will see instead of them.',
+      oldText: 'The synthesis (merge summary) that replaces the micros of the merged nodes in the context. Write WHOLE PIECES: it is what the agent will see instead of them. If the pit already holds a synthesis, cwl_open shows it: CARRY IT FORWARD, concatenated — a merge REPLACES the pit synthesis, it does not add to it.',
       recallEpisodeFull: 'false (default) returns a truncated preview; true returns the whole episode.',
       compressRangeDesc: 'Compresses the OLDEST usable range of the conversation into your summary. YOU DO NOT pick the range and you do not need any hash: the extension already computed the address and holds it. Call it when an eviction marker or the budget demand tells you to compact, and write a summary good enough to keep working without re-reading the originals. Nothing inside the protected window is touched.',
       compressRangeSummary: 'The summary that REPLACES the compressed range. Write WHOLE PIECES, not a digest: it must be enough to keep working without re-reading them. Include paths, file names, function names, numeric values, and what you decided and why.',
@@ -398,6 +406,10 @@ const I18N: Record<Lang, CwlMessages> = {
     statusRange: (tokens, start, end) => `Intervallo comprimibile: ~${tokens} token (${start}..${end})`,
     statusAddresses: (eligible, withId) => `Indirizzi: ${withId}/${eligible} messaggi-endpoint con un id stabile`,
     statusSpans: (n) => `Span di compressione tenuti: ${n}`,
+    oldTooSmall: (leaves, microChars, needChars) =>
+      `\n\nNon e\' stato registrato niente: le ${leaves} foglia/e che uscirebbero dal contesto tengono ${microChars} caratteri, e un accorpamento deve liberarne almeno ${needChars}. Un accorpamento COSTA una sintesi: la sintesi del pozzo viene riscritta, quindi cio\' che esce deve valere piu\' di cio\' che lo sostituisce. Comprimi altro prima, o accorpa quando i nodi sono pieni.`,
+    indexLine: (pitNodes, pitLeaves, youngNodes, youngLeaves, loose, waiting, headTokens, evictions, savedTokens) =>
+      `pozzo ${pitNodes}n/${pitLeaves}f │ giovani ${youngNodes}n/${youngLeaves}f │ sciolte ${loose} │ aspettano micro ${waiting} │ testa ~${headTokens}t │ ${evictions} eviction │ ${savedTokens} risparmiati`,
     statusUnlocatable: (n) => `Episodi le cui ancore sono uscite dal contesto: ${n} (contenuto non verificabile)`,
     recallNotLoaded: "L'indice di recall non e' caricato; fai /reload dell'estensione.",
     recallNoTranscript: 'Transcript non trovato per questa sessione.',
@@ -470,7 +482,7 @@ const I18N: Record<Lang, CwlMessages> = {
       microId: "Id della foglia da assorbire, come appare nell'avviso di compressione.",
       microText: "Il micro-riassunto che SOSTITUISCE il corpo nel contesto. Il corpo NON viene toccato: cwl_open lo restituisce ancora tutto. Scrivi i pezzi che contano; ~1.200 caratteri (≈300 token) e' la misura per cui questo design e' costruito — e il tetto e' misurato: sfondarlo viene detto nel risultato.",
       oldDesc: 'Scrive il RIASSUNTONE e accorpa i nodi giovani piu\' vecchi nel nodo vecchio: i loro micro escono dal contesto e la sintesi sta per tutti. I nodi e le loro foglie restano leggibili — cwl_open li pagina.',
-      oldText: 'La sintesi (riassuntone) che sostituisce i micro dei nodi accorpati nel contesto. Scrivi PEZZI INTERI: e\' quello che l\'agente vedra\' al posto loro.',
+      oldText: 'La sintesi (riassuntone) che sostituisce i micro dei nodi accorpati nel contesto. Scrivi PEZZI INTERI: e\' quello che l\'agente vedra\' al posto loro. Se il pozzo ha gia\' una sintesi, cwl_open la mostra: PORTALA AVANTI, concatenata — un accorpamento la SOSTITUISCE, non ci si aggiunge.',
       recallEpisodeFull: 'false (default) restituisce un estratto troncato; true restituisce l\'episodio intero.',
       compressRangeDesc: "Comprime nel tuo riassunto l'intervallo PIU' VECCHIO utilizzabile della conversazione. NON scegli tu l'intervallo e non ti serve nessun hash: l'estensione ha gia' calcolato e tiene l'indirizzo. Chiamalo quando un marker di eviction o la richiesta di budget ti dicono di compattare, e scrivi un riassunto che basti a lavorare senza rileggere gli originali. Nulla dentro la finestra protetta viene toccato.",
       compressRangeSummary: "Il riassunto che SOSTITUISCE l'intervallo compresso. Scrivi PEZZI INTERI, non un sommario: deve bastare a lavorare senza rileggere. Includi path, nomi di file, nomi di funzione, valori numerici e cosa hai scelto e perche'.",
@@ -527,6 +539,10 @@ interface CwlConfig {
   looseLeaves: number;
   nodeCapacity: number;
   mergeNodesAt: number;
+  /** How many times the synthesis a merge frees must outweigh the one it writes. */
+  mergeMinRatio: number;
+  /** And the absolute floor, in characters: below this a merge is refused whatever the ratio says. */
+  mergeMinChars: number;
   /**
    * Ask the AGENT to compact when the budget is not coming down on its own.
    *
@@ -578,6 +594,8 @@ const DEFAULT_CONFIG: CwlConfig = {
   looseLeaves: 5,
   nodeCapacity: 30,
   mergeNodesAt: 3,
+  mergeMinRatio: 3,
+  mergeMinChars: 6_000,
   gate: true,
   levels: {
     stripReasoning: true,
@@ -641,8 +659,13 @@ function loadConfig(): CwlConfig {
         protectedTurns: validNumber(user.protectedTurns, 0, 10_000, DEFAULT_CONFIG.protectedTurns),
         looseLeaves: validNumber(user.looseLeaves, 0, 10_000, DEFAULT_CONFIG.looseLeaves),
         nodeCapacity: validNumber(user.nodeCapacity, 1, 10_000, DEFAULT_CONFIG.nodeCapacity),
-        // At least 2: a merge of one node into itself is not a merge.
-        mergeNodesAt: validNumber(user.mergeNodesAt, 2, 10_000, DEFAULT_CONFIG.mergeNodesAt),
+        // At least 1: the agent can archive EARLIER than the index asks (and then it
+        // takes the node in progress too). A merge of one node into itself is still not
+        // a merge: with `young.length === 1` that node is all there is, and the size
+        // guards below decide whether it is worth a synthesis.
+        mergeNodesAt: validNumber(user.mergeNodesAt, 1, 10_000, DEFAULT_CONFIG.mergeNodesAt),
+        mergeMinRatio: validNumber(user.mergeMinRatio, 0, 1_000, DEFAULT_CONFIG.mergeMinRatio),
+        mergeMinChars: validNumber(user.mergeMinChars, 0, 10_000_000, DEFAULT_CONFIG.mergeMinChars),
         gate: validBool(user.gate, DEFAULT_CONFIG.gate),
         levels: {
           stripReasoning: validBool(levels.stripReasoning, DEFAULT_CONFIG.levels.stripReasoning),
@@ -1720,6 +1743,49 @@ interface OldNode {
 const NODE_PAGE_MAX = 30;
 
 /**
+ * The synthesis one merge writes when the pit has none yet: ~900 tokens. MEASURED, not
+ * guessed: the merges made by hand replaced 88,806 characters of micros with ~3,400
+ * characters of synthesis.
+ */
+const MERGE_SYNTHESIS_CHARS = 3_600;
+
+/** Id of the TUI widget, and the last line drawn: a widget is UI, not a message. */
+const WIDGET_ID = 'cwl-index';
+const widgetLines = new Map<string, string>();
+
+/**
+ * The shape of the index as one tuple, so `t('indexLine')` can take it positionally.
+ * Read-only on purpose: `cwl_status` and the widget both ask here, and a status query
+ * must not create nodes.
+ */
+function indexShape(
+  st: CwlState,
+  cf: typeof DEFAULT_CONFIG,
+): [number, number, number, number, number, number, string, number, string] {
+  const inPit = new Set(st.oldNode?.nodes ?? []);
+  const pit = st.nodes.filter((nd) => inPit.has(nd.id));
+  const young = st.nodes.filter((nd) => !inPit.has(nd.id));
+  const owned = new Set(st.nodes.flatMap((nd) => nd.leaves));
+  const looseIds = new Set(st.spans.slice(-cf.looseLeaves).map((s) => idOfSpan(s)));
+  const headChars = st.spans.reduce((n, s) => n + (owned.has(idOfSpan(s)) ? (s.micro?.length ?? 0) : 0), 0);
+  const waiting = st.spans.filter((s) => {
+    const id = idOfSpan(s);
+    return !owned.has(id) && !looseIds.has(id) && !s.micro;
+  }).length;
+  return [
+    pit.length,
+    pit.reduce((n, nd) => n + nd.leaves.length, 0),
+    young.length,
+    young.reduce((n, nd) => n + nd.leaves.length, 0),
+    looseIds.size,
+    waiting,
+    Math.round(headChars / 4).toLocaleString(),
+    st.totalEvictions,
+    st.totalEvictedTokens.toLocaleString(),
+  ];
+}
+
+/**
  * What `applySpans` needs to know about the pit: its header, and the leaves whose
  * micros must STOP being injected.
  *
@@ -2643,6 +2709,9 @@ export default function (pi: ExtensionAPI) {
         lines.push(t('statusAddresses')(st.addrEligible, st.addrWithId));
       }
       lines.push(t('statusSpans')(st.spans.length));
+      // The shape of the index: which memories exist, how big they are, and what the head
+      // costs. The TUI widget shows the same line — one measurement, two windows.
+      lines.push(t('indexLine')(...indexShape(st, cf)));
       if (st.unlocatable > 0) {
         lines.push(t('statusUnlocatable')(st.unlocatable));
       }
@@ -3188,20 +3257,43 @@ export default function (pi: ExtensionAPI) {
       refreshNodes(st, cf);
       const inPit = new Set(st.oldNode?.nodes ?? []);
       const young = st.nodes.filter((nd) => !inPit.has(nd.id));
-      if (young.length < cf.mergeNodesAt) {
+      if (young.length === 0) {
         return {
           content: [{ type: 'text', text: t('oldNotDue')(young.length, cf.mergeNodesAt) }],
           details: { ok: false, error: 'not-due', young: young.length, mergeNodesAt: cf.mergeNodesAt },
         };
       }
-      // All but the NEWEST young node: the newest is the one still filling up, and
-      // the pit is where the old material goes.
-      const absorbed = young.slice(0, young.length - 1);
+      // WHEN the index is due (young >= mergeNodesAt) the NEWEST young node stays out: it
+      // is the one still filling up, and the pit is where the old material goes. When the
+      // agent archives EARLIER than that — fewer nodes than the index needs to ask — it
+      // takes everything, the node in progress included. That is what makes `cwl_old`
+      // usable to put away material you no longer need WITHOUT losing it: an absorbed node
+      // is SETTLED (it keeps its leaves and stops growing), the leaves that come next form
+      // a fresh node, and every leaf stays readable through `cwl_open`.
+      const absorbed = young.length >= cf.mergeNodesAt && young.length > 1
+        ? young.slice(0, young.length - 1)
+        : young;
       const ids = absorbed.flatMap((nd) => nd.leaves);
       const microChars = ids.reduce(
         (n, id) => n + (st.spans.find((s) => idOfSpan(s) === id)?.micro?.length ?? 0),
         0,
       );
+      // The two guards on the SIZE, because a merge COSTS a synthesis. DECIDED with the
+      // operator and measured against the real numbers (~1,200 characters per label, ~3,600
+      // for a synthesis): the young -> archive merge must be worth at least 3x what it
+      // writes, and never less than `mergeMinChars` (6,000, about five leaves). MEASURED on
+      // the merges made by hand: 60 leaves left 88,806 characters of micros and the synthesis
+      // that replaced them was ~3,400 (a ratio of 26). A two-leaf node leaves ~5,800 and buys
+      // a synthesis with it: that one has to be refused, and said out loud.
+      const synthesisChars = Math.max(st.oldNode?.summary.length ?? 0, MERGE_SYNTHESIS_CHARS);
+      const needChars = Math.max(Math.round(cf.mergeMinRatio * synthesisChars), cf.mergeMinChars);
+      if (microChars < needChars) {
+        debugLog(cf, `OLD not-due: ${ids.length} leaf/leaves would leave ${microChars} chars, need ${needChars} (synthesis ~${synthesisChars}, ratio ${cf.mergeMinRatio}, floor ${cf.mergeMinChars})`);
+        return {
+          content: [{ type: 'text', text: t('oldTooSmall')(ids.length, microChars, needChars) }],
+          details: { ok: false, error: 'too-small', leaves: ids.length, microChars, needChars, synthesisChars },
+        };
+      }
       const pit: OldNode = st.oldNode ?? {
         id: `old-${hashText(absorbed[0].id).slice(0, 8)}`,
         nodes: [],
@@ -3522,6 +3614,17 @@ export default function (pi: ExtensionAPI) {
     // compression demand already goes: into the context.
     const young = st.nodes.filter((nd) => !new Set(st.oldNode?.nodes ?? []).has(nd.id)).length;
     const mergeRequest = plan.due > 0 ? t('indexDue')(young, cf.mergeNodesAt) : null;
+    // The index shape belongs in the TUI, NOT in the context: a widget is UI, it costs no
+    // tokens and it cannot nudge the agent. `showWidget: false` turns it off, and the
+    // option is finally read by somebody: it was declared, defaulted and validated, and
+    // until now nothing drew anything.
+    if (ctx.hasUI) {
+      const line = cf.showWidget ? `CWL \u25b8 ${t('indexLine')(...indexShape(st, cf))}` : '';
+      if (widgetLines.get(key) !== line) {
+        widgetLines.set(key, line);
+        ctx.ui.setWidget(WIDGET_ID, line ? [line] : undefined, { placement: 'belowEditor' });
+      }
+    }
     if (mergeRequest) {
       debugLog(cf, `OLD NODE due: ${cf.mergeNodesAt}+ young nodes — the oldest ones should merge: write the merge summary with cwl_old`);
     }
