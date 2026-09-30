@@ -242,3 +242,65 @@ test('la compressione non lascia un toolResult orfano', async () => {
       'il turno utente protetto deve sopravvivere');
   } finally { home.restore(); sandbox.cleanup(); }
 });
+
+test('i risultati in blocco non si riparano per posizione: la garanzia e\' per id', async () => {
+  // Layout MISURATO in una sessione vera (2026-09-23T07-11-59, righe 1054-1061):
+  // Pi scrive il turno assistant SUCCESSIVO prima del blocco dei risultati,
+  // quindi un assistant puo' stare FRA una toolCall e il suo risultato.
+  //   1054 assistant  toolCall x5   (call_00_kzf4is ...)
+  //   1055 assistant  toolCall x1   <- in mezzo, senza risultati
+  //   1056 toolResult del 1054      <- arriva dopo
+  // Qui l'assistant B sta fra la call di A e il risultato di A. L'intervallo
+  // finisce su A, quindi la call di A sparisce e il suo risultato resta orfano:
+  // una regola per posizione NON puo' vederlo (nessun toolResult e' contiguo
+  // all'ultimo messaggio del range). Restare orfani significa che il provider
+  // rifiuta l'intera richiesta: 400 dal gateway, oppure
+  // "No tool call found for function call output with call_id ..." da Codex.
+  const { sandbox, home, tools, hooks, ctx } = await boot(config({ protectedTurns: 4, debug: true }));
+  try {
+    const testo = (t) => `${t} ` + 'X'.repeat(240);
+    const messages = [
+      { role: 'user', content: testo('turno 1') },
+      // Ultimo endpoint valido sotto il pavimento: l'intervallo finisce qui.
+      { role: 'assistant', content: [{ type: 'text', text: testo('A pensa') }, { type: 'toolCall', id: 'ca', name: 'bash', arguments: { command: 'ls' } }] },
+      // Indice >= pavimento: resta fuori, con la sua coppia intatta.
+      { role: 'assistant', content: [{ type: 'text', text: testo('B pensa') }, { type: 'toolCall', id: 'cb', name: 'bash', arguments: { command: 'ls' } }] },
+      // Il risultato di A arriva DOPO l'assistant B: la sua call e' dentro il
+      // range e sparisce, quindi questo risultato e' orfano e va scartato.
+      { role: 'toolResult', toolCallId: 'ca', content: [{ type: 'text', text: testo('output di A') }] },
+      { role: 'toolResult', toolCallId: 'cb', content: [{ type: 'text', text: testo('output di B') }] },
+    ];
+
+    await hooks.get('context')({ messages }, ctx);
+    const out = await call(tools, ctx, 'sintesi dello scambio A');
+    assert.equal(out.details.ok, true, `rifiutato: ${JSON.stringify(out.details)}`);
+
+    const res = await hooks.get('context')({ messages }, ctx);
+    const kept = res.messages;
+    // Senza applicazione dello span non ci sarebbe nulla da riparare e il test
+    // passerebbe VUOTO: e' l'errore gia' commesso una volta.
+    assert.ok(kept.some((m) => m.customType === 'cwl-compressed'),
+      'lo span deve essere stato applicato, altrimenti il test non prova niente');
+
+    const { senzaRisultato, senzaChiamata } = orfani(kept);
+    assert.deepEqual(senzaChiamata, [],
+      `tool_result senza il suo tool_use: il provider risponde 400. Orfani: ${senzaChiamata.join(', ')}`);
+    assert.deepEqual(senzaRisultato, [],
+      `tool_use senza il suo risultato: il provider risponde 400. Orfani: ${senzaRisultato.join(', ')}`);
+    // Mutazione opposta ("ripara scartando tutto"): la coppia di B non c'entra
+    // nulla con il range e deve sopravvivere INTERA, call e risultato.
+    assert.ok(kept.some((m) => m.role === 'toolResult' && m.toolCallId === 'cb'),
+      'il risultato di B, estraneo al range, non deve essere scartato');
+    assert.ok(kept.some((m) => Array.isArray(m.content)
+      && m.content.some((b) => b.type === 'toolCall' && b.id === 'cb')),
+      'la toolCall di B deve restare: il suo risultato e\' vivo');
+
+    // La riparazione SCARTA un messaggio: se non lo dicesse sarebbe una modifica
+    // silenziosa, e una modifica silenziosa e' il modo in cui un bug si nasconde.
+    // Il log e' l'unica traccia, quindi va verificato invece che promesso.
+    const fs = await import('node:fs');
+    const log = fs.readFileSync(path.join(sandbox.dir, '.pi', 'cwl', 'cwl.log'), 'utf8');
+    assert.match(log, /PAIR REPAIR: dropped 1 orphan tool result/,
+      `il log deve dire di aver scartato il risultato orfano. Log:\n${log}`);
+  } finally { home.restore(); sandbox.cleanup(); }
+});

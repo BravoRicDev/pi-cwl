@@ -1372,6 +1372,87 @@ function roleOf(m: unknown): string {
   return typeof r === 'string' ? r : '';
 }
 
+/** ids of the tool calls an assistant message carries, in order. */
+function callIdsOf(m: AgentMessage): string[] {
+  // SAFETY: read-only probe of an optional field; the union does not expose it.
+  const c = (m as unknown as { content?: unknown }).content;
+  if (!Array.isArray(c)) return [];
+  const out: string[] = [];
+  for (const b of c) {
+    // SAFETY: read-only probe of block fields; blocks are untyped here.
+    const blk = b as { type?: unknown; id?: unknown };
+    if (blk && blk.type === 'toolCall' && typeof blk.id === 'string') out.push(blk.id);
+  }
+  return out;
+}
+
+/** id of the tool call a result answers, or '' when the message is not a result. */
+function resultCallId(m: AgentMessage): string {
+  // SAFETY: read-only probe of an optional field; the union does not expose it.
+  const id = (m as unknown as { toolCallId?: unknown }).toolCallId;
+  return typeof id === 'string' ? id : '';
+}
+
+/**
+ * Every tool RESULT must have its tool CALL, and every CALL its result: the
+ * provider rejects the whole request otherwise. Measured on real sessions, the
+ * two symptoms are `400 status code (no body)` (the scrocco-llm gateway, which
+ * says nothing) and `No tool call found for function call output with call_id
+ * ...` (Codex, which names the orphan).
+ *
+ * The pairing must NOT be inferred from position. Measured over the session
+ * corpus (187 files, 35041 results): 5 results are separated from their own
+ * assistant by ANOTHER assistant, because Pi writes the next assistant before
+ * the batch of results is recorded. A rule like "swallow the toolResults that
+ * follow the last message of the range" cannot see those, so the guarantee
+ * lives HERE, by id, over the final list.
+ *
+ * The two directions cannot interfere: a result is dropped only when NO call
+ * carries its id, and a call is stripped only when no result carries its id.
+ */
+function repairToolPairs(kept: AgentMessage[]): { kept: AgentMessage[]; dropped: number; stripped: number } {
+  const calls = new Set<string>();
+  for (const m of kept) for (const id of callIdsOf(m)) calls.add(id);
+  const results = new Set<string>();
+  for (const m of kept) {
+    const id = resultCallId(m);
+    if (id) results.add(id);
+  }
+
+  const out: AgentMessage[] = [];
+  let dropped = 0;
+  let stripped = 0;
+  for (const m of kept) {
+    // A result whose call did not survive is unusable: the model cannot connect
+    // it to anything, and the provider rejects the whole request.
+    const rid = resultCallId(m);
+    if (rid && !calls.has(rid)) { dropped++; continue; }
+    const ids = callIdsOf(m);
+    const orphans = ids.filter((id) => !results.has(id));
+    if (orphans.length > 0) {
+      // Strip the calls whose result is gone, and drop the message when nothing
+      // else is left. The deterministic eviction path already does this from
+      // the other direction (H1, droppedToolCallIds).
+      // SAFETY: read-only probe of an optional field; the union does not expose it.
+      const c = (m as unknown as { content?: unknown }).content;
+      const filtered = Array.isArray(c)
+        ? c.filter((b) => {
+            // SAFETY: read-only probe of block fields; blocks are untyped here.
+            const blk = b as { type?: unknown; id?: unknown };
+            return !(blk && blk.type === 'toolCall' && typeof blk.id === 'string' && orphans.includes(blk.id));
+          })
+        : c;
+      if (!Array.isArray(filtered) || filtered.length === 0) { stripped++; continue; }
+      // SAFETY: the same message, with a filtered content list.
+      out.push({ ...(m as object), content: filtered } as unknown as AgentMessage);
+      stripped++;
+      continue;
+    }
+    out.push(m);
+  }
+  return { kept: out, dropped, stripped };
+}
+
 /** Locates the session JSONL transcript, looking it up by key suffix. */
 /** Reads a file or returns null: missing and unreadable must not fail. */
 /** Concatenable text from a message (string or list of blocks). */
@@ -1503,8 +1584,16 @@ function extractEpisodeText(
 function applySpans(
   messages: AgentMessage[],
   spans: CompressedSpan[],
-): { kept: AgentMessage[]; applied: number; saved: number; newApplied: number; newSaved: number } {
-  if (spans.length === 0) return { kept: messages, applied: 0, saved: 0, newApplied: 0, newSaved: 0 };
+): {
+  kept: AgentMessage[];
+  applied: number;
+  saved: number;
+  newApplied: number;
+  newSaved: number;
+  pairDropped: number;
+  pairStripped: number;
+} {
+  if (spans.length === 0) return { kept: messages, applied: 0, saved: 0, newApplied: 0, newSaved: 0, pairDropped: 0, pairStripped: 0 };
 
   // hash -> position index, computed once.
   const posByHash = new Map<string, number>();
@@ -1532,7 +1621,10 @@ function applySpans(
       // at 1297. The deterministic eviction path already guards the opposite
       // direction (H1, droppedToolCallIds); the spans path had no guard at all.
       // Extending forward is the right direction: the result is part of the
-      // same exchange being summarised.
+      // same exchange being summarised, so its tokens land in `original` too.
+      // But this only covers the CONTIGUOUS layout: the pairing can never be
+      // trusted to position (see repairToolPairs, which is the actual
+      // guarantee). This is the faithful path for the common case.
       let end = Math.max(from, to);
       while (end + 1 < messages.length && roleOf(messages[end + 1]) === 'toolResult') end++;
       return { sp, from, to: end };
@@ -1541,7 +1633,7 @@ function applySpans(
     .filter((x, _all, arr) => !arr.some((o) => o !== x && o.from <= x.from && o.to >= x.to))
     .sort((a, b) => a.from - b.from);
 
-  if (resolved.length === 0) return { kept: messages, applied: 0, saved: 0, newApplied: 0, newSaved: 0 };
+  if (resolved.length === 0) return { kept: messages, applied: 0, saved: 0, newApplied: 0, newSaved: 0, pairDropped: 0, pairStripped: 0 };
 
   const replaced = new Set<number>();
   const injected: AgentMessage[] = [];
@@ -1590,7 +1682,19 @@ function applySpans(
     }
   });
 
-  return { kept, applied: resolved.length, saved, newApplied, newSaved };
+  // The pair invariant is restored by id on the final list: the range
+  // arithmetic above can split a call from its result, and position cannot be
+  // trusted to detect every layout.
+  const repaired = repairToolPairs(kept);
+  return {
+    kept: repaired.kept,
+    applied: resolved.length,
+    saved,
+    newApplied,
+    newSaved,
+    pairDropped: repaired.dropped,
+    pairStripped: repaired.stripped,
+  };
 }
 
 export default function (pi: ExtensionAPI) {
@@ -2078,6 +2182,11 @@ export default function (pi: ExtensionAPI) {
         debugLog(cf, applied.newApplied > 0
           ? `SPANS applied: ${applied.applied} (new ${applied.newApplied}), saved ${applied.newSaved}t`
           : `SPANS re-applied: ${applied.applied}, nothing new to count`);
+        // The repair drops and strips messages so that toolCall and toolResult
+        // stay paired. A silent drop is how a bug hides: say it out loud.
+        if (applied.pairDropped > 0 || applied.pairStripped > 0) {
+          debugLog(cf, `PAIR REPAIR: dropped ${applied.pairDropped} orphan tool result(s), stripped ${applied.pairStripped} orphan tool call(s) — the range had split a pair`);
+        }
         return finish(applied.kept);
       }
     }
