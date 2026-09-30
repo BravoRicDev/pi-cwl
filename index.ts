@@ -1847,14 +1847,30 @@ function applySpans(
   newSaved: number;
   pairDropped: number;
   pairStripped: number;
+  /**
+   * Positions in `kept` of the messages that are there BECAUSE of a span: the
+   * injected summaries and whatever survived inside a span (a user turn is
+   * inviolable even when a span covers it).
+   *
+   * They are recorded HERE because here is the only place that knows: the loop
+   * below pushes them one by one. Re-deriving them later is impossible, and that
+   * is not a guess: a span whose closing anchor is an assistant REMOVES that
+   * anchor, so a second resolution on the compressed list finds nothing — which
+   * is exactly how `0t inside the spans` was born, with 27 spans applied and
+   * `0 of 27 spans located` printed in a live session.
+   *
+   * Empty when the pair repair dropped an orphan result: then every later
+   * position moved, and a stale position is worse than none.
+   */
+  insideOut: number[];
   /** Spans whose endpoints are no longer in the list: they can never apply. */
   dead: CompressedSpan[];
 } {
-  if (spans.length === 0) return { kept: messages, applied: 0, saved: 0, newApplied: 0, newSaved: 0, pairDropped: 0, pairStripped: 0, dead: [] };
+  if (spans.length === 0) return { kept: messages, applied: 0, saved: 0, newApplied: 0, newSaved: 0, pairDropped: 0, pairStripped: 0, insideOut: [], dead: [] };
 
   const { resolved, dead } = locateSpans(messages, spans);
 
-  if (resolved.length === 0) return { kept: messages, applied: 0, saved: 0, newApplied: 0, newSaved: 0, pairDropped: 0, pairStripped: 0, dead };
+  if (resolved.length === 0) return { kept: messages, applied: 0, saved: 0, newApplied: 0, newSaved: 0, pairDropped: 0, pairStripped: 0, insideOut: [], dead };
 
   const replaced = new Set<number>();
   const injected: AgentMessage[] = [];
@@ -1915,10 +1931,14 @@ function applySpans(
   }
 
   const kept: AgentMessage[] = [];
+  // Recorded here, where the positions are BORN: everything this loop pushes
+  // because of a span (its summary, and whatever survives inside it) becomes a
+  // position the floor report can read later instead of trying to guess it.
+  const insideOut: number[] = [];
   messages.forEach((m, i) => {
     // Inject the summary in place of the first compressed message.
     const startsSpan = resolved.find((r) => r.from === i);
-    if (startsSpan) kept.push(injected[resolved.indexOf(startsSpan)]);
+    if (startsSpan) { insideOut.push(kept.length); kept.push(injected[resolved.indexOf(startsSpan)]); }
     if (!replaced.has(i)) { kept.push(m); return; }
     // A span covers every index between its two endpoints, whatever their role,
     // while the endpoints themselves are always user/assistant messages. So a
@@ -1929,6 +1949,7 @@ function applySpans(
     // SAFETY: read-only probe of an optional field, undefined for other roles.
     const role = (m as unknown as RealMessage).role;
     if (keptInsideSpan(role)) {
+      insideOut.push(kept.length);
       kept.push(m);
     }
   });
@@ -1945,6 +1966,7 @@ function applySpans(
     newSaved,
     pairDropped: repaired.dropped,
     pairStripped: repaired.stripped,
+    insideOut: repaired.dropped === 0 ? insideOut : [],
     dead,
   };
 }
@@ -2429,18 +2451,24 @@ export default function (pi: ExtensionAPI) {
     const declareFloor = (list: AgentMessage[], tokens: number): void => {
       if (tokens <= trigger) return;
       const floor = protectedFromIndex(list, cf.protectedTurns);
-      // NOTE: this list has already been through applySpans, so a span whose END
-      // anchor was an assistant does not contain that anchor any more: the span
-      // removed it (only user/system/developer/custom survive inside a span).
-      // Re-resolving HERE can therefore find nothing at all, which is why the
-      // row below declares how many it located instead of quietly printing 0.
-      // MEASURED in a live session: `0t inside the spans` with 24 spans applied,
-      // because every one of them had removed its own closing anchor.
-      const located = locateSpans(list, st.spans).resolved;
-      const inSpans = new Set<number>();
-      for (const { from, to } of located) {
-        for (let i = from; i <= to; i++) inSpans.add(i);
+      // The spans recorded where their content ended up, in the list they built
+      // (see applySpans.insideOut). Re-resolving is impossible here: this list has
+      // already been through the spans, so a span whose END anchor was an
+      // assistant does not contain that anchor any more — the span removed it.
+      // MEASURED in a live session: `0t inside the spans` with 27 spans applied,
+      // printed as `0 of 27 spans located here`.
+      // So the recorded positions are used when the list still has the same
+      // LENGTH they were recorded against, and the row says which of the two
+      // sources it counted from — never a bare zero.
+      const record = spanInside && spanInside.len === list.length ? spanInside.set : null;
+      const located = record ? [] : locateSpans(list, st.spans).resolved;
+      const inSpans = record ?? new Set<number>();
+      if (!record) {
+        for (const { from, to } of located) {
+          for (let i = from; i <= to; i++) inSpans.add(i);
+        }
       }
+      const countedFrom = record ? `counted from ${st.spans.length} of ${st.spans.length} spans` : `counted from ${located.length} of ${st.spans.length} spans`;
       let protectedTokens = 0;
       let spanTokens = 0;
       let outside = 0;
@@ -2454,7 +2482,7 @@ export default function (pi: ExtensionAPI) {
       // span), so it is subtracted from it: the four numbers must partition the
       // context EXACTLY, and the test checks that identity.
       const free = Math.min(st.rangeTokens, outside);
-      debugLog(cf, `CONTEXT ${tokens}t still above trigger ${Math.round(trigger)}t: ${protectedTokens}t in the protected window (last ${cf.protectedTurns} user turns), ${spanTokens}t inside the spans (${located.length} of ${st.spans.length} spans located here), ${free}t freely compressible, ${outside - free}t elsewhere`);
+      debugLog(cf, `CONTEXT ${tokens}t still above trigger ${Math.round(trigger)}t: ${protectedTokens}t in the protected window (last ${cf.protectedTurns} user turns), ${spanTokens}t inside the spans (${countedFrom}), ${free}t freely compressible, ${outside - free}t elsewhere`);
     };
 
     /**
@@ -2534,6 +2562,13 @@ export default function (pi: ExtensionAPI) {
     // region would be offered again.
     let rangeStoredBySpans = false;
 
+    // Where the spans put their content, in the list they built: `applySpans`
+    // records it while it pushes and nobody can recover it afterwards (a span
+    // removes its own closing anchor, so a second resolution is blind). `len`
+    // guards the positions: the reasoning strip rewrites message for message and
+    // keeps the length, the eviction removes messages and changes it.
+    let spanInside: { set: Set<number>; len: number } | null = null;
+
     // The spans compressed by the LLM are ALWAYS applied, not only above the
     // threshold: the agent decides when to compress, not the extension estimate.
     if (st.spans.length > 0) {
@@ -2595,6 +2630,7 @@ export default function (pi: ExtensionAPI) {
         // resolved on the original list would point the eviction at messages that
         // no longer exist there.
         messages = applied.kept;
+        spanInside = { set: new Set(applied.insideOut), len: applied.kept.length };
         currentTokens = afterSpans;
       }
     }
