@@ -1336,6 +1336,18 @@ interface CompressedSpan {
   endHash: string;
   summary: string;
   at: number;
+  /**
+   * Whether this span's saving has already been added to `totalEvictedTokens`.
+   *
+   * Applying a span is IDEMPOTENT and happens on EVERY turn: Pi rebuilds the
+   * list from its append-only transcript, so the originals come back each time
+   * and the span has to be re-applied to keep the context compressed. Counting
+   * is NOT idempotent. Measured before this flag existed: one span, three
+   * identical turns, 427 -> 1708 tokens "saved", exactly four times the truth.
+   * That counter is the only evidence the operator has that this works, so it
+   * must not grow on its own.
+   */
+  counted?: boolean;
 }
 
 /** Stable hash of a message's text: 12 hex chars, like ARC ids. */
@@ -1474,8 +1486,8 @@ function extractEpisodeText(
 function applySpans(
   messages: AgentMessage[],
   spans: CompressedSpan[],
-): { kept: AgentMessage[]; applied: number; saved: number } {
-  if (spans.length === 0) return { kept: messages, applied: 0, saved: 0 };
+): { kept: AgentMessage[]; applied: number; saved: number; newApplied: number; newSaved: number } {
+  if (spans.length === 0) return { kept: messages, applied: 0, saved: 0, newApplied: 0, newSaved: 0 };
 
   // hash -> position index, computed once.
   const posByHash = new Map<string, number>();
@@ -1498,11 +1510,13 @@ function applySpans(
     .filter((x, _all, arr) => !arr.some((o) => o !== x && o.from <= x.from && o.to >= x.to))
     .sort((a, b) => a.from - b.from);
 
-  if (resolved.length === 0) return { kept: messages, applied: 0, saved: 0 };
+  if (resolved.length === 0) return { kept: messages, applied: 0, saved: 0, newApplied: 0, newSaved: 0 };
 
   const replaced = new Set<number>();
   const injected: AgentMessage[] = [];
   let saved = 0;
+  let newSaved = 0;
+  let newApplied = 0;
 
   for (const { sp, from, to } of resolved) {
     let original = 0;
@@ -1510,7 +1524,11 @@ function applySpans(
       replaced.add(i);
       original += estimateMessageTokens(messages[i]);
     }
-    saved += Math.max(0, original - estimateTokens(sp.summary));
+    const gain = Math.max(0, original - estimateTokens(sp.summary));
+    saved += gain;
+    // Count it once, HERE, where the real gain is known. Every later turn marks
+    // it `counted`, so the caller leaves the totals alone.
+    if (!sp.counted) { sp.counted = true; newSaved += gain; newApplied++; }
     // SAFETY: Pi accepts the custom role in the context hook although the
     // AgentMessage union does not declare it; the extra keys are its contract.
     injected.push({
@@ -1541,7 +1559,7 @@ function applySpans(
     }
   });
 
-  return { kept, applied: resolved.length, saved };
+  return { kept, applied: resolved.length, saved, newApplied, newSaved };
 }
 
 export default function (pi: ExtensionAPI) {
@@ -2021,9 +2039,14 @@ export default function (pi: ExtensionAPI) {
     if (st.spans.length > 0) {
       const applied = applySpans(messages, st.spans);
       if (applied.applied > 0) {
-        st.totalEvictions += applied.applied;
-        st.totalEvictedTokens += applied.saved;
-        debugLog(cf, `SPANS applied: ${applied.applied}, saved ${applied.saved}t`);
+        // Only spans counted for the FIRST time move the totals. The others are
+        // re-applications: the context really is that much smaller, but it was
+        // already paid for on the turn the span was created.
+        st.totalEvictions += applied.newApplied;
+        st.totalEvictedTokens += applied.newSaved;
+        debugLog(cf, applied.newApplied > 0
+          ? `SPANS applied: ${applied.applied} (new ${applied.newApplied}), saved ${applied.newSaved}t`
+          : `SPANS re-applied: ${applied.applied}, nothing new to count`);
         return finish(applied.kept);
       }
     }

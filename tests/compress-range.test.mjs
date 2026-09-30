@@ -133,3 +133,37 @@ test('un intervallo gia\' compresso non viene riproposto', async () => {
     }
   } finally { home.restore(); sandbox.cleanup(); }
 });
+
+test('il risparmio si conta UNA volta: riapplicare lo span non gonfia il totale', async () => {
+  // Pi ricostruisce la lista dal transcript a ogni turno, quindi rimanda gli
+  // ORIGINALI: lo span dev'essere riapplicato, ed e' giusto che sia cosi'.
+  // Riapplicare non e' risparmiare di nuovo — il contesto resta quello
+  // compresso, non si comprime due volte. Contare il risparmio a ogni
+  // riapplicazione produce un numero che cresce da solo, turno dopo turno, e
+  // quel numero e' l'unica prova che l'operatore ha che la cosa funzioni.
+  const { sandbox, home, tools, hooks, ctx } = await boot(config());
+  const risparmiati = async () => {
+    const s = await tools.get('cwl_status').execute('id', {}, undefined, undefined, ctx);
+    const testo = s.content.map((c) => c.text).join('\n');
+    const m = /token risparmiati:\s*([\d.]+)/.exec(testo);
+    return m ? Number(m[1].replace(/\./g, '')) : -1;
+  };
+  try {
+    const messages = conversation();
+    await hooks.get('context')({ messages }, ctx);
+    const out = await call(tools, ctx, 'sintesi dei primi turni: obiettivo, decisioni, path');
+    assert.equal(out.details.ok, true);
+    // Il conteggio avviene quando lo span viene APPLICATO, cioe' al turno
+    // successivo: il tool scrive l'indirizzo, l'hook lo applica.
+    await hooks.get('context')({ messages }, ctx);
+    const dopoLaCompressione = await risparmiati();
+    assert.ok(dopoLaCompressione > 0, 'la compressione deve aver risparmiato qualcosa');
+
+    // Tre turni in cui si rimanda esattamente la stessa lista: nessuna nuova
+    // compressione, nessuna nuova eviction. Il totale non deve muoversi.
+    for (let i = 0; i < 3; i++) await hooks.get('context')({ messages }, ctx);
+    const dopoTreTurni = await risparmiati();
+    assert.equal(dopoTreTurni, dopoLaCompressione,
+      `il risparmio e' cresciuto senza nuove compressioni: ${dopoLaCompressione} -> ${dopoTreTurni}`);
+  } finally { home.restore(); sandbox.cleanup(); }
+});
