@@ -166,6 +166,8 @@ type CwlMessages = {
   /** cwl_open: the WHOLE body of a compressed span, by id. */
   openFound: (id: string, tokens: number, when: string) => string;
   openMissing: (id: string) => string;
+  /** cwl_micro: the body leaves the context, the micro takes its place. */
+  microSet: (id: string, microChars: number, bodyChars: number, shorter: boolean) => string;
   /** Budget gate: the agent-driving channel. */
   gateDemand: (current: string, budget: string, turns: number, canClose: boolean, canCompress: boolean) => string;
   gateGiveUp: (attempts: number) => string;
@@ -178,6 +180,9 @@ type CwlMessages = {
     recallEpisodeDesc: string; recallEpisodeName: string; recallEpisodeFull: string;
     openDesc: string;
     openId: string;
+    microDesc: string;
+    microId: string;
+    microText: string;
     compressRangeDesc: string; compressRangeSummary: string;
   };
   /** Parameter descriptions: read by the LLM on every invocation. */
@@ -246,6 +251,12 @@ const I18N: Record<Lang, CwlMessages> = {
     episodeRecallFound: (name, tokens, body) => `Original content of episode "${name}" (~${tokens} tokens):\n\n${body}`,
     openFound: (id, tokens, when) => `[CWL leaf ${id} — compressed ${when}, ~${tokens} tokens. The WHOLE body follows; nothing is truncated.]\n\n`,
     openMissing: (id) => `No leaf "${id}" in this session's state: either it never existed, or the state dropped it. A pruned span's SUMMARY is not recoverable — it lives only in the state — while the ORIGINAL messages are still in the append-only transcript: recover those with cwl_recall.`,
+    microSet: (id, microChars, bodyChars, shorter) => microChars === 0
+      ? `Leaf ${id}: micro removed — the WHOLE body is back in the context.`
+      : `Leaf ${id}: a micro of ${microChars} chars now stands in the context in place of ${bodyChars} chars. ` +
+        (shorter
+          ? `The body is untouched — cwl_open("${id}") returns all of it.`
+          : `WARNING: this micro is NOT shorter than the body it replaces, so the context does not shrink. Shorten it, or the absorption costs more than it saves.`),
     gateDemand: (current, budget, turns, canClose, canCompress) => {
       // Only the options that are ACTUALLY available. Measured in a real session:
       // the demand listed both while all four episodes were closed and no
@@ -286,7 +297,10 @@ const I18N: Record<Lang, CwlMessages> = {
       recallEpisodeDesc: 'Recovers the ORIGINAL text of an episode that was evicted from the context, by its name. The episode content still lives in the append-only transcript: eviction moves it out of the CONTEXT, it does not delete it. Use it when a marker says an episode was evicted and you need its detail.',
       recallEpisodeName: 'Name of the evicted episode, as it appears in the eviction marker.',
       openDesc: 'Reads back a compressed span (a "leaf") by id, IN FULL. Use cwl_status to see the ids. Nothing is truncated: the body comes back whole, and its size is declared first.',
-      openId: 'Id of the leaf to open, as it appears in the compression notice (or in cwl_status).',
+      openId: 'Id of the leaf to open, as it appears in the compression notice.',
+      microDesc: 'Absorbs a leaf: a short micro-summary stands in the context in place of the whole body, which stays readable IN FULL with cwl_open. This is how the extension stops paying twice for the same story.',
+      microId: 'Id of the leaf to absorb, as it appears in the compression notice.',
+      microText: 'The micro-summary that REPLACES the body in the context. The body is NOT touched: cwl_open still returns all of it. Write the pieces that matter; ~200 words is the size this design is built for.',
       recallEpisodeFull: 'false (default) returns a truncated preview; true returns the whole episode.',
       compressRangeDesc: 'Compresses the OLDEST usable range of the conversation into your summary. YOU DO NOT pick the range and you do not need any hash: the extension already computed the address and holds it. Call it when an eviction marker or the budget demand tells you to compact, and write a summary good enough to keep working without re-reading the originals. Nothing inside the protected window is touched.',
       compressRangeSummary: 'The summary that REPLACES the compressed range. Write WHOLE PIECES, not a digest: it must be enough to keep working without re-reading them. Include paths, file names, function names, numeric values, and what you decided and why.',
@@ -359,6 +373,12 @@ const I18N: Record<Lang, CwlMessages> = {
     episodeRecallFound: (name, tokens, body) => `Contenuto originale dell'episodio "${name}" (~${tokens} token):\n\n${body}`,
     openFound: (id, tokens, when) => `[CWL foglia ${id} — compressa ${when}, ~${tokens} token. Segue il corpo INTERO; niente e' troncato.]\n\n`,
     openMissing: (id) => `Nessuna foglia "${id}" nello stato di questa sessione: o non e' mai esistita, oppure lo stato l'ha potato. Il RIASSUNTO di uno span potato non e' recuperabile — vive solo nello stato — mentre i messaggi ORIGINALI sono ancora nel transcript append-only: recuperali con cwl_recall.`,
+    microSet: (id, microChars, bodyChars, shorter) => microChars === 0
+      ? `Foglia ${id}: micro rimosso — nel contesto e' tornato il corpo INTERO.`
+      : `Foglia ${id}: un micro di ${microChars} caratteri sta ora nel contesto al posto di ${bodyChars}. ` +
+        (shorter
+          ? `Il corpo non e' stato toccato — cwl_open("${id}") lo restituisce tutto.`
+          : 'ATTENZIONE: questo micro NON e\' piu\' corto del corpo che sostituisce, quindi il contesto non si riduce. Accorcialo, o l\'assorbimento costa piu\' di quanto risparmia.'),
     gateDemand: (current, budget, turns, canClose, canCompress) => {
       const opts: string[] = [];
       if (canClose) {
@@ -395,7 +415,10 @@ const I18N: Record<Lang, CwlMessages> = {
       recallEpisodeDesc: "Recupera il testo ORIGINALE di un episodio evictato dal contesto, per nome. Il contenuto dell'episodio vive ancora nel transcript append-only: l'eviction lo sposta fuori dal CONTESTO, non lo cancella. Usalo quando un marker ti dice che un episodio e' stato evictato e te ne serve il dettaglio.",
       recallEpisodeName: "Nome dell'episodio evictato, come appare nel marker di eviction.",
       openDesc: 'Rilegge per intero uno span compresso (una "foglia") dato il suo id. Gli id si vedono in cwl_status. Niente viene troncato: il corpo torna intero, e la sua dimensione viene dichiarata prima.',
-      openId: "Id della foglia da aprire, come appare nell'avviso di compressione (o in cwl_status).",
+      openId: "Id della foglia da aprire, come appare nell'avviso di compressione.",
+      microDesc: "Assorbe una foglia: un micro-riassunto sta nel contesto al posto del corpo intero, che resta leggibile PER INTERO con cwl_open. E' cosi' che l'estensione smette di pagare due volte la stessa storia.",
+      microId: "Id della foglia da assorbire, come appare nell'avviso di compressione.",
+      microText: 'Il micro-riassunto che SOSTITUISCE il corpo nel contesto. Il corpo NON viene toccato: cwl_open lo restituisce ancora tutto. Scrivi i pezzi che contano; ~200 parole e\' la misura per cui questo design e\' costruito.',
       recallEpisodeFull: 'false (default) restituisce un estratto troncato; true restituisce l\'episodio intero.',
       compressRangeDesc: "Comprime nel tuo riassunto l'intervallo PIU' VECCHIO utilizzabile della conversazione. NON scegli tu l'intervallo e non ti serve nessun hash: l'estensione ha gia' calcolato e tiene l'indirizzo. Chiamalo quando un marker di eviction o la richiesta di budget ti dicono di compattare, e scrivi un riassunto che basti a lavorare senza rileggere gli originali. Nulla dentro la finestra protetta viene toccato.",
       compressRangeSummary: "Il riassunto che SOSTITUISCE l'intervallo compresso. Scrivi PEZZI INTERI, non un sommario: deve bastare a lavorare senza rileggere. Includi path, nomi di file, nomi di funzione, valori numerici e cosa hai scelto e perche'.",
@@ -1519,6 +1542,12 @@ interface CompressedSpan {
   /** Stable id, see `spanId`. */
   id: string;
   summary: string;
+  /**
+   * The MICRO-summary: what stands in the context once the leaf has been
+   * absorbed. The body above stays whole — this design's promise is that
+   * nothing is lost, and `cwl_open` reads the body back in full.
+   */
+  micro?: string | null;
   at: number;
   /**
    * Whether this span's saving has already been added to `totalEvictedTokens`.
@@ -1980,7 +2009,7 @@ function applySpans(
     const build = (claim: number): AgentMessage => ({
       role: 'custom',
       customType: 'cwl-compressed',
-      content: t('compressedNotice')(sp.startHash, sp.endHash, claim, idOfSpan(sp)) + sp.summary,
+      content: t('compressedNotice')(sp.startHash, sp.endHash, claim, idOfSpan(sp)) + (sp.micro ?? sp.summary),
       display: false,
       timestamp: Date.now(),
     } as unknown as AgentMessage);
@@ -2456,6 +2485,59 @@ export default function (pi: ExtensionAPI) {
       return {
         content: [{ type: 'text', text: t('openFound')(id, tokens, when) + body }],
         details: { ok: true, id, tokens, chars: body.length },
+      };
+    },
+  });
+
+  /**
+   * cwl_micro: absorb a leaf — its body leaves the context, its micro stays.
+   *
+   * This is the lever the whole project started from. MEASURED in a live session:
+   * 52.027t of the context were the extension's OWN summaries (30 of them, mean
+   * 1.707t) and no path could touch them, because `keptInsideSpan` and the eviction
+   * applier both keep `role: 'custom'` — the role a summary is injected with. The
+   * extension could WRITE a summary and could not ABSORB an old one.
+   *
+   * The body is never overwritten: the micro is a separate field, so `cwl_open`
+   * keeps returning all of it. A tool that wrote the micro INTO the body would make
+   * the promise "nothing is lost" false with one line.
+   *
+   * An EMPTY text removes the micro and puts the whole body back in the context:
+   * an absorption nobody can undo is a one-way door, and this one has a way back.
+   */
+  pi.registerTool({
+    name: 'cwl_micro',
+    label: 'CWL Micro',
+    description: t('tools').microDesc,
+    parameters: Type.Object({
+      id: Type.String({ description: t('tools').microId }),
+      text: Type.String({ description: t('tools').microText }),
+    }),
+    async execute(_toolCallId, params, _signal, _onUpdate, ctx) {
+      const key = sessionKey(ctx);
+      const st = getState(key);
+      const cf = getConfig(key);
+      const wanted = String(params.id ?? '').trim();
+      const micro = String(params.text ?? '').trim();
+      const sp = st.spans.find(
+        (s) => idOfSpan(s) === wanted || s.startHash === wanted || s.endHash === wanted,
+      );
+      if (!sp) {
+        return {
+          content: [{ type: 'text', text: t('openMissing')(wanted) }],
+          details: { ok: false, error: 'unknown-id', id: wanted, spans: st.spans.length },
+        };
+      }
+      const id = idOfSpan(sp);
+      sp.micro = micro ? micro : null;
+      saveState(key, st);
+      const shorter = micro.length > 0 && micro.length < sp.summary.length;
+      debugLog(cf, micro
+        ? `MICRO ${id}: ${micro.length} chars in place of ${sp.summary.length}${shorter ? '' : ' — NOT SHORTER, the context does not shrink'}`
+        : `MICRO ${id}: removed, the body is back in the context`);
+      return {
+        content: [{ type: 'text', text: t('microSet')(id, micro.length, sp.summary.length, shorter) }],
+        details: { ok: true, id, microChars: micro.length, bodyChars: sp.summary.length, shorter },
       };
     },
   });
