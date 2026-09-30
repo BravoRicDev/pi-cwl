@@ -338,6 +338,15 @@ interface CwlConfig {
   tokenBudget: number;
   /** Activation threshold as a fraction of the budget (0..1). */
   thresholdRatio: number;
+  /**
+   * User turns at the tail that are NEVER evicted or stripped.
+   *
+   * A safety window: compaction must not destroy the context the agent is
+   * working on. A turn begins at a user message — the context hook receives
+   * messages, not turn numbers, so counting user messages backwards is the only
+   * definition available here.
+   */
+  protectedTurns: number;
   /** Enabled aggressiveness levels. */
   levels: {
     stripReasoning: boolean;
@@ -356,6 +365,9 @@ const DEFAULT_CONFIG: CwlConfig = {
   // attention does not degrade. If your context is 1M, raise this value.
   tokenBudget: 80_000,
   thresholdRatio: 0.85,
+  // Ten turns is the window the operator asked for: enough that the agent never
+  // loses the thread it is on, small enough that compaction still bites.
+  protectedTurns: 10,
   levels: {
     stripReasoning: true,
     stripBulkOutput: true,
@@ -413,6 +425,7 @@ function loadConfig(): CwlConfig {
         // disabling (r too big) or inverting (r garbage) the whole policy.
         tokenBudget: validNumber(user.tokenBudget, 1, Number.MAX_SAFE_INTEGER, DEFAULT_CONFIG.tokenBudget),
         thresholdRatio: validNumber(user.thresholdRatio, 0, 1, DEFAULT_CONFIG.thresholdRatio),
+        protectedTurns: validNumber(user.protectedTurns, 0, 10_000, DEFAULT_CONFIG.protectedTurns),
         levels: {
           stripReasoning: validBool(levels.stripReasoning, DEFAULT_CONFIG.levels.stripReasoning),
           stripBulkOutput: validBool(levels.stripBulkOutput, DEFAULT_CONFIG.levels.stripBulkOutput),
@@ -1039,12 +1052,40 @@ function estimateEpisodeTokens(ep: Episode, messages: AgentMessage[]): number {
  * — not results, not actions, not user input — and ARC does not
  * touch them. Returns null if there is nothing to remove.
  */
+/**
+ * Index from which the messages are PROTECTED.
+ *
+ * Everything at index >= this value is never evicted nor stripped. The last
+ * `turns` user turns are counted, and a turn begins at a user message.
+ *
+ * With fewer than `turns` user turns in the list, EVERYTHING is protected and
+ * the result is 0: a brand-new conversation is never compacted, however big a
+ * single turn may be.
+ */
+function protectedFromIndex(messages: AgentMessage[], turns: number): number {
+  if (turns <= 0) return messages.length;
+  let seen = 0;
+  for (let i = messages.length - 1; i >= 0; i--) {
+    // SAFETY: read-only field probe (role); the union does not expose it.
+    const role = (messages[i] as unknown as RealMessage).role;
+    if (role === 'user') {
+      seen++;
+      if (seen > turns) return i + 1;
+    }
+  }
+  return 0;
+}
+
 function globalReasoningStrip(
   messages: AgentMessage[],
+  floor: number = messages.length,
 ): { kept: AgentMessage[]; changed: number } | null {
   const kept: AgentMessage[] = [];
   let changed = 0;
-  for (const msg of messages) {
+  for (let i = 0; i < messages.length; i++) {
+    const msg = messages[i];
+    // The safety window is never touched, whatever is inside it.
+    if (i >= floor) { kept.push(msg); continue; }
     // SAFETY: read-only field probe (role/content); the union does not expose them.
     const m = msg as unknown as RealMessage;
     if (m.role === 'assistant' && Array.isArray(m.content)) {
@@ -1669,27 +1710,42 @@ export default function (pi: ExtensionAPI) {
       return;
     }
 
-    // 1b. USEFUL DEGRADATION: without episodes, graded eviction has no targets.
-    // Before leaving the context untouched we still recover the safest budget:
-    // the reasoning blocks of assistant messages. They are the model's internal
-    // trace, not results nor actions, and ARC does not touch them. Without this,
-    // an agent that never uses `delimiter` gets no compression however high
-    // the context — and that is exactly the case where it matters most.
-    if (g.isEmpty) {
-      const out = globalReasoningStrip(messages);
-      if (out) {
-        const after = out.kept.reduce((sum: number, m: AgentMessage) => sum + estimateMessageTokens(m), 0);
-        st.totalEvictions++;
-        st.totalEvictedTokens += Math.max(0, currentTokens - after);
-        debugLog(cf, `FALLBACK reasoning-strip: ${out.changed} messages, ${currentTokens}t -> ${after}t`);
-        if (ctx?.hasUI) {
-          ctx.ui.notify(
-            t('fallbackNotice')(out.changed, currentTokens, after),
-            'info',
-          );
-        }
-        return { messages: out.kept };
+    // The last `protectedTurns` user turns are inviolable: compaction must never
+    // destroy the context the agent is working on.
+    const safetyFloor = protectedFromIndex(messages, cf.protectedTurns);
+
+    /**
+     * Level A — the safety net: strip reasoning blocks, ahead of the safety
+     * window.
+     *
+     * It runs whenever we are still over budget AFTER the episode pass, not only
+     * when the graph is empty. The old `if (g.isEmpty)` gate meant that as soon
+     * as ONE episode existed, the biggest and safest reclaim available was
+     * disabled for the whole session: MEASURED on a real context, assistant
+     * thinking blocks are 43% of it (280k of 650k tokens), and in a controlled
+     * probe all 4 thinking blocks outside an episode survived while the same 4
+     * were removed when no episode existed.
+     */
+    const reasoningFallback = (list: AgentMessage[]): AgentMessage[] | null => {
+      const floor = protectedFromIndex(list, cf.protectedTurns);
+      const out = globalReasoningStrip(list, floor);
+      if (!out) return null;
+      const before = list.reduce((s: number, m: AgentMessage) => s + estimateMessageTokens(m), 0);
+      const after = out.kept.reduce((s: number, m: AgentMessage) => s + estimateMessageTokens(m), 0);
+      st.totalEvictions++;
+      st.totalEvictedTokens += Math.max(0, before - after);
+      debugLog(cf, `FALLBACK reasoning-strip: ${out.changed} messages, ${before}t -> ${after}t`);
+      if (ctx?.hasUI) {
+        ctx.ui.notify(t('fallbackNotice')(out.changed, before, after), 'info');
       }
+      return out.kept;
+    };
+
+    // No episodes at all: episodes are the targeted path, so the safety net is
+    // the only one left.
+    if (g.isEmpty) {
+      const stripped = reasoningFallback(messages);
+      if (stripped) return { messages: stripped };
       debugLog(cf, 'CONTEXT above threshold but no episode AND no reasoning strip possible');
       return;
     }
@@ -1697,6 +1753,9 @@ export default function (pi: ExtensionAPI) {
     // 2. Deterministic policy: compute what to evict and at which level
     const actions = runEvictionPass(cf, g, currentTokens, trigger, messages);
     if (actions.length === 0) {
+      // No episode is safe to touch: the safety net still is.
+      const stripped = reasoningFallback(messages);
+      if (stripped) return { messages: stripped };
       debugLog(cf, `CONTEXT ${currentTokens}t above threshold but no safe candidate: context untouched`);
       return;
     }
@@ -1777,6 +1836,14 @@ export default function (pi: ExtensionAPI) {
         return;
       }
 
+      // Safety window: the most recent turns are inviolable whatever the episode
+      // mapping says. This is checked BEFORE the episode branches, so a `removed`
+      // level cannot reach into the window either.
+      if (idx >= safetyFloor) {
+        kept.push(msg);
+        return;
+      }
+
       if (!ep) {
         kept.push(msg);
         return;
@@ -1843,6 +1910,9 @@ export default function (pi: ExtensionAPI) {
     });
 
     if (dropped === 0 && truncated === 0) {
+      // Nothing in the episodes was reducible: the safety net is still there.
+      const stripped = reasoningFallback(messages);
+      if (stripped) return { messages: stripped };
       debugLog(cf, 'EVICTION: no message actually reducible, context left untouched');
       return;
     }
@@ -1892,6 +1962,13 @@ export default function (pi: ExtensionAPI) {
         t('evictionNotice')(dropped, truncated, currentTokens.toLocaleString(), afterTokens.toLocaleString()),
         'info',
       );
+    }
+
+    // Still over budget after the episode pass: the safety net closes the gap in
+    // the SAME turn instead of waiting for the episode pass to run dry.
+    if (afterTokens > trigger) {
+      const stripped = reasoningFallback(kept);
+      if (stripped) return { messages: stripped };
     }
 
     return { messages: kept };

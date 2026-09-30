@@ -141,9 +141,12 @@ test('cwl_recall risolve la chiave che sessionKey produce davvero (path completo
 test('l\'eviction emette il puntatore, anche per un episodio act', async () => {
   // Solo `removeEpisode` attivo: cosi' l'eviction va DIRETTA al livello removed,
   // senza dover escalare reasoning -> bulk -> intermediate in piu' turni.
+  // protectedTurns=0: qui la finestra di sicurezza va SPENTA, altrimenti i due
+  // soli turni utente della scena sono tutti protetti e nulla viene evicto.
   const config = {
     tokenBudget: 10,
     thresholdRatio: 0.5,
+    protectedTurns: 0,
     levels: { stripReasoning: false, stripBulkOutput: false, stripIntermediate: false, removeEpisode: true },
     showWidget: false,
     debug: false,
