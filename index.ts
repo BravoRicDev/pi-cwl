@@ -176,6 +176,8 @@ type CwlMessages = {
   oldPage: (id: string, nodes: number, tokens: number, body: string) => string;
   /** L'intestazione della sezione "foglie consultate" dentro la pagina del pozzo. */
   oldHot: (listed: number, total: number) => string;
+  /** La richiesta di scrivere il riassuntone: e' l'unico grilletto che l'agente vede. */
+  indexDue: (young: number, need: number) => string;
   /** cwl_micro: the body leaves the context, the micro takes its place. */
   microSet: (id: string, microChars: number, bodyChars: number, shorter: boolean) => string;
   /** Budget gate: the agent-driving channel. */
@@ -269,6 +271,7 @@ const I18N: Record<Lang, CwlMessages> = {
     oldHead: (id, nodes, tokens) => `[CWL OLD NODE ${id} — ${nodes} older node(s) merged behind this synthesis (~${tokens} tokens). Their micros left the context; cwl_open("${id}") pages through them, leaf by leaf.]\n\n`,
     oldPage: (id, nodes, tokens, body) => `[CWL old node ${id} — ${nodes} node(s) inside, ~${tokens} tokens. The synthesis first, then one line per node with its SHAPE; cwl_open("<node id>") opens one, and its leaves open in full.]\n\n${body}`,
     oldHot: (listed, total) => `--- Most consulted leaves (${listed} of ${total} in the old node; nothing was deleted, this is only the reading order) ---`,
+    indexDue: (young, need) => `[CWL INDEX] ${young} node(s) of the index are due to merge (a merge starts at ${need}). Call cwl_old with the riassuntone: your synthesis replaces the micros of the oldest nodes, and their leaves stay readable with cwl_open.`,
     microSet: (id, microChars, bodyChars, shorter) => microChars === 0
       ? `Leaf ${id}: micro removed — the WHOLE body is back in the context.`
       : `Leaf ${id}: a micro of ${microChars} chars now stands in the context in place of ${bodyChars} chars. ` +
@@ -399,6 +402,7 @@ const I18N: Record<Lang, CwlMessages> = {
     oldHead: (id, nodes, tokens) => `[CWL NODO VECCHIO ${id} — ${nodes} nodo/i piu' vecchi accorpati dietro questa sintesi (~${tokens} token). I loro micro sono usciti dal contesto; cwl_open("${id}") li pagina, foglia per foglia.]\n\n`,
     oldPage: (id, nodes, tokens, body) => `[CWL nodo vecchio ${id} — ${nodes} nodo/i dentro, ~${tokens} token. Prima la sintesi, poi una riga per nodo con la sua FORMA; cwl_open("<id nodo>") ne apre uno, e le sue foglie si aprono intere.]\n\n${body}`,
     oldHot: (listed, total) => `--- Foglie piu' consultate (${listed} di ${total} nel nodo vecchio; niente e' stato cancellato, questo e' solo l'ordine di lettura) ---`,
+    indexDue: (young, need) => `[CWL INDICE] ${young} nodo/i dell'indice sono da accorpare (si accorpa da ${need} in su). Chiama cwl_old col riassuntone: la tua sintesi sostituisce i micro dei nodi piu' vecchi, e le loro foglie restano leggibili con cwl_open.`,
     microSet: (id, microChars, bodyChars, shorter) => microChars === 0
       ? `Foglia ${id}: micro rimosso — nel contesto e' tornato il corpo INTERO.`
       : `Foglia ${id}: un micro di ${microChars} caratteri sta ora nel contesto al posto di ${bodyChars}. ` +
@@ -2150,6 +2154,7 @@ function applySpans(
   messages: AgentMessage[],
   spans: CompressedSpan[],
   pit: PitView | null,
+  demanda: string | null,
 ): {
   kept: AgentMessage[];
   applied: number;
@@ -2179,11 +2184,23 @@ function applySpans(
   /** Pairs of spans that share at least one message (a partial overlap). */
   overlapped: number;
 } {
-  if (spans.length === 0) return { kept: messages, applied: 0, saved: 0, newApplied: 0, newSaved: 0, pairDropped: 0, pairStripped: 0, insideOut: [], dead: [], overlapped: 0 };
+  // The demand rides at the END of the list: it is an instruction for NOW, not a piece
+  // of the history. It is built FIRST, because it is appended on every return —
+  // including the two that change nothing, or a turn with no resolvable span would
+  // swallow the request and the agent would never hear it.
+  // SAFETY: Pi accepts `custom` in the context hook although the AgentMessage union
+  // does not declare it — the same contract as the compression notices below.
+  const demandMsg: AgentMessage | null = demanda
+    ? ({ role: 'custom', customType: 'cwl-demand', content: demanda, display: false, timestamp: Date.now() } as unknown as AgentMessage)
+    : null;
+  /** Appends the demand, when there is one. */
+  const out = (list: AgentMessage[]): AgentMessage[] => (demandMsg ? [...list, demandMsg] : list);
+
+  if (spans.length === 0) return { kept: out(messages), applied: 0, saved: 0, newApplied: 0, newSaved: 0, pairDropped: 0, pairStripped: 0, insideOut: [], dead: [], overlapped: 0 };
 
   const { resolved, dead, overlapped } = locateSpans(messages, spans);
 
-  if (resolved.length === 0) return { kept: messages, applied: 0, saved: 0, newApplied: 0, newSaved: 0, pairDropped: 0, pairStripped: 0, insideOut: [], dead, overlapped: 0 };
+  if (resolved.length === 0) return { kept: out(messages), applied: 0, saved: 0, newApplied: 0, newSaved: 0, pairDropped: 0, pairStripped: 0, insideOut: [], dead, overlapped: 0 };
 
   const replaced = new Set<number>();
   const injected: (AgentMessage | null)[] = [];
@@ -2310,7 +2327,7 @@ function applySpans(
   // trusted to detect every layout.
   const repaired = repairToolPairs(kept);
   return {
-    kept: repaired.kept,
+    kept: out(repaired.kept),
     applied: resolved.length,
     saved,
     newApplied,
@@ -3102,21 +3119,6 @@ export default function (pi: ExtensionAPI) {
     const finish = (list: AgentMessage[]): { messages: AgentMessage[] } => {
       const after = list.reduce((s: number, m: AgentMessage) => s + estimateMessageTokens(m), 0);
       st.lastMeasuredTokens = after;
-      // The index, on every path out of the hook: which leaves a node owns, and how
-      // many are still waiting for a micro. A new compression changes the answer, and
-      // a leaf that left the state must leave its node. Said out loud only when
-      // something changes: a line per turn would be noise, and noise hides bugs.
-      const nodiPrima = st.nodes.map((nd) => `${nd.id}:${nd.leaves.length}`).join(',');
-      const piano = refreshNodes(st, cf);
-      const nodiDopo = st.nodes.map((nd) => `${nd.id}:${nd.leaves.length}`).join(',');
-      if (nodiDopo !== nodiPrima || piano.waiting > 0) {
-        debugLog(cf, `NODES: ${st.nodes.length} node(s) [${nodiDopo || 'none'}]${piano.formed > 0 ? `, formed ${piano.formed}` : ''}, ${piano.waiting} leaf/leaves waiting for a micro — their body is still in the context`);
-      }
-      // The merge needs a synthesis only the agent can write: the extension says it is
-      // due and hands over. It does not invent one, and it does not merge silently.
-      if (piano.due > 0) {
-        debugLog(cf, `OLD NODE due: ${cf.mergeNodesAt}+ young nodes — the oldest ones should merge: write the riassuntone with cwl_old`);
-      }
       if (after <= trigger) {
         // Effect achieved: the gate has nothing left to ask for.
         st.overBudgetSince = -1;
@@ -3192,8 +3194,31 @@ export default function (pi: ExtensionAPI) {
 
     // The spans compressed by the LLM are ALWAYS applied, not only above the
     // threshold: the agent decides when to compress, not the extension estimate.
+    // The INDEX runs here, BEFORE the spans are applied: which leaves a node owns, how
+    // many are still waiting for a micro, and whether a merge is due. Before, because
+    // the injection must see the structure of THIS turn — running it in `finish` meant
+    // the injection worked on the previous turn's nodes. It is idempotent: it moves
+    // nothing that is already owned. What changes is said out loud; a line per turn
+    // would be noise, and noise hides bugs.
+    const nodiPrima = st.nodes.map((nd) => `${nd.id}:${nd.leaves.length}`).join(',');
+    const piano = refreshNodes(st, cf);
+    const nodiDopo = st.nodes.map((nd) => `${nd.id}:${nd.leaves.length}`).join(',');
+    if (nodiDopo !== nodiPrima || piano.waiting > 0) {
+      debugLog(cf, `NODES: ${st.nodes.length} node(s) [${nodiDopo || 'none'}]${piano.formed > 0 ? `, formed ${piano.formed}` : ''}, ${piano.waiting} leaf/leaves waiting for a micro — their body is still in the context`);
+    }
+    // The merge needs a synthesis only the AGENT can write. Until this demand existed it
+    // reached the log and not the agent: the extension knew, the operator could read it,
+    // and the only one able to write the riassuntone never called cwl_old. The mechanism
+    // was tested and could not fire in a real session — so the demand goes where the
+    // compression demand already goes: into the context.
+    const giovani = st.nodes.filter((nd) => !new Set(st.oldNode?.nodes ?? []).has(nd.id)).length;
+    const demanda = piano.due > 0 ? t('indexDue')(giovani, cf.mergeNodesAt) : null;
+    if (demanda) {
+      debugLog(cf, `OLD NODE due: ${cf.mergeNodesAt}+ young nodes — the oldest ones should merge: write the riassuntone with cwl_old`);
+    }
+
     if (st.spans.length > 0) {
-      const applied = applySpans(messages, st.spans, pitView(st));
+      const applied = applySpans(messages, st.spans, pitView(st), demanda);
       // A span whose endpoints left the context can never apply again, and each
       // one carries a summary of thousands of characters that the state re-saves
       // on every turn. Pruned here — outside the `applied > 0` guard, because the
