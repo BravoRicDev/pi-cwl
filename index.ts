@@ -166,6 +166,8 @@ type CwlMessages = {
   /** cwl_open: the WHOLE body of a compressed span, by id. */
   openFound: (id: string, tokens: number, when: string) => string;
   openMissing: (id: string) => string;
+  /** cwl_open on a node of level 1: the micros of its leaves, each with its own id. */
+  nodePage: (id: string, count: number, tokens: number, body: string) => string;
   /** cwl_micro: the body leaves the context, the micro takes its place. */
   microSet: (id: string, microChars: number, bodyChars: number, shorter: boolean) => string;
   /** Budget gate: the agent-driving channel. */
@@ -251,6 +253,7 @@ const I18N: Record<Lang, CwlMessages> = {
     episodeRecallFound: (name, tokens, body) => `Original content of episode "${name}" (~${tokens} tokens):\n\n${body}`,
     openFound: (id, tokens, when) => `[CWL leaf ${id} — compressed ${when}, ~${tokens} tokens. The WHOLE body follows; nothing is truncated.]\n\n`,
     openMissing: (id) => `No leaf "${id}" in this session's state: either it never existed, or the state dropped it. A pruned span's SUMMARY is not recoverable — it lives only in the state — while the ORIGINAL messages are still in the append-only transcript: recover those with cwl_recall.`,
+    nodePage: (id, count, tokens, body) => `[CWL node ${id} — ${count} leaf/leaves, ~${tokens} tokens. Each micro below points to a leaf: cwl_open("<leaf id>") returns its WHOLE body.]\n\n${body}`,
     microSet: (id, microChars, bodyChars, shorter) => microChars === 0
       ? `Leaf ${id}: micro removed — the WHOLE body is back in the context.`
       : `Leaf ${id}: a micro of ${microChars} chars now stands in the context in place of ${bodyChars} chars. ` +
@@ -373,6 +376,7 @@ const I18N: Record<Lang, CwlMessages> = {
     episodeRecallFound: (name, tokens, body) => `Contenuto originale dell'episodio "${name}" (~${tokens} token):\n\n${body}`,
     openFound: (id, tokens, when) => `[CWL foglia ${id} — compressa ${when}, ~${tokens} token. Segue il corpo INTERO; niente e' troncato.]\n\n`,
     openMissing: (id) => `Nessuna foglia "${id}" nello stato di questa sessione: o non e' mai esistita, oppure lo stato l'ha potato. Il RIASSUNTO di uno span potato non e' recuperabile — vive solo nello stato — mentre i messaggi ORIGINALI sono ancora nel transcript append-only: recuperali con cwl_recall.`,
+    nodePage: (id, count, tokens, body) => `[CWL nodo ${id} — ${count} foglia/e, ~${tokens} token. Ogni micro qui sotto punta a una foglia: cwl_open("<id foglia>") ne restituisce il corpo INTERO.]\n\n${body}`,
     microSet: (id, microChars, bodyChars, shorter) => microChars === 0
       ? `Foglia ${id}: micro rimosso — nel contesto e' tornato il corpo INTERO.`
       : `Foglia ${id}: un micro di ${microChars} caratteri sta ora nel contesto al posto di ${bodyChars}. ` +
@@ -777,6 +781,8 @@ interface CwlState {
   deducedSeen: number;
   /** Spans compressed by the LLM: hash of the first/last message + summary. */
   spans: CompressedSpan[];
+  /** Nodes of level 1: containers of leaves, chronological. */
+  nodes: SpanNode[];
   /** Text hashes of the messages seen: anchor for cwl_compress. */
   knownHashes: Set<string>;
   /** BM25 index of the transcript, built lazily on the first search. */
@@ -819,6 +825,7 @@ function newState(): CwlState {
     deduced: 0,
     deducedSeen: -1,
     spans: [],
+    nodes: [],
     knownHashes: new Set(),
     recallIndex: null,
     turns: 0,
@@ -892,8 +899,10 @@ let recall: typeof Recall | null = null;
  * What is saved: the episode graph and the compressions requested through
  * `cwl_compress`. Those two are DECISIONS taken by the agent and cannot be
  * recomputed from the transcript, so losing them throws away real work. What is
- * NOT saved: the BM25 index (derived data, rebuilt from the transcript) and the
- * token cursors beyond the counters we display.
+ * NOT saved: the BM25 index (derived data, rebuilt from the transcript), the node
+ * structure of the index — `refreshNodes` DERIVES it from the leaves and their
+ * micros on every turn, and a second copy on disk would be a second source of
+ * truth — and the token cursors beyond the counters we display.
  */
 interface PersistedState {
   version: number;
@@ -1534,6 +1543,68 @@ function spanId(startHash: string, endHash: string): string {
  */
 function idOfSpan(sp: CompressedSpan): string {
   return sp.id ?? spanId(sp.startHash, sp.endHash);
+}
+
+/**
+ * A NODE of level 1: a container that grows up to 30 leaves.
+ *
+ * Why it exists: the head of the context must have a BOUNDED shape. Five leaves
+ * stay loose — whole bodies, the working set — and everything older is absorbed,
+ * its body already out of the context (the micro took its place). What a node adds
+ * is a PLACE to gather those leaves, with an id to open.
+ *
+ * It re-orders nothing: leaves enter in chronological order and never move, so the
+ * head stays stable — and stable means CACHE.
+ */
+interface SpanNode {
+  /** Stable id: `nd-` + 8 hex of the first leaf. */
+  id: string;
+  /** Leaf ids, chronological. A leaf belongs to AT MOST ONE node. */
+  leaves: string[];
+  at: number;
+}
+
+/** How many leaves stay loose (whole body in the context), and how many a node holds. */
+const LOOSE_LEAVES = 5;
+const NODE_CAPACITY = 30;
+
+/**
+ * Decides which leaves a node owns and how many are still waiting for a micro.
+ *
+ * The rule, in order: the LAST `LOOSE_LEAVES` leaves by creation stay loose; every
+ * older leaf that HAS a micro enters the current node (a new one when that is full);
+ * an older leaf WITHOUT a micro is COUNTED as waiting — its body is still in the
+ * context, and that is a cost to declare, not to hide.
+ *
+ * A leaf that left the state (pruned: its anchors are gone) cannot stay in a node,
+ * or the node would describe material that no longer exists.
+ */
+function refreshNodes(st: CwlState): { formed: number; waiting: number } {
+  const leaves = [...st.spans].sort((a, b) => a.at - b.at);
+  const byId = new Map(leaves.map((l) => [idOfSpan(l), l]));
+  // A leaf that left the state (pruned) cannot stay, and neither can a leaf whose
+  // micro was REMOVED: un-absorbing puts its body back in the context, so it must
+  // come out of the node it no longer belongs to. One condition covers both.
+  for (const nd of st.nodes) nd.leaves = nd.leaves.filter((id) => Boolean(byId.get(id)?.micro));
+  st.nodes = st.nodes.filter((nd) => nd.leaves.length > 0);
+
+  const owned = new Set(st.nodes.flatMap((nd) => nd.leaves));
+  const loose = new Set(leaves.slice(-LOOSE_LEAVES).map((l) => idOfSpan(l)));
+  let formed = 0;
+  let waiting = 0;
+  for (const leaf of leaves) {
+    const id = idOfSpan(leaf);
+    if (loose.has(id) || owned.has(id)) continue;
+    if (!leaf.micro) { waiting++; continue; }
+    let nd = st.nodes[st.nodes.length - 1];
+    if (!nd || nd.leaves.length >= NODE_CAPACITY) {
+      nd = { id: `nd-${hashText(id).slice(0, 8)}`, leaves: [], at: Date.now() };
+      st.nodes.push(nd);
+      formed++;
+    }
+    nd.leaves.push(id);
+  }
+  return { formed, waiting };
 }
 
 interface CompressedSpan {
@@ -2466,6 +2537,23 @@ export default function (pi: ExtensionAPI) {
       const st = getState(key);
       const cf = getConfig(key);
       const wanted = String(params.id ?? '').trim();
+      // A NODE first: its page is the micros of its leaves, each with the id that
+      // opens it. Same rule as a leaf: the size is declared before it is handed over.
+      const nd = st.nodes.find((n) => n.id === wanted);
+      if (nd) {
+        const lines = nd.leaves
+          .map((leafId) => {
+            const leaf = st.spans.find((s) => idOfSpan(s) === leafId);
+            return leaf ? `- ${leafId}: ${leaf.micro ?? '(no micro yet)'}` : `- ${leafId}: (leaf gone)`;
+          })
+          .join('\n');
+        const tokens = estimateTokens(lines);
+        debugLog(cf, `OPEN ${nd.id}: ${nd.leaves.length} leaf/leaves, ${tokens}t of micros`);
+        return {
+          content: [{ type: 'text', text: t('nodePage')(nd.id, nd.leaves.length, tokens, lines) }],
+          details: { ok: true, id: nd.id, kind: 'node', leaves: nd.leaves.length, tokens, chars: lines.length },
+        };
+      }
       // Spans written before ids existed have none in the persisted state:
       // `idOfSpan` derives it, exactly as the injected notice does.
       const sp = st.spans.find(
@@ -2732,6 +2820,16 @@ export default function (pi: ExtensionAPI) {
     const finish = (list: AgentMessage[]): { messages: AgentMessage[] } => {
       const after = list.reduce((s: number, m: AgentMessage) => s + estimateMessageTokens(m), 0);
       st.lastMeasuredTokens = after;
+      // The index, on every path out of the hook: which leaves a node owns, and how
+      // many are still waiting for a micro. A new compression changes the answer, and
+      // a leaf that left the state must leave its node. Said out loud only when
+      // something changes: a line per turn would be noise, and noise hides bugs.
+      const nodiPrima = st.nodes.map((nd) => `${nd.id}:${nd.leaves.length}`).join(',');
+      const piano = refreshNodes(st);
+      const nodiDopo = st.nodes.map((nd) => `${nd.id}:${nd.leaves.length}`).join(',');
+      if (nodiDopo !== nodiPrima || piano.waiting > 0) {
+        debugLog(cf, `NODES: ${st.nodes.length} node(s) [${nodiDopo || 'none'}]${piano.formed > 0 ? `, formed ${piano.formed}` : ''}, ${piano.waiting} leaf/leaves waiting for a micro — their body is still in the context`);
+      }
       if (after <= trigger) {
         // Effect achieved: the gate has nothing left to ask for.
         st.overBudgetSince = -1;
