@@ -204,6 +204,7 @@ type CwlMessages = {
     oldText: string;
     compressRangeDesc: string; compressRangeSummary: string; compressMicro: string;
     compressCovered: (start: string, end: string) => string;
+    microOver: (where: string, chars: number, ceiling: number) => string;
   };
   /** Parameter descriptions: read by the LLM on every invocation. */
   params: {
@@ -278,7 +279,7 @@ const I18N: Record<Lang, CwlMessages> = {
     oldPage: (id, nodes, tokens, body) => `[CWL old node ${id} — ${nodes} node(s) inside, ~${tokens} tokens. The synthesis first, then one line per node with its SHAPE; cwl_open("<node id>") opens one, and its leaves open in full.]\n\n${body}`,
     oldHot: (listed, total) => `--- Most consulted leaves (${listed} of ${total} in the old node; nothing was deleted, this is only the reading order) ---`,
     indexDue: (young, need) => `[CWL INDEX] ${young} node(s) of the index are due to merge (a merge starts at ${need}). Call cwl_old with the riassuntone: your synthesis replaces the micros of the oldest nodes, and their leaves stay readable with cwl_open.`,
-    leavesDue: (missing, ids) => `[CWL INDEX] ${missing} leaf/leaves still have their BODY in the context and wait for a micro: ${ids} — call cwl_micro with the id and a micro of ~200 words. The body leaves the context, the micro stands for it, and only then can the leaf enter a node.`,
+    leavesDue: (missing, ids) => `[CWL INDEX] ${missing} leaf/leaves still have their BODY in the context and wait for a micro: ${ids} — call cwl_micro with the id and a micro of ~1.200 characters (≈300 tokens, ~200 words). The body leaves the context, the micro stands for it, and only then can the leaf enter a node.`,
     openOriginal: (id, tokens, body) => `[CWL leaf ${id} — its SUMMARY was dropped when the state pruned it, so here is the ORIGINAL from the append-only transcript (~${tokens} tokens, in full).]\n\n${body}`,
     openOriginalLost: (id) => `Leaf "${id}" was dropped from the state, and its anchors found NOTHING in the transcript. The original cannot be recovered by id from here: use cwl_recall with keywords from that content.`,
     microSet: (id, microChars, bodyChars, shorter) => microChars === 0
@@ -299,7 +300,7 @@ const I18N: Record<Lang, CwlMessages> = {
       }
       if (canCompress) {
         opts.push(`  ${opts.length + 1}. compress a range you have already worked through: ` +
-          'cwl_compress_range(summary="<whole pieces, not a digest>", micro="<~200-word label>") ' +
+          'cwl_compress_range(summary="<whole pieces, not a digest>", micro="<label of ~1.200 characters, ≈300 tokens>") ' +
           '\u2014 you do NOT need any hash, the extension already picked the range; the micro is the label the index ' +
           'will show for this leaf, so write it now and the leaf is ready for a node');
       }
@@ -331,15 +332,17 @@ const I18N: Record<Lang, CwlMessages> = {
       openId: 'Id of the leaf to open, as it appears in the compression notice.',
       microDesc: 'Absorbs a leaf: a short micro-summary stands in the context in place of the whole body, which stays readable IN FULL with cwl_open. This is how the extension stops paying twice for the same story.',
       microId: 'Id of the leaf to absorb, as it appears in the compression notice.',
-      microText: 'The micro-summary that REPLACES the body in the context. The body is NOT touched: cwl_open still returns all of it. Write the pieces that matter; ~200 words is the size this design is built for.',
+      microText: 'The micro-summary that REPLACES the body in the context. The body is NOT touched: cwl_open still returns all of it. Write the pieces that matter; ~1.200 characters (≈300 tokens) is the size this design is built for — and the ceiling is measured: going over it is said in the result.',
       oldDesc: 'Writes the RIASSUNTONE and merges the oldest young nodes into the old node: their micros leave the context and the synthesis stands for all of them. The nodes and their leaves stay readable — cwl_open pages through them.',
       oldText: 'The synthesis (riassuntone) that replaces the micros of the merged nodes in the context. Write WHOLE PIECES: it is what the agent will see instead of them.',
       recallEpisodeFull: 'false (default) returns a truncated preview; true returns the whole episode.',
       compressRangeDesc: 'Compresses the OLDEST usable range of the conversation into your summary. YOU DO NOT pick the range and you do not need any hash: the extension already computed the address and holds it. Call it when an eviction marker or the budget demand tells you to compact, and write a summary good enough to keep working without re-reading the originals. Nothing inside the protected window is touched.',
       compressRangeSummary: 'The summary that REPLACES the compressed range. Write WHOLE PIECES, not a digest: it must be enough to keep working without re-reading them. Include paths, file names, function names, numeric values, and what you decided and why.',
-      compressMicro: 'Your ~200-word LABEL for this leaf: what it contains, detailed enough that the index can show it instead of the body. Write it HERE, while you have the messages in front of you — the leaf is then ready for a node and nothing will have to ask you for it later. A compression without a label stays valid: the extension will ask for it when the leaf is due to join a node.',
+      compressMicro: 'Your LABEL of ~1.200 characters (≈300 tokens) for this leaf: what it contains, detailed enough that the index can show it instead of the body. Write it HERE, while you have the messages in front of you — the leaf is then ready for a node and nothing will have to ask you for it later. A compression without a label stays valid: the extension will ask for it when the leaf is due to join a node.',
       compressCovered: (start: string, end: string) =>
         `Refused: the region ${start}..${end} is already inside a leaf of the index. Compressing it again would describe the same messages a second time, and the two descriptions would drift apart. Open the existing leaf with cwl_open, pick a region that is not covered, or use cwl_compress_range and let the extension choose.`,
+      microOver: (where: string, chars: number, ceiling: number) =>
+        `\n\nStored, but ${where} is ${chars} characters (~${Math.round(chars / 4)} tokens) against a ceiling of ${ceiling} (~350 tokens). The top of the index is made of these labels: measured on 42 real ones they cost ~722t each instead of ~300t, and the top cost 30k instead of ~12k. The label stays as you wrote it — next time write it shorter: the density that matters lives in the body, and cwl_open still returns all of it.`,
     },
     params: {
       delimiterDesc: 'Marks the boundaries of a CWL episode. Types: "expl" (exploration: searches, reads, orientation — the content is not needed after the inference) and "act" (action: writes, edits, executions — persistent effects, first candidate for eviction). When you open an "act", declare the explorations it depends on. When you close an "expl", give the description of what you learned: it is the only content that survives eviction.',
@@ -416,7 +419,7 @@ const I18N: Record<Lang, CwlMessages> = {
     oldPage: (id, nodes, tokens, body) => `[CWL nodo vecchio ${id} — ${nodes} nodo/i dentro, ~${tokens} token. Prima la sintesi, poi una riga per nodo con la sua FORMA; cwl_open("<id nodo>") ne apre uno, e le sue foglie si aprono intere.]\n\n${body}`,
     oldHot: (listed, total) => `--- Foglie piu' consultate (${listed} di ${total} nel nodo vecchio; niente e' stato cancellato, questo e' solo l'ordine di lettura) ---`,
     indexDue: (young, need) => `[CWL INDICE] ${young} nodo/i dell'indice sono da accorpare (si accorpa da ${need} in su). Chiama cwl_old col riassuntone: la tua sintesi sostituisce i micro dei nodi piu' vecchi, e le loro foglie restano leggibili con cwl_open.`,
-    leavesDue: (missing, ids) => `[CWL INDICE] ${missing} foglia/e hanno ancora il CORPO nel contesto e aspettano un micro: ${ids} — chiama cwl_micro con l'id e un micro di ~200 parole. Il corpo esce dal contesto, il micro lo rappresenta, e solo allora la foglia puo' entrare in un nodo.`,
+    leavesDue: (missing, ids) => `[CWL INDICE] ${missing} foglia/e hanno ancora il CORPO nel contesto e aspettano un micro: ${ids} — chiama cwl_micro con l'id e un micro di ~1.200 caratteri (≈300 token, ~200 parole). Il corpo esce dal contesto, il micro lo rappresenta, e solo allora la foglia puo' entrare in un nodo.`,
     openOriginal: (id, tokens, body) => `[CWL foglia ${id} — il RIASSUNTO e' andato perso quando lo stato l'ha potato, quindi ecco l'ORIGINALE dal transcript append-only (~${tokens} token, per intero).]\n\n${body}`,
     openOriginalLost: (id) => `La foglia "${id}" era stata potato dallo stato, e le sue ancore nel transcript non hanno trovato niente. Da qui l'originale non e' piu' recuperabile per id: usa cwl_recall con parole chiave di quel contenuto.`,
     microSet: (id, microChars, bodyChars, shorter) => microChars === 0
@@ -433,7 +436,7 @@ const I18N: Record<Lang, CwlMessages> = {
       }
       if (canCompress) {
         opts.push(`  ${opts.length + 1}. comprimi un intervallo che hai gia' consumato: ` +
-          'cwl_compress_range(summary="<pezzi interi, non un sommario>", micro="<etichetta di ~200 parole>") ' +
+          'cwl_compress_range(summary="<pezzi interi, non un sommario>", micro="<etichetta di ~1.200 caratteri, ≈300 token>") ' +
           '\u2014 non ti serve nessun hash, l\'intervallo l\'ha gia\' scelto l\'estensione; il micro e\' l\'etichetta che ' +
           'l\'indice mostrera\' per questa foglia, scrivilo adesso e la foglia e\' pronta per un nodo');
       }
@@ -465,15 +468,17 @@ const I18N: Record<Lang, CwlMessages> = {
       openId: "Id della foglia da aprire, come appare nell'avviso di compressione.",
       microDesc: "Assorbe una foglia: un micro-riassunto sta nel contesto al posto del corpo intero, che resta leggibile PER INTERO con cwl_open. E' cosi' che l'estensione smette di pagare due volte la stessa storia.",
       microId: "Id della foglia da assorbire, come appare nell'avviso di compressione.",
-      microText: 'Il micro-riassunto che SOSTITUISCE il corpo nel contesto. Il corpo NON viene toccato: cwl_open lo restituisce ancora tutto. Scrivi i pezzi che contano; ~200 parole e\' la misura per cui questo design e\' costruito.',
+      microText: "Il micro-riassunto che SOSTITUISCE il corpo nel contesto. Il corpo NON viene toccato: cwl_open lo restituisce ancora tutto. Scrivi i pezzi che contano; ~1.200 caratteri (≈300 token) e' la misura per cui questo design e' costruito — e il tetto e' misurato: sfondarlo viene detto nel risultato.",
       oldDesc: 'Scrive il RIASSUNTONE e accorpa i nodi giovani piu\' vecchi nel nodo vecchio: i loro micro escono dal contesto e la sintesi sta per tutti. I nodi e le loro foglie restano leggibili — cwl_open li pagina.',
       oldText: 'La sintesi (riassuntone) che sostituisce i micro dei nodi accorpati nel contesto. Scrivi PEZZI INTERI: e\' quello che l\'agente vedra\' al posto loro.',
       recallEpisodeFull: 'false (default) restituisce un estratto troncato; true restituisce l\'episodio intero.',
       compressRangeDesc: "Comprime nel tuo riassunto l'intervallo PIU' VECCHIO utilizzabile della conversazione. NON scegli tu l'intervallo e non ti serve nessun hash: l'estensione ha gia' calcolato e tiene l'indirizzo. Chiamalo quando un marker di eviction o la richiesta di budget ti dicono di compattare, e scrivi un riassunto che basti a lavorare senza rileggere gli originali. Nulla dentro la finestra protetta viene toccato.",
       compressRangeSummary: "Il riassunto che SOSTITUISCE l'intervallo compresso. Scrivi PEZZI INTERI, non un sommario: deve bastare a lavorare senza rileggere. Includi path, nomi di file, nomi di funzione, valori numerici e cosa hai scelto e perche'.",
-      compressMicro: "La tua ETICHETTA di ~200 parole per questa foglia: cosa contiene, con dettaglio sufficiente perche' l'indice la possa mostrare al posto del corpo. Scrivila QUI, mentre hai i messaggi davanti — la foglia e' cosi' pronta per un nodo e nessuno dovra' chiedertela dopo. Una compressione senza etichetta resta valida: l'estensione te la chiedera' quando la foglia dovra' entrare in un nodo.",
+      compressMicro: "La tua ETICHETTA di ~1.200 caratteri (≈300 token) per questa foglia: cosa contiene, con dettaglio sufficiente perche' l'indice la possa mostrare al posto del corpo. Scrivila QUI, mentre hai i messaggi davanti — la foglia e' cosi' pronta per un nodo e nessuno dovra' chiedertela dopo. Una compressione senza etichetta resta valida: l'estensione te la chiedera' quando la foglia dovra' entrare in un nodo.",
       compressCovered: (start: string, end: string) =>
         `Rifiutato: la regione ${start}..${end} e' gia' dentro una foglia dell'indice. Comprimerla di nuovo descriverebbe due volte gli stessi messaggi, e le due descrizioni divergerebbero. Apri la foglia esistente con cwl_open, scegli una regione non coperta, oppure usa cwl_compress_range e lascia che l'intervallo lo scelga l'estensione.`,
+      microOver: (where: string, chars: number, ceiling: number) =>
+        `\n\nRegistrata, ma ${where} e' ${chars} caratteri (~${Math.round(chars / 4)} token) contro un tetto di ${ceiling} (~350 token). La cima dell'indice e' fatta di queste etichette: misurate su 42 reali costavano ~722t l'una invece di ~300t, e la cima 30k invece di ~12k. L'etichetta resta quella che hai scritto — la prossima volta scrivila piu' corta: la densita' che conta sta nel corpo, e cwl_open lo restituisce ancora tutto.`,
     },
     params: {
       delimiterDesc: 'Segna i confini di un episodio CWL. Tipi: "expl" (esplorazione: ricerca, letture, orientamento — il contenuto non serve dopo l\'inferenza) e "act" (azione: scritture, edit, esecuzioni — effetti persistenti, primo candidato all\'eviction). Quando apri un "act", dichiara le esplorazioni da cui dipende. Quando chiudi un "expl", fornisci la descrizione di cosa hai imparato: e\' l\'unico contenuto che sopravvive all\'eviction.',
@@ -1755,7 +1760,7 @@ const MICRO_DEMAND_IDS = 8;
  * The label a compression may ALREADY carry: trimmed, or absent when empty.
  *
  * Whoever writes a compression summary has just read the messages it summarises, so the
- * ~200-word micro is nearly free at that moment. Asking for it later means a second pass over
+ * ~1.200-character (≈300-token) micro is nearly free at that moment. Asking for it later means a second pass over
  * a body that by then lives only in the state — and a batch of five leaves to label. Arriving
  * here, the leaf is ready for a node the moment it is born and `leavesDue` never has to fire
  * for it. It stays OPTIONAL: a compression without a label is valid, and the demand picks it
@@ -2753,7 +2758,7 @@ export default function (pi: ExtensionAPI) {
       saveState(key, st);
       debugLog(cf, `COMPRESS applied ${params.startHash}..${params.endHash}`);
       return {
-        content: [{ type: 'text', text: t('compressApplied')(params.startHash, params.endHash) }],
+        content: [{ type: 'text', text: t('compressApplied')(params.startHash, params.endHash) + overCeiling(`${params.startHash}..${params.endHash}`, microOrUndefined(params.micro), cf) }],
         details: { ok: true, spans: st.spans.length },
       };
     },
@@ -2812,6 +2817,27 @@ export default function (pi: ExtensionAPI) {
     }
   }
 
+  /**
+   * The ceiling on one label, and the overrun said out loud.
+   *
+   * MEASURED on 42 real labels: ~722t each (~1.900 characters) against the ~300t this design
+   * assumed, so the top of the index cost 30k instead of ~12k. The prompt asked for "about 200
+   * words" and bound nothing: 42 labels came out at ~300 words each. A ceiling in CHARACTERS is
+   * what a model can count while it writes, hence the number below — and the overrun is
+   * DECLARED, in the tool result and in the log, rather than refused: refusing would block the
+   * work, and a label that is too long is still a label. What is not acceptable is silence.
+   */
+  const MAX_MICRO_CHARS = 1400;
+  function overCeiling(where: string, micro: string | undefined, cf: ReturnType<typeof getConfig>): string {
+    const n = (micro ?? '').trim().length;
+    if (!micro || n <= MAX_MICRO_CHARS) return '';
+    debugLog(
+      cf,
+      `MICRO over ceiling: ${where} is ${n} characters (~${Math.round(n / 4)}t) against a ceiling of ${MAX_MICRO_CHARS} (~350t)`,
+    );
+    return t('tools').microOver(where, n, MAX_MICRO_CHARS);
+  }
+
   pi.registerTool({
     name: 'cwl_compress_range',
     label: 'CWL Compress Range',
@@ -2849,7 +2875,7 @@ export default function (pi: ExtensionAPI) {
       saveState(key, st);
       debugLog(cf, `COMPRESS-RANGE applied ${startHash}..${endHash} (~${tokens}t)`);
       return {
-        content: [{ type: 'text', text: t('compressRangeApplied')(startHash, endHash, tokens) }],
+        content: [{ type: 'text', text: t('compressRangeApplied')(startHash, endHash, tokens) + overCeiling(`${startHash}..${endHash}`, microOrUndefined(params.micro), cf) }],
         details: { ok: true, spans: st.spans.length, tokens },
       };
     },
@@ -3120,7 +3146,7 @@ export default function (pi: ExtensionAPI) {
         ? `MICRO ${id}: ${micro.length} chars in place of ${sp.summary.length}${shorter ? '' : ' — NOT SHORTER, the context does not shrink'}`
         : `MICRO ${id}: removed, the body is back in the context`);
       return {
-        content: [{ type: 'text', text: t('microSet')(id, micro.length, sp.summary.length, shorter) }],
+        content: [{ type: 'text', text: t('microSet')(id, micro.length, sp.summary.length, shorter) + overCeiling(id, micro, cf) }],
         details: { ok: true, id, microChars: micro.length, bodyChars: sp.summary.length, shorter },
       };
     },
