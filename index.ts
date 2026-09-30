@@ -2037,7 +2037,22 @@ function refreshNodes(
   // A leaf that left the state (pruned) cannot stay, and neither can a leaf whose
   // micro was REMOVED: un-absorbing puts its body back in the context, so it must
   // come out of the node it no longer belongs to. One condition covers both.
-  for (const nd of st.nodes) nd.leaves = nd.leaves.filter((id) => Boolean(byId.get(id)?.micro));
+  //
+  // The PIT's nodes are the exception, and it is not a nuance: their leaves are spoken
+  // for by the merge SUMMARY, not by their micros, so a micro that disappears must not
+  // empty a topic. It did: the topic lost its leaves, the emptied node died, its id left
+  // `st.oldNode.nodes`, and the pit came back as a summary with no nodes while its
+  // leaves were re-formed as young ones — the archive's contents walking back into the
+  // head, which is the opposite of what the pit is for. A leaf that is not in the state
+  // at all still leaves the node, pit or not: nothing could read it back.
+  const inPitIds = new Set(st.oldNode?.nodes ?? []);
+  for (const nd of st.nodes) {
+    nd.leaves = nd.leaves.filter((id) => {
+      const leaf = byId.get(id);
+      if (!leaf) return false; // pruned: the node can no longer stand for it
+      return inPitIds.has(nd.id) ? true : Boolean(leaf.micro);
+    });
+  }
   // A node that lost its leaves dies — EXCEPT the LAST one, the buffer attached to the
   // open leaves. It survives even at zero leaves: the agent can move every leaf of the
   // buffer into a topic, and if the buffer died with them the first node would become a
