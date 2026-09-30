@@ -160,6 +160,8 @@ type CwlMessages = {
   groupAdded: (name: string, id: string, leaves: number) => string;
   /** The header of the ONE block a topic node injects, where its first leaf used to be. */
   topicHead: (name: string, leaves: number, saved: number) => string;
+  /** Said after a merge that carried the immutable descriptions of the topics it absorbed. */
+  oldTopicsConcatenated: (topics: number, chars: number) => string;
   statusUnlocatable: (n: number) => string;
   /** Strings of the cwl_recall tool. */
   recallNotLoaded: string;
@@ -284,6 +286,8 @@ const I18N: Record<Lang, CwlMessages> = {
       `Leaf/leaves added to the topic "${name}" (${id}), which now holds ${leaves}. The description did not change: it is written once, to cover the future use of the topic.`,
     topicHead: (name, leaves, saved) =>
       `[CWL \u00b7 TOPIC "${name}" \u2014 ${leaves} leaf/leaves stand behind this description, which never changes (~${saved} tokens saved). Their bodies are whole and readable with cwl_open.\n\n`,
+    oldTopicsConcatenated: (topics, chars) =>
+      `\n\nThe immutable description(s) of ${topics} topic node(s) were glued to this synthesis, word for word (${chars} characters): they are not rewritten and not to be rewritten.`,
     statusUnlocatable: (n) => `Episodes whose anchors left the context: ${n} (their content is not verifiable)`,
     recallNotLoaded: 'The recall index is not loaded; /reload the extension.',
     recallNoTranscript: 'Transcript not found for this session.',
@@ -360,7 +364,7 @@ const I18N: Record<Lang, CwlMessages> = {
       microId: 'Id of the leaf to absorb, as it appears in the compression notice.',
       microText: 'The micro-summary that REPLACES the body in the context. The body is NOT touched: cwl_open still returns all of it. Write the pieces that matter; ~1.200 characters (≈300 tokens) is the size this design is built for — and the ceiling is measured: going over it is said in the result.',
       oldDesc: 'Writes the RIASSUNTONE and merges the oldest young nodes into the old node: their micros leave the context and the synthesis stands for all of them. The nodes and their leaves stay readable — cwl_open pages through them.',
-      oldText: 'The synthesis (merge summary) that replaces the micros of the merged nodes in the context. Write WHOLE PIECES: it is what the agent will see instead of them. If the pit already holds a synthesis, cwl_open shows it: CARRY IT FORWARD, concatenated — a merge REPLACES the pit synthesis, it does not add to it.',
+      oldText: 'The synthesis (merge summary) that replaces the micros of the merged nodes in the context. Write WHOLE PIECES: it is what the agent will see instead of them. It must cover the ORDINARY nodes you absorb — the description of any TOPIC node you absorb is glued to your text word for word, so do NOT rewrite what a topic already says. If the pit already holds a synthesis, cwl_open shows it: CARRY IT FORWARD, concatenated — a merge REPLACES the pit synthesis, it does not add to it.',
       groupDesc: 'Groups leaves into a TOPIC node, which is born COLLAPSED: the name and the description you write now stand for its leaves in the index from this moment on, so the description must already cover the FUTURE use of the topic. Only the leaves of the buffer (the last node, attached to the leaves still open) can be grouped or moved. When the topic already exists, pass `node` and the description is NOT rewritten — that is what makes adding leaves later free.',
       groupLeaves: 'Ids of the leaves to group or move. Only leaves of the buffer (or loose ones) can be moved, and each must already carry a micro.',
       groupNode: 'Id of an existing TOPIC node to add the leaves to. Omit it to create a new topic, which then requires `name` and `description`.',
@@ -443,6 +447,8 @@ const I18N: Record<Lang, CwlMessages> = {
       `Foglia/e aggiunte al topic "${name}" (${id}), che ora ne tiene ${leaves}. La descrizione non e' cambiata: si scrive una volta sola, per coprire l'uso futuro del topic.`,
     topicHead: (name, leaves, saved) =>
       `[CWL \u00b7 TOPIC "${name}" \u2014 ${leaves} foglia/e stanno dietro questa descrizione, che non cambia mai (~${saved} token risparmiati). I loro corpi sono interi e leggibili con cwl_open.\n\n`,
+    oldTopicsConcatenated: (topics, chars) =>
+      `\n\nLe descrizioni immutabili di ${topics} nodo/i topic sono state incollate a questa sintesi, parola per parola (${chars} caratteri): non vengono riscritte e non vanno riscritte.`,
     statusUnlocatable: (n) => `Episodi le cui ancore sono uscite dal contesto: ${n} (contenuto non verificabile)`,
     recallNotLoaded: "L'indice di recall non e' caricato; fai /reload dell'estensione.",
     recallNoTranscript: 'Transcript non trovato per questa sessione.',
@@ -515,7 +521,7 @@ const I18N: Record<Lang, CwlMessages> = {
       microId: "Id della foglia da assorbire, come appare nell'avviso di compressione.",
       microText: "Il micro-riassunto che SOSTITUISCE il corpo nel contesto. Il corpo NON viene toccato: cwl_open lo restituisce ancora tutto. Scrivi i pezzi che contano; ~1.200 caratteri (≈300 token) e' la misura per cui questo design e' costruito — e il tetto e' misurato: sfondarlo viene detto nel risultato.",
       oldDesc: 'Scrive il RIASSUNTONE e accorpa i nodi giovani piu\' vecchi nel nodo vecchio: i loro micro escono dal contesto e la sintesi sta per tutti. I nodi e le loro foglie restano leggibili — cwl_open li pagina.',
-      oldText: 'La sintesi (riassuntone) che sostituisce i micro dei nodi accorpati nel contesto. Scrivi PEZZI INTERI: e\' quello che l\'agente vedra\' al posto loro. Se il pozzo ha gia\' una sintesi, cwl_open la mostra: PORTALA AVANTI, concatenata — un accorpamento la SOSTITUISCE, non ci si aggiunge.',
+      oldText: 'La sintesi (riassuntone) che sostituisce i micro dei nodi accorpati nel contesto. Scrivi PEZZI INTERI: e\' quello che l\'agente vedra\' al posto loro. Deve coprire i nodi ORDINARI che accorpi — la descrizione dei nodi TOPIC che accorpi viene incollata al tuo testo parola per parola, quindi NON riscrivere cio\' che un topic dice gia\'. Se il pozzo ha gia\' una sintesi, cwl_open la mostra: PORTALA AVANTI, concatenata — un accorpamento la SOSTITUISCE, non ci si aggiunge.',
       groupDesc: 'Raggruppa le foglie in un nodo TOPIC, che nasce GIA\' COLLASSATO: il nome e la descrizione che scrivi adesso stanno per le sue foglie nell\'indice da questo momento, quindi la descrizione deve coprire GIA\' l\'uso futuro del topic. Si possono raggruppare o spostare solo le foglie del buffer (l\'ultimo nodo, attaccato alle foglie ancora aperte). Quando il topic esiste gia\', passa `node` e la descrizione NON viene riscritta: e\' questo che rende gratis l\'aggiunta di foglie.',
       groupLeaves: 'Id delle foglie da raggruppare o spostare. Si spostano solo foglie del buffer (o sciolte), e ognuna deve gia\' avere un micro.',
       groupNode: 'Id di un nodo TOPIC esistente a cui aggiungere le foglie. Omesso, crea un topic nuovo, che allora richiede `name` e `description`.',
@@ -3415,13 +3421,22 @@ export default function (pi: ExtensionAPI) {
       // the merges made by hand: 60 leaves left 88,806 characters of micros and the synthesis
       // that replaced them was ~3,400 (a ratio of 26). A two-leaf node leaves ~5,800 and buys
       // a synthesis with it: that one has to be refused, and said out loud.
+      // WHAT LEAVES THE CONTEXT, and it is a MEASURE, not a guess: a TOPIC node costs its one
+      // description — the labels of its leaves left the head the moment it was born — while an
+      // ordinary node costs the labels of its leaves. The pit's own synthesis is replaced too,
+      // so it leaves as well. Summing the micros of a topic's leaves would count again what had
+      // already gone, and would make the guard approve a merge that frees nothing.
+      const freedChars = (st.oldNode?.summary.length ?? 0) + absorbed.reduce((n, nd) => {
+        if (nd.description) return n + nd.description.length;
+        return n + nd.leaves.reduce((m, id) => m + (st.spans.find((s) => idOfSpan(s) === id)?.micro?.length ?? 0), 0);
+      }, 0);
       const synthesisChars = Math.max(st.oldNode?.summary.length ?? 0, MERGE_SYNTHESIS_CHARS);
       const needChars = Math.max(Math.round(cf.mergeMinRatio * synthesisChars), cf.mergeMinChars);
-      if (microChars < needChars) {
-        debugLog(cf, `OLD not-due: ${ids.length} leaf/leaves would leave ${microChars} chars, need ${needChars} (synthesis ~${synthesisChars}, ratio ${cf.mergeMinRatio}, floor ${cf.mergeMinChars})`);
+      if (freedChars < needChars) {
+        debugLog(cf, `OLD not-due: ${ids.length} leaf/leaves would leave ${freedChars} chars, need ${needChars} (synthesis ~${synthesisChars}, ratio ${cf.mergeMinRatio}, floor ${cf.mergeMinChars})`);
         return {
-          content: [{ type: 'text', text: t('oldTooSmall')(ids.length, microChars, needChars) }],
-          details: { ok: false, error: 'too-small', leaves: ids.length, microChars, needChars, synthesisChars },
+          content: [{ type: 'text', text: t('oldTooSmall')(ids.length, freedChars, needChars) }],
+          details: { ok: false, error: 'too-small', leaves: ids.length, microChars, freedChars, needChars, synthesisChars },
         };
       }
       const pit: OldNode = st.oldNode ?? {
@@ -3431,15 +3446,26 @@ export default function (pi: ExtensionAPI) {
         at: Date.now(),
       };
       pit.nodes.push(...absorbed.map((nd) => nd.id));
-      pit.summary = text;
+      // The descriptions of the TOPIC nodes absorbed here are concatenated VERBATIM: they were
+      // written to cover the future use of their topic, they are immutable, and re-describing
+      // them through an LLM would pay twice for the same content and could drift from what the
+      // topic still says. The agent's own synthesis covers the ORDINARY nodes.
+      const appended = absorbed
+        .filter((nd) => nd.description)
+        .map((nd) => `[topic "${nd.name ?? nd.id}"] ${nd.description}`);
+      pit.summary = appended.length > 0 ? `${text}\n\n${appended.join('\n\n')}` : text;
       pit.at = Date.now();
       st.oldNode = pit;
       saveState(key, st);
       const tokens = estimateTokens(text);
-      debugLog(cf, `OLD ${pit.id}: absorbed ${absorbed.length} node(s), ${ids.length} leaf/leaves; ${microChars} chars of micros -> a synthesis of ${tokens}t`);
+      debugLog(cf, `OLD ${pit.id}: absorbed ${absorbed.length} node(s), ${ids.length} leaf/leaves; ${freedChars} chars leave the head${appended.length > 0 ? `, ${appended.length} topic description(s) concatenated` : ''} -> a synthesis of ${tokens}t`);
       return {
-        content: [{ type: 'text', text: t('oldNodeSet')(pit.id, absorbed.length, ids.length, microChars, tokens) }],
-        details: { ok: true, id: pit.id, nodes: absorbed.length, leaves: ids.length, microChars, tokens },
+        content: [{
+          type: 'text',
+          text: t('oldNodeSet')(pit.id, absorbed.length, ids.length, freedChars, tokens)
+            + (appended.length > 0 ? t('oldTopicsConcatenated')(appended.length, appended.join('\n\n').length) : ''),
+        }],
+        details: { ok: true, id: pit.id, nodes: absorbed.length, leaves: ids.length, microChars, freedChars, topicsConcatenated: appended.length, tokens },
       };
     },
   });
