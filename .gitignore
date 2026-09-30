@@ -4,13 +4,13 @@ node_modules/
 dist/
 __pycache__/
 
-# Documenti di lavoro interni: mai nel repo pubblico.
-HANDOFF-COMPRESSIONE-OTTIMIZZATA.md
-PIANO-*.md
+# Internal working documents: never in the public repo.
+HANDOFF-*.md
+PLAN-*.md
 
-# Lockfile: non e' portabile in questo repo. node_modules/ viene popolato dai
-# link a runtime verso il pacchetto Pi (tests/_helpers.mjs --link-deps), e npm
-# registra quei link nel lockfile come "extraneous" con il PATH ASSOLUTO
-# dell'installazione locale: su un'altra macchina il file sarebbe diverso. La
-# dipendenza vera (typescript) e' gia' dichiarata in package.json.
+# Lockfile: this repo cannot carry a portable one. node_modules/ is populated
+# by runtime links to the Pi package (tests/_helpers.mjs --link-deps), and npm
+# records those links in the lockfile as "extraneous" entries holding the
+# ABSOLUTE path of the local installation, so the file would differ on any
+# other machine. The real dependency (typescript) is declared in package.json.
 package-lock.json

@@ -32,7 +32,7 @@ async function boot(config) {
   const sandbox = makeSandbox({ name: `safety-${seq++}`, config });
   const home = withHome(sandbox.dir);
   const { tools, hooks } = await bootExtension(sandbox);
-  const ctx = sessionCtx(path.join(sandbox.dir, 'sessione.jsonl'));
+  const ctx = sessionCtx(path.join(sandbox.dir, 'session.jsonl'));
   await hooks.get('session_start')({}, ctx);
   return { sandbox, home, tools, hooks, ctx };
 }
@@ -113,7 +113,7 @@ test('a conversation shorter than the window releases ONLY the oldest part', asy
     // covers everything is no longer a window: it is the reason the context
     // grows without bound, because all three compaction routes die
     // together. MEASURED in real sessions: 469k tokens against a threshold of 68k,
-    // `cwl_compress_range` answering "non resta niente da comprimere", and the
+    // `cwl_compress_range` answering "nothing left to compress", and the
     // gate looping on an impossible request.
     //
     // Rule: in the degenerate case the OLDEST part is released, the

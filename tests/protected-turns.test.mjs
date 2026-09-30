@@ -25,7 +25,7 @@
  *  1. the protected window does NOT cover nearly everything (with the `user` messages alone it
  *     would cover 80%);
  *  2. the compression is POSSIBLE: `cwl_compress_range` must succeed. It is the proof that
- *     matters to the operator — "non resta niente da comprimere" is the symptom that
+ *     matters to the operator — "nothing left to compress" is the symptom that
  *     led him to ask for this fix.
  */
 import assert from 'node:assert/strict';
@@ -49,7 +49,7 @@ async function boot() {
   const sandbox = makeSandbox({ name: `turns-${seq++}`, config: config() });
   const home = withHome(sandbox.dir);
   const { tools, hooks } = await bootExtension(sandbox);
-  const ctx = sessionCtx(path.join(sandbox.dir, 'sessione.jsonl'));
+  const ctx = sessionCtx(path.join(sandbox.dir, 'session.jsonl'));
   await hooks.get('session_start')({}, ctx);
   return { sandbox, home, tools, hooks, ctx };
 }
@@ -104,11 +104,11 @@ test('an autonomous turn (wake-up, card) counts as an operator turn', async () =
     );
 
     // 2. And the proof that matters to the operator: compression must be possible.
-    const range = await tools.get('cwl_compress_range').execute('t', { summary: 'SINTESI-A' }, undefined, undefined, ctx);
+    const range = await tools.get('cwl_compress_range').execute('t', { summary: 'SUMMARY-A' }, undefined, undefined, ctx);
     assert.equal(
       range.details.ok,
       true,
-      `"non resta niente da comprimere": it is the symptom that led to this fix — ${JSON.stringify(range.details)}`,
+      `"nothing left to compress": it is the symptom that led to this fix — ${JSON.stringify(range.details)}`,
     );
   } finally {
     home.restore();

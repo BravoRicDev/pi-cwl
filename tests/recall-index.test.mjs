@@ -141,7 +141,7 @@ test('empty, truncated and non-message lines do not kill the index', () => {
     JSON.stringify({ type: 'other', message: { role: 'user', content: 'to be ignored' } }),
     JSON.stringify({ type: 'message', message: { role: 'toolResult', content: 'ignored' } }),
     rec('aaaa1111', 'alfa betulla'),
-    '{"type":"message","id":"troncato","mess',
+    '{"type":"message","id":"cutoff","mess',
   ].join('\n');
   const idx = indexTranscript(raw);
   assert.equal(idx.size, 1, 'only the valid record must enter');

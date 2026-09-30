@@ -36,7 +36,7 @@ async function boot(config) {
   const sandbox = makeSandbox({ name: `gate-${seq++}`, config });
   const home = withHome(sandbox.dir);
   const { tools, hooks } = await bootExtension(sandbox);
-  const ctx = sessionCtx(path.join(sandbox.dir, 'sessione.jsonl'));
+  const ctx = sessionCtx(path.join(sandbox.dir, 'session.jsonl'));
   await hooks.get('session_start')({}, ctx);
   return { sandbox, home, tools, hooks, ctx };
 }
@@ -144,7 +144,7 @@ test('with gate=false no request is ever injected', async () => {
 test('with NOTHING to do the gate does not ask: it must never ask the impossible', async () => {
   // Reproduces a real session. Measured there: the gate asked to compact, but
   //  - no episode was open (all 4 closed)  -> option 1 unavailable
-  //  - cwl_compress_range answered "non resta niente da comprimere"
+  //  - cwl_compress_range answered "nothing left to compress"
   //    -> option 2 unavailable
   // So it asked for something impossible every turn, burning context.
   //

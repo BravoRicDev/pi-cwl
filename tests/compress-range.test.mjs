@@ -32,7 +32,7 @@ async function boot(cfg) {
   const sandbox = makeSandbox({ name: `range-${seq++}`, config: cfg });
   const home = withHome(sandbox.dir);
   const { tools, hooks } = await bootExtension(sandbox);
-  const ctx = sessionCtx(path.join(sandbox.dir, 'sessione.jsonl'));
+  const ctx = sessionCtx(path.join(sandbox.dir, 'session.jsonl'));
   await hooks.get('session_start')({}, ctx);
   return { sandbox, home, tools, hooks, ctx };
 }
@@ -80,7 +80,7 @@ test('the safety window is not touched: the range stops earlier', async () => {
     assert.ok(!protectedHashes.includes(out.details.startHash ?? ''), 'start inside the window');
     assert.ok(!protectedHashes.includes(out.details.endHash ?? ''), 'end inside the window');
     // And it must instead include the first message (outside the window).
-    assert.equal(out.content[0].text.includes('Compresso'), true);
+    assert.equal(out.content[0].text.includes('Compressed'), true);
   } finally { home.restore(); sandbox.cleanup(); }
 });
 
@@ -126,7 +126,7 @@ test('an already-compressed range is not proposed again', async () => {
     const status = await tools.get('cwl_status').execute('id', {}, undefined, undefined, ctx);
     const text = status.content.map((c) => c.text).join('\n');
     // Either nothing remains, or a range different from the first one remains.
-    const hasRange = /Intervallo comprimibile/.test(text);
+    const hasRange = /Compressible range/.test(text);
     if (hasRange) {
       assert.ok(!text.includes(`${first.details.startHash}..${first.details.endHash}`),
         'the already-compressed range is proposed again');
@@ -145,7 +145,7 @@ test('the saving is counted ONCE: re-applying the span does not inflate the tota
   const savedTokens = async () => {
     const s = await tools.get('cwl_status').execute('id', {}, undefined, undefined, ctx);
     const text = s.content.map((c) => c.text).join('\n');
-    const m = /token risparmiati:\s*([\d.]+)/.exec(text);
+    const m = /tokens saved:\s*([\d.]+)/.exec(text);
     return m ? Number(m[1].replace(/\./g, '')) : -1;
   };
   try {

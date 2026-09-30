@@ -25,7 +25,7 @@
  * (live: ~142,000 tokens measured against a trigger of 68,000).
  *
  * The same wrong number ended up in the message injected in place of the
- * compressed messages, which declares `(~N token risparmiati)` by passing the
+ * compressed messages, which declares `(~N tokens saved)` by passing the
  * size of the RANGE.
  *
  * The remedy is the one of the eviction: count what has REALLY been removed,
@@ -58,7 +58,7 @@ async function boot() {
   const sandbox = makeSandbox({ name: `span-accounting-${seq++}`, config: config() });
   const home = withHome(sandbox.dir);
   const { tools, hooks } = await bootExtension(sandbox);
-  const ctx = sessionCtx(path.join(sandbox.dir, 'sessione.jsonl'));
+  const ctx = sessionCtx(path.join(sandbox.dir, 'session.jsonl'));
   await hooks.get('session_start')({}, ctx);
   return { sandbox, home, tools, hooks, ctx };
 }
@@ -86,7 +86,7 @@ test('the saving declared by a span is what the context has really lost', async 
     const base = conversation();
     // Turn 1: the extension takes the measurements and stores the address to compress.
     await hook(hooks, ctx, base);
-    const comp = await tools.get('cwl_compress_range').execute('t', { summary: 'SINTESI-1 of the first turns' }, undefined, undefined, ctx);
+    const comp = await tools.get('cwl_compress_range').execute('t', { summary: 'SUMMARY-1 of the first turns' }, undefined, undefined, ctx);
     assert.equal(comp.details.ok, true, `the span was not created (without a span the test proves nothing): ${JSON.stringify(comp.details)}`);
 
     // Turn 2: the span is applied for the first time.
@@ -122,7 +122,7 @@ test('the injected message no longer declares more tokens than the context has l
   try {
     const base = conversation();
     await hook(hooks, ctx, base);
-    const comp = await tools.get('cwl_compress_range').execute('t', { summary: 'SINTESI-1 of the first turns' }, undefined, undefined, ctx);
+    const comp = await tools.get('cwl_compress_range').execute('t', { summary: 'SUMMARY-1 of the first turns' }, undefined, undefined, ctx);
     assert.equal(comp.details.ok, true, `the span was not created: ${JSON.stringify(comp.details)}`);
 
     const out = await hook(hooks, ctx, base);
@@ -134,11 +134,11 @@ test('the injected message no longer declares more tokens than the context has l
 
     const injected = out.find((m) => m?.customType === 'cwl-compressed');
     assert.ok(injected, 'the compressed summary was not injected');
-    const claim = /~(\d+) token risparmiati/.exec(JSON.stringify(injected));
+    const claim = /~(\d+) tokens saved/.exec(JSON.stringify(injected));
     assert.ok(claim, 'the injected message does not declare the saved tokens');
     assert.ok(
       Number(claim[1]) <= lost,
-      `the injected message declares ~${claim[1]} token risparmiati but the context has lost ${lost}: ` +
+      `the injected message declares ~${claim[1]} tokens saved but the context has lost ${lost}: ` +
       'the number was the size of the RANGE, not the saving',
     );
   } finally { home.restore(); sandbox.cleanup(); }

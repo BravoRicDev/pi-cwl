@@ -45,7 +45,7 @@ async function boot() {
   const sandbox = makeSandbox({ name: `floor-declaration-${seq++}`, config: config() });
   const home = withHome(sandbox.dir);
   const { tools, hooks } = await bootExtension(sandbox);
-  const ctx = sessionCtx(path.join(sandbox.dir, 'sessione.jsonl'));
+  const ctx = sessionCtx(path.join(sandbox.dir, 'session.jsonl'));
   await hooks.get('session_start')({}, ctx);
   return { sandbox, home, tools, hooks, ctx };
 }
@@ -81,7 +81,7 @@ test('the floor line partitions the context: the four numbers add up to the tota
     const conv = conversation();
     const base = [...conv.slice(0, 10), { role: 'user', content: '' }, ...conv.slice(10)];
     await hook(hooks, ctx, base);
-    const comp = await tools.get('cwl_compress_range').execute('t', { summary: 'SINTESI-1 of the first turns' }, undefined, undefined, ctx);
+    const comp = await tools.get('cwl_compress_range').execute('t', { summary: 'SUMMARY-1 of the first turns' }, undefined, undefined, ctx);
     assert.equal(comp.details.ok, true, `the span was not created: ${JSON.stringify(comp.details)}`);
     // The span is applied; it stays above the trigger; with no episodes and no
     // active levels there is nothing else to do, so it goes through `finish` above budget.

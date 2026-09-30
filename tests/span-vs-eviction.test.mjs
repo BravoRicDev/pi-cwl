@@ -49,7 +49,7 @@ async function boot(config) {
   const sandbox = makeSandbox({ name: `span-vs-eviction-${seq++}`, config });
   const home = withHome(sandbox.dir);
   const { tools, hooks } = await bootExtension(sandbox);
-  const ctx = sessionCtx(path.join(sandbox.dir, 'sessione.jsonl'));
+  const ctx = sessionCtx(path.join(sandbox.dir, 'session.jsonl'));
   await hooks.get('session_start')({}, ctx);
   return { sandbox, home, tools, hooks, ctx };
 }
@@ -93,7 +93,7 @@ const smallAssistant = (marker) => ({ role: 'assistant', content: [{ type: 'text
  */
 const call = (id) => ({
   role: 'assistant',
-  content: [{ type: 'toolCall', id, name: 'delimiter', arguments: { action: 'end', name: 'dopo-lo-span' } }],
+  content: [{ type: 'toolCall', id, name: 'delimiter', arguments: { action: 'end', name: 'after-span-1' } }],
 });
 
 /** Creates a real span, with the same tool the agent uses in production. */
@@ -112,8 +112,8 @@ test('with a live span that re-applies, the evictable episode is still evicted',
     await createSpan(tools, hooks, ctx, base);
 
     // 2. A closed episode, with large content, AFTER the span: it is evictable.
-    await tools.get('delimiter').execute('call-s', { action: 'start', name: 'dopo-lo-span', type: 'expl' }, undefined, undefined, ctx);
-    await tools.get('delimiter').execute('call-e', { action: 'end', name: 'dopo-lo-span', description: 'takeaway' }, undefined, undefined, ctx);
+    await tools.get('delimiter').execute('call-s', { action: 'start', name: 'after-span-1', type: 'expl' }, undefined, undefined, ctx);
+    await tools.get('delimiter').execute('call-e', { action: 'end', name: 'after-span-1', description: 'takeaway' }, undefined, undefined, ctx);
     const messages = [
       ...base,
       { role: 'user', content: 'open' },
@@ -150,8 +150,8 @@ test('if the span is enough to get back within the budget, the episode is NOT to
     // Small episode: after the span the context gets back within the trigger, so there is
     // nothing to evict and the eviction must not touch anything. It is the
     // insurance against an overly aggressive fix ("always evict").
-    await tools.get('delimiter').execute('call-s', { action: 'start', name: 'piccolo', type: 'expl' }, undefined, undefined, ctx);
-    await tools.get('delimiter').execute('call-e', { action: 'end', name: 'piccolo', description: 'takeaway' }, undefined, undefined, ctx);
+    await tools.get('delimiter').execute('call-s', { action: 'start', name: 'minimal', type: 'expl' }, undefined, undefined, ctx);
+    await tools.get('delimiter').execute('call-e', { action: 'end', name: 'minimal', description: 'takeaway' }, undefined, undefined, ctx);
     const messages = [
       ...base,
       { role: 'user', content: 'open' },

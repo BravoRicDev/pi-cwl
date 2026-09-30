@@ -31,7 +31,7 @@ async function loadWithConfig(config, name) {
   const { tools } = await bootExtension(sandbox);
   return {
     tools,
-    ctx: sessionCtx(`${sandbox.dir}/sessione.jsonl`),
+    ctx: sessionCtx(`${sandbox.dir}/session.jsonl`),
     cleanup: () => { home.restore(); sandbox.cleanup(); },
   };
 }

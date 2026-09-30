@@ -54,7 +54,7 @@ async function boot() {
   const sandbox = makeSandbox({ name: `old-${seq++}`, config: config() });
   const home = withHome(sandbox.dir);
   const { tools, hooks } = await bootExtension(sandbox);
-  const ctx = sessionCtx(path.join(sandbox.dir, 'sessione.jsonl'));
+  const ctx = sessionCtx(path.join(sandbox.dir, 'session.jsonl'));
   await hooks.get('session_start')({}, ctx);
   return { sandbox, home, tools, hooks, ctx };
 }
@@ -91,7 +91,7 @@ test('the old node replaces the micros with the synthesis, and does not lose the
   const { sandbox, home, tools, hooks, ctx } = await boot();
   try {
     // 0. Not due: no node. The tool must REFUSE, not merge nothing.
-    const tooEarly = await tools.get('cwl_old').execute('t', { text: 'SINTESI-PRECOCE' }, undefined, undefined, ctx);
+    const tooEarly = await tools.get('cwl_old').execute('t', { text: 'EARLY-SYNTHESIS' }, undefined, undefined, ctx);
     assert.equal(
       tooEarly.details.ok,
       false,
@@ -103,7 +103,7 @@ test('the old node replaces the micros with the synthesis, and does not lose the
     for (let i = 1; i <= 5; i++) {
       await hook(hooks, ctx, conversation(1, i + 3));
       const res = await tools.get('cwl_compress_range').execute(
-        't', { summary: `CORPO-${i} ` + 'x'.repeat(300) }, undefined, undefined, ctx,
+        't', { summary: `BLOCK-${i} ` + 'x'.repeat(300) }, undefined, undefined, ctx,
       );
       assert.equal(res.details.ok, true, `round ${i}: the leaf was not born: ${JSON.stringify(res.details)}`);
     }
@@ -132,7 +132,7 @@ test('the old node replaces the micros with the synthesis, and does not lose the
 
     // The merge: the oldest node (leaves 1 and 2) enters the pit.
     const acc = await tools.get('cwl_old').execute(
-      't', { text: 'RIASSUNTONE-1: the synthesis of the first two stories' }, undefined, undefined, ctx,
+      't', { text: 'MERGE-SUMMARY: the synthesis of the first two stories' }, undefined, undefined, ctx,
     );
     assert.equal(acc.details.ok, true, `cwl_old refused when it was due: ${JSON.stringify(acc.details)}`);
     assert.equal(acc.details.nodes, 1, `it had to merge ONE node (the oldest), it declares ${acc.details.nodes}`);
@@ -142,7 +142,7 @@ test('the old node replaces the micros with the synthesis, and does not lose the
 
     // The next turn: the synthesis is in the context, the merged micros are NOT there anymore.
     const after = inContext(await hook(hooks, ctx, conversation(1, 12)));
-    assert.ok(after.includes('RIASSUNTONE-1'), 'the synthesis did not enter the context: the leaves went out and nobody stands for them');
+    assert.ok(after.includes('MERGE-SUMMARY'), 'the synthesis did not enter the context: the leaves went out and nobody stands for them');
     for (const i of [1, 2]) {
       assert.ok(
         !after.includes(`MICRO-${i}`),
@@ -158,7 +158,7 @@ test('the old node replaces the micros with the synthesis, and does not lose the
     const page = await tools.get('cwl_open').execute('t', { id: pit }, undefined, undefined, ctx);
     assert.equal(page.details.ok, true, `the pit does not open: ${JSON.stringify(page.details)}`);
     assert.equal(page.details.nodes, 1, `the pit declares ${page.details.nodes} nodes inside instead of 1`);
-    assert.ok(text(page).includes('RIASSUNTONE-1'), 'the pit page does not report the synthesis');
+    assert.ok(text(page).includes('MERGE-SUMMARY'), 'the pit page does not report the synthesis');
     assert.match(
       text(page),
       /2 leaf\/leaves/,
@@ -169,7 +169,7 @@ test('the old node replaces the micros with the synthesis, and does not lose the
     const reopened = await tools.get('cwl_open').execute('t', { id: leaves[0].id }, undefined, undefined, ctx);
     assert.equal(reopened.details.ok, true, `the merged leaf does not reopen: ${JSON.stringify(reopened.details)}`);
     assert.ok(
-      text(reopened).includes('CORPO-1'),
+      text(reopened).includes('BLOCK-1'),
       'the body of the merged leaf does not come back whole: the saving would be a throwing away, not a compressing',
     );
   } finally {

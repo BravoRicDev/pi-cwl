@@ -1,3 +1,11 @@
+// Pin the product language so the suite is deterministic. index.ts detects the
+// language from LC_ALL/LC_MESSAGES/LANG/LANGUAGE at load time and then falls back
+// on Intl; on a machine whose locale is Italian these English assertions would
+// fail. The extension is imported dynamically further down, so setting the
+// variables at module load is early enough.
+for (const name of ["LC_ALL", "LC_MESSAGES", "LANGUAGE"]) delete process.env[name];
+process.env.LANG = "en_US.UTF-8";
+
 /**
  * Helper shared by the tests: finds the Pi package and prepares a sandbox.
  *

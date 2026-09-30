@@ -42,7 +42,7 @@ async function boot() {
   const sandbox = makeSandbox({ name: `original-${seq++}`, config: config() });
   const home = withHome(sandbox.dir);
   const { tools, hooks } = await bootExtension(sandbox);
-  const ctx = sessionCtx(path.join(sandbox.dir, 'sessione.jsonl'));
+  const ctx = sessionCtx(path.join(sandbox.dir, 'session.jsonl'));
   await hooks.get('session_start')({}, ctx);
   return { sandbox, home, tools, hooks, ctx };
 }
@@ -91,7 +91,7 @@ test('a pruned leaf is reopened from the transcript, and it says so', async () =
     const rows = conv.map((m) =>
       JSON.stringify({ message: { role: m.role, timestamp: m.timestamp, content: [{ type: 'text', text: String(m.content) }] } }),
     );
-    fs.writeFileSync(path.join(sandbox.dir, 'sessione.jsonl'), rows.join('\n') + '\n');
+    fs.writeFileSync(path.join(sandbox.dir, 'session.jsonl'), rows.join('\n') + '\n');
 
     // A list that NO LONGER contains the anchors: the native compaction has
     // replaced that prefix, so the span is dead and gets pruned.

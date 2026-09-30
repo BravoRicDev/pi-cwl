@@ -9,17 +9,17 @@
  *      `expl` without a description lost its content forever;
  *   2. `findTranscript` built `_${sessionKey}.jsonl`. The key produced by
  *      `sessionKey()` is a complete PATH, so the suffix became
- *      `_/home/.../sessione.jsonl.jsonl`: it never matched. Even `cwl_recall`
- *      answered "transcript non trovato" while the file was right there.
+ *      `_/home/.../session.jsonl.jsonl`: it never matched. Even `cwl_recall`
+ *      answered "transcript not found" while the file was right there.
  *
  * The data was not missing: Pi's transcript is append-only and keeps the
  * originals, and the episode ALREADY has the two anchors (startToolCallId/endToolCallId)
  * persisted in the state. What was missing was the POINTER.
  *
- * NOTE on the two strings that stay Italian below (`/troncato/`, "transcript non
- * trovato" in the comment above): they are text the PRODUCT emits, and the product
- * speaks Italian when the locale is Italian (LANG=it_IT here). Translating them
- * would make the tests assert a language, not a behaviour.
+ * NOTE on the language these tests assert. The strings below are text the PRODUCT
+ * emits, so they follow the locale; the suite pins LANG=en_US.UTF-8 in
+ * `tests/_helpers.mjs` and asserts the English wording. That way a test checks a
+ * behaviour, not the language the machine happens to speak.
  */
 import assert from 'node:assert/strict';
 import test from 'node:test';
@@ -101,9 +101,9 @@ test('cwl_recall_episode truncates by default and does not bloat the context it 
     assert.equal(short.details.full, false);
     assert.ok(short.details.chars > 4000, 'the recovered content should be large');
     const shortBody = short.content.map((c) => c.text).join('\n');
-    // Product text, Italian on an Italian locale: the truncation notice is the one
-    // `episodeRecallTruncatedHint` writes (index.ts, I18N.it).
-    assert.match(shortBody, /troncato/, 'the truncation notice is missing');
+    // Product text: the truncation notice is the one `episodeRecallTruncatedHint`
+    // writes (index.ts, I18N.en — the suite pins LANG=en_US.UTF-8).
+    assert.match(shortBody, /truncated/, 'the truncation notice is missing');
     assert.ok(shortBody.length < 12000, `answer too long: ${shortBody.length}`);
 
     const full = await tools.get('cwl_recall_episode').execute('t', { name: 'ep1', full: true }, undefined, undefined, ctx);

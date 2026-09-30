@@ -36,7 +36,7 @@ test('the episode graph survives a restart', async () => {
   const sandbox = makeSandbox({ name: 'state-graph' });
   const home = withHome(sandbox.dir);
   try {
-    const session = sessionCtx(path.join(sandbox.dir, 'sessione.jsonl'));
+    const session = sessionCtx(path.join(sandbox.dir, 'session.jsonl'));
 
     // --- First run: open and close an episode.
     const run1 = await bootExtension(sandbox);
@@ -64,7 +64,7 @@ test('tracked compressions survive a restart', async () => {
   const sandbox = makeSandbox({ name: 'state-span' });
   const home = withHome(sandbox.dir);
   try {
-    const session = sessionCtx(path.join(sandbox.dir, 'sessione.jsonl'));
+    const session = sessionCtx(path.join(sandbox.dir, 'session.jsonl'));
     // Both endpoints are ASSISTANT messages: `user` messages are
     // inviolable by design (Principle 3), so a user->user range
     // would keep the originals and would only ADD the summary.
@@ -106,7 +106,7 @@ test('a revoked compression does not rise from the disk', async () => {
   const sandbox = makeSandbox({ name: 'state-revoke' });
   const home = withHome(sandbox.dir);
   try {
-    const session = sessionCtx(path.join(sandbox.dir, 'sessione.jsonl'));
+    const session = sessionCtx(path.join(sandbox.dir, 'session.jsonl'));
     const pair = [msg('alpha'), msg('beta')];
 
     const run1 = await bootExtension(sandbox);
@@ -157,7 +157,7 @@ test('state files are pruned when they get old', async () => {
   const sandbox = makeSandbox({ name: 'state-prune' });
   const home = withHome(sandbox.dir);
   try {
-    const session = sessionCtx(path.join(sandbox.dir, 'sessione.jsonl'));
+    const session = sessionCtx(path.join(sandbox.dir, 'session.jsonl'));
     const run1 = await bootExtension(sandbox);
     await run1.hooks.get('session_start')({}, session);
     await run1.tools.get('delimiter').execute('tc1',
@@ -186,7 +186,7 @@ test('a session that does not use CWL writes nothing to disk', async () => {
   const sandbox = makeSandbox({ name: 'state-idle' });
   const home = withHome(sandbox.dir);
   try {
-    const session = sessionCtx(path.join(sandbox.dir, 'sessione.jsonl'));
+    const session = sessionCtx(path.join(sandbox.dir, 'session.jsonl'));
     const { hooks } = await bootExtension(sandbox);
     await hooks.get('session_start')({}, session);
     await hooks.get('context')({ messages: [msg('hello')] }, session);
@@ -207,7 +207,7 @@ test('a corrupt state does not prevent startup', async () => {
   const sandbox = makeSandbox({ name: 'state-corrupt' });
   const home = withHome(sandbox.dir);
   try {
-    const session = sessionCtx(path.join(sandbox.dir, 'sessione.jsonl'));
+    const session = sessionCtx(path.join(sandbox.dir, 'session.jsonl'));
     const stateDir = path.join(sandbox.dir, '.pi', 'cwl', 'state');
     fs.mkdirSync(stateDir, { recursive: true });
 
@@ -246,7 +246,7 @@ test('the debug log rotates instead of growing without limit', async () => {
   const sandbox = makeSandbox({ name: 'debug-log', config: { debug: true } });
   const home = withHome(sandbox.dir);
   try {
-    const session = sessionCtx(path.join(sandbox.dir, 'sessione.jsonl'));
+    const session = sessionCtx(path.join(sandbox.dir, 'session.jsonl'));
     const logPath = path.join(sandbox.dir, '.pi', 'cwl', 'cwl.log');
     fs.mkdirSync(path.dirname(logPath), { recursive: true });
 

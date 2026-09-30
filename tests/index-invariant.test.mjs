@@ -56,7 +56,7 @@ async function boot() {
   const sandbox = makeSandbox({ name: `invariant-${seq++}`, config: config() });
   const home = withHome(sandbox.dir);
   const { tools, hooks } = await bootExtension(sandbox);
-  const ctx = sessionCtx(path.join(sandbox.dir, 'sessione.jsonl'));
+  const ctx = sessionCtx(path.join(sandbox.dir, 'session.jsonl'));
   await hooks.get('session_start')({}, ctx);
   return { sandbox, home, tools, hooks, ctx };
 }
@@ -101,14 +101,14 @@ test('a span contained in another cannot disappear without being declared', asyn
 
     // Span A: the first, on the region the extension chose. The tool saves the
     // state, so from here on the state is readable on disk.
-    const a = await compressRange(tools, ctx, 'SINTESI-A');
+    const a = await compressRange(tools, ctx, 'SUMMARY-A');
     assert.equal(a.details.ok, true, `span A not created: ${JSON.stringify(a.details)}`);
     await hook(hooks, ctx, conversation(1, 6));
 
     // The conversation GROWS, so that a second compressible region exists: without
     // it there would be nothing with which to contain A.
     await hook(hooks, ctx, conversation(1, 9));
-    const b = await compressRange(tools, ctx, 'SINTESI-B');
+    const b = await compressRange(tools, ctx, 'SUMMARY-B');
     assert.equal(b.details.ok, true, `span B not created: ${JSON.stringify(b.details)}`);
 
     const afterB = stateOf(sandbox).spans;
@@ -116,7 +116,7 @@ test('a span contained in another cannot disappear without being declared', asyn
     const [spanA, spanB] = afterB;
 
     // Span OUTER: from A.start to B.end. It CONTAINS both A and B.
-    const outer = await compress(tools, ctx, spanA.startHash, spanB.endHash, 'SINTESI-OUTER');
+    const outer = await compress(tools, ctx, spanA.startHash, spanB.endHash, 'SUMMARY-OUTER');
     assert.equal(outer.details.ok, true, `span OUTER not created: ${JSON.stringify(outer.details)}`);
     assert.equal(stateOf(sandbox).spans.length, 3, 'the third span did not make it into the state: the test\'s premise does not hold');
 
@@ -148,12 +148,12 @@ test('two spans that overlap without containing each other are DECLARED', async 
   const { sandbox, home, tools, hooks, ctx } = await boot();
   try {
     await hook(hooks, ctx, conversation(1, 6));
-    const a = await compressRange(tools, ctx, 'SINTESI-A');
+    const a = await compressRange(tools, ctx, 'SUMMARY-A');
     assert.equal(a.details.ok, true, `span A not created: ${JSON.stringify(a.details)}`);
     await hook(hooks, ctx, conversation(1, 6));
 
     await hook(hooks, ctx, conversation(1, 9));
-    const b = await compressRange(tools, ctx, 'SINTESI-B');
+    const b = await compressRange(tools, ctx, 'SUMMARY-B');
     assert.equal(b.details.ok, true, `span B not created: ${JSON.stringify(b.details)}`);
     const [spanA, spanB] = stateOf(sandbox).spans;
     assert.ok(spanA && spanB, 'TWO distinct spans are needed to build the overlap');
@@ -161,7 +161,7 @@ test('two spans that overlap without containing each other are DECLARED', async 
     // OVER starts from the END of A: it shares with A the last address (a user
     // turn, which survives) and contains B. The containment filter has
     // nothing to say: A and OVER do not contain each other.
-    const over = await compress(tools, ctx, spanA.endHash, spanB.endHash, 'SINTESI-OVER');
+    const over = await compress(tools, ctx, spanA.endHash, spanB.endHash, 'SUMMARY-OVER');
     assert.equal(over.details.ok, true, `span OVER not created: ${JSON.stringify(over.details)}`);
     assert.equal(stateOf(sandbox).spans.length, 3, 'the third span did not make it into the state');
 
