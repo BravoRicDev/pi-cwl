@@ -2732,11 +2732,31 @@ export default function (pi: ExtensionAPI) {
 
     st.totalEvictions++;
     st.lastEvictionTurn = st.messageCursor;
-    // Sum ONLY the tokens actually saved, not the whole context.
-    st.totalEvictedTokens += removedTokens + truncatedTokens;
-
-    const afterTokens = kept.reduce((s, m) => s + estimateMessageTokens(m), 0);
-    debugLog(cf, `EVICTION applied: ${dropped} msg removed, ${truncated} reduced, ${currentTokens}t -> ${afterTokens}t (saved ${removedTokens + truncatedTokens}t)`);
+    const afterTokens = kept.reduce((s: number, m: AgentMessage) => s + estimateMessageTokens(m), 0);
+    // The saving is MEASURED, not estimated. `currentTokens - afterTokens` is the
+    // same quantity the arrow prints and the same one the user's notice receives;
+    // the plan's estimate (`removedTokens + truncatedTokens`) is a DIFFERENT
+    // number, and printing the two side by side without saying so is what this
+    // row did: `32 msg removed, 0 reduced, 79683t -> 58987t (saved 21053t)`
+    // declares 21053 while the eviction freed 20696. The estimate is off in BOTH
+    // directions, and the signs name the causes: it counts the messages as they
+    // were BEFORE the pass, so it ignores the re-entry MARKER the pass ADDS to
+    // `kept` (too high) and the orphan `toolCall` blocks it prunes from
+    // SURVIVING messages (too low); for strips it measures raw text
+    // (`contentToText`, i.e. `text` and `thinking` characters) instead of the
+    // serialized message, so the keys, the `type` field and the escaping of every
+    // block stay out of the count — negligible for one huge `text` block,
+    // ~4% across many small ones.
+    const measuredSaved = Math.max(0, currentTokens - afterTokens);
+    const planEstimate = removedTokens + truncatedTokens;
+    st.totalEvictedTokens += measuredSaved;
+    debugLog(cf, `EVICTION applied: ${dropped} msg removed, ${truncated} reduced, ${currentTokens}t -> ${afterTokens}t (saved ${measuredSaved}t)`);
+    // Kept, and said out loud, because the gap is the diagnostic of the pass (it
+    // is how the reporter learned the marker and the orphan pruning were never
+    // counted). Two rows, never two meanings in one.
+    if (planEstimate !== measuredSaved) {
+      debugLog(cf, `EVICTION accounting: il piano stimava ${planEstimate}t, il misurato e' ${measuredSaved}t (${planEstimate > measuredSaved ? '+' : ''}${planEstimate - measuredSaved}t)`);
+    }
 
     if (ctx?.hasUI) {
       ctx.ui.notify(
