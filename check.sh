@@ -30,4 +30,5 @@ fi
 # module evaluation (a temporal dead zone, an uninitialised binding, a broken
 # import), and such a failure kills the extension silently: no tools
 # registered, no message to the user, and a green typecheck.
-node --test tests/smoke-load.test.mjs
+# Runs every suite in tests/ so a new one is picked up automatically.
+node --test tests/*.test.mjs
