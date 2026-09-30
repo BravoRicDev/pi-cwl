@@ -237,3 +237,31 @@ test('the buffer survives when its last leaf moves into a topic', async () => {
     home.restore();
   }
 });
+
+test('the description replaces the labels of the topic in the head', async () => {
+  const { sandbox, home, tools, hooks, ctx } = await boot();
+  try {
+    const st = await leavesWithMicros(sandbox, hooks, ctx, tools, 10);
+    const inBuffer = st.spans.slice(0, 9).map((s) => s.id);
+    const hasLabel = (list, n) => list.some((m) => String(m.content ?? '').includes(`MICRO-${n} `));
+
+    // Before the topic: NINE labels are in the head, and the context pays for all nine.
+    let messages = await hook(hooks, ctx, conversation(1, 40));
+    assert.ok(hasLabel(messages, 1) && hasLabel(messages, 9), 'the fixture did not put the nine labels in the head');
+
+    const born = await group(tools, ctx, { leaves: inBuffer, name: 'login-otp', description: DESCRIPTION });
+    assert.equal(born.details.ok, true, `the topic was not born: ${JSON.stringify(born.details)}`);
+    messages = await hook(hooks, ctx, conversation(1, 40));
+
+    // After: ONE description, and none of the nine labels. This is the saving of the whole
+    // nesting — without it, grouping nine leaves would still show nine labels.
+    const shown = messages.filter((m) => String(m.content ?? '').includes(DESCRIPTION));
+    assert.equal(shown.length, 1, `the description is injected ${shown.length} time(s), expected exactly once`);
+    const left = [1, 2, 3, 4, 5, 6, 7, 8, 9].filter((n) => hasLabel(messages, n));
+    assert.equal(left.length, 0, `the labels of the topic are still in the head: MICRO-${left.join(', MICRO-')}`);
+    // The tenth leaf stayed loose, so its own label is still there: it is not the topic's.
+    assert.ok(hasLabel(messages, 10), 'the loose leaf lost its label');
+  } finally {
+    home.restore();
+  }
+});

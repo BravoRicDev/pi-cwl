@@ -158,6 +158,8 @@ type CwlMessages = {
   groupTooSmall: (leaves: number, microChars: number, needChars: number) => string;
   groupCreated: (name: string, id: string, leaves: number, microChars: number) => string;
   groupAdded: (name: string, id: string, leaves: number) => string;
+  /** The header of the ONE block a topic node injects, where its first leaf used to be. */
+  topicHead: (name: string, leaves: number, saved: number) => string;
   statusUnlocatable: (n: number) => string;
   /** Strings of the cwl_recall tool. */
   recallNotLoaded: string;
@@ -280,6 +282,8 @@ const I18N: Record<Lang, CwlMessages> = {
       `Topic "${name}" born as ${id}: ${leaves} leaf/leaves (${microChars} characters of labels) now stand behind your description, and their bodies stay readable with cwl_open. More leaves can be added to it at any time, and it costs nothing: the description does not change.`,
     groupAdded: (name, id, leaves) =>
       `Leaf/leaves added to the topic "${name}" (${id}), which now holds ${leaves}. The description did not change: it is written once, to cover the future use of the topic.`,
+    topicHead: (name, leaves, saved) =>
+      `[CWL \u00b7 TOPIC "${name}" \u2014 ${leaves} leaf/leaves stand behind this description, which never changes (~${saved} tokens saved). Their bodies are whole and readable with cwl_open.\n\n`,
     statusUnlocatable: (n) => `Episodes whose anchors left the context: ${n} (their content is not verifiable)`,
     recallNotLoaded: 'The recall index is not loaded; /reload the extension.',
     recallNoTranscript: 'Transcript not found for this session.',
@@ -437,6 +441,8 @@ const I18N: Record<Lang, CwlMessages> = {
       `Topic "${name}" nato come ${id}: ${leaves} foglia/e (${microChars} caratteri di etichette) ora stanno dietro la tua descrizione, e i loro corpi restano leggibili con cwl_open. Si possono aggiungere altre foglie in qualsiasi momento, e non costa niente: la descrizione non cambia.`,
     groupAdded: (name, id, leaves) =>
       `Foglia/e aggiunte al topic "${name}" (${id}), che ora ne tiene ${leaves}. La descrizione non e' cambiata: si scrive una volta sola, per coprire l'uso futuro del topic.`,
+    topicHead: (name, leaves, saved) =>
+      `[CWL \u00b7 TOPIC "${name}" \u2014 ${leaves} foglia/e stanno dietro questa descrizione, che non cambia mai (~${saved} token risparmiati). I loro corpi sono interi e leggibili con cwl_open.\n\n`,
     statusUnlocatable: (n) => `Episodi le cui ancore sono uscite dal contesto: ${n} (contenuto non verificabile)`,
     recallNotLoaded: "L'indice di recall non e' caricato; fai /reload dell'estensione.",
     recallNoTranscript: 'Transcript non trovato per questa sessione.',
@@ -1799,7 +1805,17 @@ function indexShape(
   const young = st.nodes.filter((nd) => !inPit.has(nd.id));
   const owned = new Set(st.nodes.flatMap((nd) => nd.leaves));
   const looseIds = new Set(st.spans.slice(-cf.looseLeaves).map((s) => idOfSpan(s)));
-  const headChars = st.spans.reduce((n, s) => n + (owned.has(idOfSpan(s)) ? (s.micro?.length ?? 0) : 0), 0);
+  // The head is what the context PAYS for the index: a topic node costs its ONE
+  // description, not the labels of its leaves, and a loose leaf costs its own label (its
+  // body is still in the context but the label is injected all the same). Counting only the
+  // micros of the leaves inside a node undercounted the head by every loose leaf.
+  const microOf = new Map(st.spans.map((s) => [idOfSpan(s), s.micro?.length ?? 0]));
+  let headChars = 0;
+  for (const nd of st.nodes) {
+    if (nd.description) headChars += nd.description.length;
+    else for (const id of nd.leaves) headChars += microOf.get(id) ?? 0;
+  }
+  for (const id of looseIds) headChars += microOf.get(id) ?? 0;
   const waiting = st.spans.filter((s) => {
     const id = idOfSpan(s);
     return !owned.has(id) && !looseIds.has(id) && !s.micro;
@@ -1846,6 +1862,23 @@ function pitView(st: CwlState): PitView | null {
     for (const id of nd.leaves) leaves.add(id);
   }
   return { id: pit.id, nodes: pit.nodes.length, summary: pit.summary, leaves };
+}
+
+/**
+ * What `applySpans` needs to know about the TOPIC nodes: which topic each leaf belongs to.
+ *
+ * A topic keeps its description in the head INSTEAD of the labels of its leaves, so the
+ * applier has to recognise the leaves by their topic. Only the nodes that carry a
+ * description are in the map: an ordinary node is still injected one label at a time, as it
+ * always was, and a state without topics behaves exactly as before.
+ */
+function topicView(st: CwlState): Map<string, SpanNode> {
+  const view = new Map<string, SpanNode>();
+  for (const nd of st.nodes) {
+    if (!nd.description) continue;
+    for (const id of nd.leaves) view.set(id, nd);
+  }
+  return view;
 }
 
 /** How many dropped spans stay recoverable by id. */
@@ -2434,6 +2467,7 @@ function applySpans(
   messages: AgentMessage[],
   spans: CompressedSpan[],
   pit: PitView | null,
+  topics: Map<string, SpanNode>,
   demand: string | null,
 ): {
   kept: AgentMessage[];
@@ -2489,6 +2523,8 @@ function applySpans(
   let newApplied = 0;
   /** The pit injects ONE block, at its first leaf: the others inject nothing at all. */
   let pitBlockDone = false;
+  /** The same, one flag per TOPIC node: one description where its first leaf used to be. */
+  const topicDone = new Set<string>();
 
   /**
    * Inside a span these roles are NOT replaced by the summary: the operator's own
@@ -2540,6 +2576,46 @@ function applySpans(
       saved += gainPit;
       if (!sp.counted) { sp.counted = true; newSaved += gainPit; newApplied++; }
       injected.push(buildPit(gainPit));
+      continue;
+    }
+    // A TOPIC node keeps its IMMUTABLE description in the head instead of the labels of its
+    // leaves: the FIRST leaf of the topic carries that one description, and the others bring
+    // no block at all — so what they free is the whole `removed`, wrapper included. Without
+    // this, grouping nine leaves would still show nine labels and the nesting would save
+    // nothing at all. Same shape as the pit above, and the same fixed point for the claim.
+    const topic = topics.get(idOfSpan(sp));
+    if (topic) {
+      if (topicDone.has(topic.id)) {
+        saved += removed;
+        if (!sp.counted) { sp.counted = true; newSaved += removed; newApplied++; }
+        injected.push(null);
+        continue;
+      }
+      topicDone.add(topic.id);
+      // The claim is printed INSIDE the message, so the saving is a fixed point: compute the
+      // TEXT, not the message (the AgentMessage union does not expose `content`), exactly as
+      // the pit block above does.
+      const topicText = (claim: number): string =>
+        t('topicHead')(topic.name ?? topic.id, topic.leaves.length, claim) + String(topic.description ?? '');
+      // SAFETY: the same contract as the per-leaf notice and the pit block below — Pi
+      // accepts `custom` in the context hook although the AgentMessage union does not
+      // declare it, and the extra key `customType` is how the notice is recognised again.
+      const buildTopic = (claim: number): AgentMessage => ({
+        role: 'custom',
+        customType: 'cwl-compressed',
+        content: topicText(claim),
+        display: false,
+        timestamp: Date.now(),
+      } as unknown as AgentMessage);
+      let gainTopic = estimateTokens(topicText(0));
+      for (let i = 0; i < 8; i++) {
+        const next = removed - estimateTokens(topicText(gainTopic));
+        if (next === gainTopic) break;
+        gainTopic = next;
+      }
+      saved += gainTopic;
+      if (!sp.counted) { sp.counted = true; newSaved += gainTopic; newApplied++; }
+      injected.push(buildTopic(gainTopic));
       continue;
     }
     // SAFETY: Pi accepts the custom role in the context hook although the
@@ -3808,7 +3884,7 @@ export default function (pi: ExtensionAPI) {
       [microRequest, mergeRequest].filter((d): d is string => d !== null).join('\n\n') || null;
 
     if (st.spans.length > 0) {
-      const applied = applySpans(messages, st.spans, pitView(st), demand);
+      const applied = applySpans(messages, st.spans, pitView(st), topicView(st), demand);
       // A span whose endpoints left the context can never apply again, and each
       // one carries a summary of thousands of characters that the state re-saves
       // on every turn. Pruned here — outside the `applied > 0` guard, because the
