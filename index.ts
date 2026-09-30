@@ -38,7 +38,7 @@ import * as fs from 'node:fs';
 import * as path from 'node:path';
 import * as os from 'node:os';
 import { fileURLToPath } from 'node:url';
-import { createHash } from 'node:crypto';
+import { createHash, randomUUID } from 'node:crypto';
 import type * as Recall from './recall.mjs';
 
 // ---------------------------------------------------------------------------
@@ -341,6 +341,8 @@ const _EXT_DIR = path.dirname(fileURLToPath(import.meta.url));
 const CONFIG_PATH = path.join(os.homedir(), '.pi', 'cwl', 'config.json');
 const BUNDLED_CONFIG_PATH = path.join(_EXT_DIR, 'config.json');
 const LOG_PATH = path.join(os.homedir(), '.pi', 'cwl', 'cwl.log');
+// Traced compaction and episode graph of each session, resumed on restart.
+const STATE_DIR = path.join(os.homedir(), '.pi', 'cwl', 'state');
 
 /**
  * Deep-merge: the levels must be merged individually, otherwise a partial
@@ -595,18 +597,47 @@ function newState(): CwlState {
   };
 }
 
-/** Session key: cwd + session path when available, otherwise "default". */
+/**
+ * Identity of the session, used to keep one state per session.
+ *
+ * The transcript path comes first: it is unique per session AND stable across a
+ * restart, which is what makes the persisted state resumable. The old key was
+ * `${cwd}::${sid}` and, when the session id was missing, collapsed to
+ * `::` or the literal `default`: every session without an id shared ONE state,
+ * and a `session_start` in the same cwd wiped the previous graph.
+ */
 function sessionKey(ctx: ExtensionContext | null | undefined): string {
   try {
+    // SAFETY: sessionManager is declared on ExtensionContext, but a degraded
+    // context may omit it, so the probe stays optional.
+    const sm = ctx?.sessionManager as
+      | { getSessionFile?: () => string | undefined; getSessionId?: () => string }
+      | undefined;
+    const file = typeof sm?.getSessionFile === 'function' ? sm.getSessionFile() : undefined;
+    if (typeof file === 'string' && file) return file;
     const cwd = typeof ctx?.cwd === 'string' ? ctx.cwd : '';
-    // SAFETY: ExtensionContext does not declare sessionManager; probe it as an
-    // optional shape and degrade to "default" when it is absent.
-    const sm = (ctx as unknown as { sessionManager?: { getSessionId?: () => string } })?.sessionManager;
     const sid = typeof sm?.getSessionId === 'function' ? sm.getSessionId() : '';
-    return `${cwd}::${sid}`;
+    if (sid) return `${cwd}::${sid}`;
+    return anonymousKey(ctx);
   } catch {
-    return 'default';
+    return anonymousKey(ctx);
   }
+}
+
+// When a context carries no session id at all, each context object gets its own
+// generated key. Two anonymous sessions can then never share state; the old
+// fallback ('default') made them collide by construction.
+const anonymousKeys = new WeakMap<object, string>();
+function anonymousKey(ctx: unknown): string {
+  if (ctx !== null && typeof ctx === 'object') {
+    const o = ctx as object;
+    const existing = anonymousKeys.get(o);
+    if (existing) return existing;
+    const fresh = `anon::${randomUUID()}`;
+    anonymousKeys.set(o, fresh);
+    return fresh;
+  }
+  return `anon::${randomUUID()}`;
 }
 
 const states = new Map<string, CwlState>();
@@ -616,9 +647,110 @@ const configs = new Map<string, CwlConfig>();
 // index of the transcript. Null until the load has happened.
 let recall: typeof Recall | null = null;
 
+// ---------------------------------------------------------------------------
+// Persistence of the session state (episode graph + traced compressions)
+// ---------------------------------------------------------------------------
+
+/**
+ * On-disk shape of one session's state.
+ *
+ * What is saved: the episode graph and the compressions requested through
+ * `cwl_compress`. Those two are DECISIONS taken by the agent and cannot be
+ * recomputed from the transcript, so losing them throws away real work. What is
+ * NOT saved: the BM25 index (derived data, rebuilt from the transcript) and the
+ * token cursors beyond the counters we display.
+ */
+interface PersistedState {
+  version: number;
+  key: string;
+  savedAt: number;
+  graph: { episodes: Episode[] };
+  spans: CompressedSpan[];
+  totalEvictions: number;
+  totalEvictedTokens: number;
+  lastEvictionTurn: number;
+  lastMeasuredTokens: number;
+  knownHashes: string[];
+}
+
+const STATE_VERSION = 1;
+/** Cap on persisted hashes: they are an anchor for cwl_compress, not an archive. */
+const MAX_PERSISTED_HASHES = 2000;
+/** State files older than this are removed at session start. */
+const STATE_MAX_AGE_MS = 14 * 24 * 60 * 60 * 1000;
+
+/** One file per session, named by the hash of the key (the key is a path). */
+function statePath(key: string): string {
+  return path.join(STATE_DIR, `${createHash('sha256').update(key).digest('hex').slice(0, 32)}.json`);
+}
+
+function saveState(key: string, st: CwlState): void {
+  try {
+    fs.mkdirSync(STATE_DIR, { recursive: true });
+    const payload: PersistedState = {
+      version: STATE_VERSION,
+      key,
+      savedAt: Date.now(),
+      graph: { episodes: st.graph.all },
+      spans: st.spans,
+      totalEvictions: st.totalEvictions,
+      totalEvictedTokens: st.totalEvictedTokens,
+      lastEvictionTurn: st.lastEvictionTurn,
+      lastMeasuredTokens: st.lastMeasuredTokens,
+      knownHashes: [...st.knownHashes].slice(-MAX_PERSISTED_HASHES),
+    };
+    // Atomic write: a crash mid-write must not leave a truncated file that then
+    // fails to parse on resume and silently loses the whole state.
+    const target = statePath(key);
+    const tmp = `${target}.tmp`;
+    fs.writeFileSync(tmp, JSON.stringify(payload));
+    fs.renameSync(tmp, target);
+  } catch { /* persistence is best effort: it must never break a turn */ }
+}
+
+function loadPersistedState(key: string): CwlState | null {
+  try {
+    const raw = readFileOrNull(statePath(key));
+    if (raw === null) return null;
+    const data = JSON.parse(raw) as Partial<PersistedState>;
+    if (data.version !== STATE_VERSION) return null;
+    const st = newState();
+    st.graph = EpisodeGraph.fromJSON(data.graph);
+    st.spans = Array.isArray(data.spans) ? (data.spans as CompressedSpan[]) : [];
+    st.totalEvictions = typeof data.totalEvictions === 'number' ? data.totalEvictions : 0;
+    st.totalEvictedTokens = typeof data.totalEvictedTokens === 'number' ? data.totalEvictedTokens : 0;
+    st.lastEvictionTurn = typeof data.lastEvictionTurn === 'number' ? data.lastEvictionTurn : -1;
+    st.lastMeasuredTokens = typeof data.lastMeasuredTokens === 'number' ? data.lastMeasuredTokens : 0;
+    if (Array.isArray(data.knownHashes)) {
+      st.knownHashes = new Set(data.knownHashes.filter((h): h is string => typeof h === 'string'));
+    }
+    return st;
+  } catch {
+    return null;
+  }
+}
+
+/** Removes state files for sessions that have not come back. Best effort. */
+function pruneStateFiles(): void {
+  try {
+    for (const f of fs.readdirSync(STATE_DIR)) {
+      if (!f.endsWith('.json')) continue;
+      const p = path.join(STATE_DIR, f);
+      try {
+        if (Date.now() - fs.statSync(p).mtimeMs > STATE_MAX_AGE_MS) fs.rmSync(p, { force: true });
+      } catch { /* single file: skip it */ }
+    }
+  } catch { /* no state dir yet */ }
+}
+
 function getState(key: string): CwlState {
   let st = states.get(key);
-  if (!st) { st = newState(); states.set(key, st); }
+  if (!st) {
+    // Resume a previous run of this session when one is on disk, instead of
+    // starting from an empty graph.
+    st = loadPersistedState(key) ?? newState();
+    states.set(key, st);
+  }
   return st;
 }
 
@@ -628,6 +760,7 @@ function getConfig(key: string): CwlConfig {
   return cf;
 }
 
+/** Forgets the state in MEMORY. The on-disk copy is written separately. */
 function dropState(key: string) {
   states.delete(key);
   configs.delete(key);
@@ -1096,6 +1229,7 @@ export default function (pi: ExtensionAPI) {
           };
         }
         const ep = st.graph.close(params.name, params.description ?? '', st.messageCursor, toolCallId);
+        if (ep) saveState(key, st);
         if (!ep) {
           return {
             content: [{ type: 'text', text: t('notFoundOrClosed')(params.name) }],
@@ -1198,6 +1332,7 @@ export default function (pi: ExtensionAPI) {
       );
       if (alreadyCompressed) {
         st.spans = st.spans.filter((sp) => !(sp.startHash === params.startHash && sp.endHash === params.endHash));
+        saveState(key, st);
         debugLog(cf, `COMPRESS revoked ${params.startHash}..${params.endHash}`);
         return { content: [{ type: 'text', text: t('compressRevoked')(params.startHash, params.endHash) }], details: { ok: true, revoked: true } };
       }
@@ -1215,6 +1350,9 @@ export default function (pi: ExtensionAPI) {
         summary: params.summary,
         at: Date.now(),
       });
+      // Durable immediately: the agent asked for this compression, so it must
+      // survive a restart even if the process is killed before the next turn ends.
+      saveState(key, st);
       debugLog(cf, `COMPRESS applied ${params.startHash}..${params.endHash}`);
       return {
         content: [{ type: 'text', text: t('compressApplied')(params.startHash, params.endHash) }],
@@ -1271,8 +1409,13 @@ export default function (pi: ExtensionAPI) {
 
   pi.on('session_start', async (_event, ctx) => {
     const key = sessionKey(ctx);
-    states.set(key, newState());
+    // Do NOT wipe the state: getState resumes the PERSISTED decision (episode
+    // graph + traced compressions) when a file exists for this session, and
+    // creates a fresh state only when it does not. The previous
+    // `states.set(key, newState())` threw away the whole graph on every start.
+    const st = getState(key);
     configs.set(key, loadConfig());
+    pruneStateFiles();
 
     // recall.mjs: BM25 indexer for the transcript. Same cache-busting as the
     // helper: static imports would stay cached after /reload.
@@ -1290,7 +1433,7 @@ export default function (pi: ExtensionAPI) {
       debugLog(getConfig(key), `recall.mjs not loaded: ${String(err)}`);
     }
 
-    debugLog(getConfig(key), 'SESSION START — graph reset');
+    debugLog(getConfig(key), `SESSION START — ${st.graph.count} episodes, ${st.spans.length} spans resumed`);
   });
 
   /**
@@ -1573,13 +1716,22 @@ export default function (pi: ExtensionAPI) {
   pi.on('turn_end', async (_event, ctx) => {
     // Observer: the message cursor is updated in the context hook,
     // which is the only point with access to the real message array.
-    sessionKey(ctx);
+    const key = sessionKey(ctx);
+    // Persist the DECISIONS (episode graph + traced compressions) at the end of
+    // every turn. They cannot be recomputed from the transcript, so a crash or
+    // a restart must not throw them away. Sessions that never used CWL write
+    // nothing.
+    const st = states.get(key);
+    if (st && (!st.graph.isEmpty || st.spans.length > 0)) saveState(key, st);
   });
 
   pi.on('session_shutdown', async (_event, ctx) => {
     const key = sessionKey(ctx);
     const st = getState(key);
     debugLog(getConfig(key), `SESSION SHUTDOWN — total evictions: ${st.totalEvictions}`);
+    // Save BEFORE dropping the in-memory copy, otherwise the graph and the
+    // compressed spans are gone at the next start (the bug this fixes).
+    if (!st.graph.isEmpty || st.spans.length > 0) saveState(key, st);
     dropState(key);
   });
 }
