@@ -35,7 +35,7 @@ import { makeSandbox, bootExtension, withHome, sessionCtx } from './_helpers.mjs
 
 let seq = 0;
 
-const soloRimozione = (extra = {}) => ({
+const onlyRemoval = (extra = {}) => ({
   tokenBudget: 1000,
   thresholdRatio: 0.5,
   protectedTurns: 0,
@@ -54,7 +54,7 @@ async function boot(config) {
   return { sandbox, home, tools, hooks, ctx };
 }
 
-const logDi = (sandbox) => {
+const logOf = (sandbox) => {
   const p = path.join(sandbox.dir, '.pi', 'cwl', 'cwl.log');
   return fs.existsSync(p) ? fs.readFileSync(p, 'utf8') : '';
 };
@@ -64,11 +64,11 @@ const hook = async (hooks, ctx, messages) => {
   return (res && res.messages) || messages;
 };
 
-const testo = (m) => JSON.stringify(m ?? {});
-const contiene = (out, marker) => out.some((m) => testo(m).includes(marker));
+const text = (m) => JSON.stringify(m ?? {});
+const contains = (out, marker) => out.some((m) => text(m).includes(marker));
 
 /** Conversation with eligible endpoints: that is what makes an interval compressible. */
-const conversazione = () => {
+const conversation = () => {
   const out = [];
   for (let i = 1; i <= 6; i++) {
     out.push({ role: 'user', content: `prompt ${i} content. ` + 'U'.repeat(200) });
@@ -78,7 +78,7 @@ const conversazione = () => {
 };
 
 const assistant = (marker) => ({ role: 'assistant', content: [{ type: 'text', text: `${marker} ` + 'X'.repeat(3000) }] });
-const assistantPiccolo = (marker) => ({ role: 'assistant', content: [{ type: 'text', text: marker }] });
+const smallAssistant = (marker) => ({ role: 'assistant', content: [{ type: 'text', text: marker }] });
 
 /**
  * The message that CARRIES the tool call.
@@ -91,13 +91,13 @@ const assistantPiccolo = (marker) => ({ role: 'assistant', content: [{ type: 'te
  * diagnosis ends up accusing the span of something the test did. The
  * shape of the block is the one used by `tests/compress-range.test.mjs`.
  */
-const chiamata = (id) => ({
+const call = (id) => ({
   role: 'assistant',
   content: [{ type: 'toolCall', id, name: 'delimiter', arguments: { action: 'end', name: 'dopo-lo-span' } }],
 });
 
 /** Creates a real span, with the same tool the agent uses in production. */
-async function creaSpan(tools, hooks, ctx, messages) {
+async function createSpan(tools, hooks, ctx, messages) {
   await hook(hooks, ctx, messages);
   const out = await tools.get('cwl_compress_range').execute('t', { summary: 'SUMMARY of the first turn' }, undefined, undefined, ctx);
   assert.equal(out.details.ok, true, `the span was not created (without a span the test proves nothing): ${JSON.stringify(out.details)}`);
@@ -105,11 +105,11 @@ async function creaSpan(tools, hooks, ctx, messages) {
 }
 
 test('with a live span that re-applies, the evictable episode is still evicted', async () => {
-  const { sandbox, home, tools, hooks, ctx } = await boot(soloRimozione());
+  const { sandbox, home, tools, hooks, ctx } = await boot(onlyRemoval());
   try {
     // 1. A compressible conversation: it is needed to create the span.
-    const base = conversazione();
-    await creaSpan(tools, hooks, ctx, base);
+    const base = conversation();
+    await createSpan(tools, hooks, ctx, base);
 
     // 2. A closed episode, with large content, AFTER the span: it is evictable.
     await tools.get('delimiter').execute('call-s', { action: 'start', name: 'dopo-lo-span', type: 'expl' }, undefined, undefined, ctx);
@@ -117,23 +117,23 @@ test('with a live span that re-applies, the evictable episode is still evicted',
     const messages = [
       ...base,
       { role: 'user', content: 'open' },
-      chiamata('call-s'),
+      call('call-s'),
       { role: 'toolResult', toolCallId: 'call-s', toolName: 'delimiter', content: [{ type: 'text', text: 'opened' }] },
       assistant('INSIDE-1'),
       assistant('INSIDE-2'),
-      chiamata('call-e'),
+      call('call-e'),
       { role: 'toolResult', toolCallId: 'call-e', toolName: 'delimiter', content: [{ type: 'text', text: 'closed' }] },
       { role: 'user', content: 'recent question' },
     ];
 
     const out = await hook(hooks, ctx, messages);
-    const log = logDi(sandbox);
+    const log = logOf(sandbox);
     // Non-vacuity: the span MUST have re-applied on this turn, otherwise
     // the test would pass even without the defect it wants to demonstrate.
     assert.match(log, /SPANS (re-applied|applied): \d+/, 'the span did not re-apply: the test proves nothing');
 
     assert.ok(
-      !contiene(out, 'INSIDE-1') || !contiene(out, 'INSIDE-2'),
+      !contains(out, 'INSIDE-1') || !contains(out, 'INSIDE-2'),
       'the context is above the trigger with an evictable episode, the span re-applied, and the content of ' +
       'the episode is still there: the span branch returned BEFORE `runEvictionPass` and `reasoningFallback`, ' +
       'so a single span in the state switches off eviction for the rest of the session',
@@ -142,10 +142,10 @@ test('with a live span that re-applies, the evictable episode is still evicted',
 });
 
 test('if the span is enough to get back within the budget, the episode is NOT touched', async () => {
-  const { sandbox, home, tools, hooks, ctx } = await boot(soloRimozione({ tokenBudget: 1500 }));
+  const { sandbox, home, tools, hooks, ctx } = await boot(onlyRemoval({ tokenBudget: 1500 }));
   try {
-    const base = conversazione();
-    await creaSpan(tools, hooks, ctx, base);
+    const base = conversation();
+    await createSpan(tools, hooks, ctx, base);
 
     // Small episode: after the span the context gets back within the trigger, so there is
     // nothing to evict and the eviction must not touch anything. It is the
@@ -155,20 +155,20 @@ test('if the span is enough to get back within the budget, the episode is NOT to
     const messages = [
       ...base,
       { role: 'user', content: 'open' },
-      chiamata('call-s'),
+      call('call-s'),
       { role: 'toolResult', toolCallId: 'call-s', toolName: 'delimiter', content: [{ type: 'text', text: 'opened' }] },
-      assistantPiccolo('SMALL-1'),
-      chiamata('call-e'),
+      smallAssistant('SMALL-1'),
+      call('call-e'),
       { role: 'toolResult', toolCallId: 'call-e', toolName: 'delimiter', content: [{ type: 'text', text: 'closed' }] },
       { role: 'user', content: 'current' },
     ];
 
     const out = await hook(hooks, ctx, messages);
-    assert.ok(contiene(out, 'SMALL-1'), 'the episode was evicted while the context was already back within the trigger: no reason to touch it');
+    assert.ok(contains(out, 'SMALL-1'), 'the episode was evicted while the context was already back within the trigger: no reason to touch it');
     // And the compressed list MUST be the one returned: without the early
     // return in the span branch, the flow falls into the tail, which when it is below
     // the trigger answers `undefined` (no change) and the provider receives the
     // NON-compressed history. The span saving would be lost for that turn.
-    assert.ok(contiene(out, 'SUMMARY'), 'the applied span was not returned: the compression was lost');
+    assert.ok(contains(out, 'SUMMARY'), 'the applied span was not returned: the compression was lost');
   } finally { home.restore(); sandbox.cleanup(); }
 });

@@ -64,36 +64,36 @@ const hook = async (hooks, ctx, messages) => {
   return (res && res.messages) || messages;
 };
 
-const logDi = (sandbox) => fs.readFileSync(path.join(sandbox.dir, '.pi', 'cwl', 'cwl.log'), 'utf8');
+const logOf = (sandbox) => fs.readFileSync(path.join(sandbox.dir, '.pi', 'cwl', 'cwl.log'), 'utf8');
 
-const statoDi = (sandbox) => {
+const stateOf = (sandbox) => {
   const dir = path.join(sandbox.dir, '.pi', 'cwl', 'state');
   const file = fs.readdirSync(dir).find((f) => f.endsWith('.json'));
   assert.ok(file, 'the session state was not created');
   return JSON.parse(fs.readFileSync(path.join(dir, file), 'utf8'));
 };
 
-const conversazione = (da, a) => {
+const conversation = (from, to) => {
   const out = [];
-  for (let i = da; i <= a; i++) {
+  for (let i = from; i <= to; i++) {
     out.push({ role: 'user', content: `turn ${i} content ` + 'U'.repeat(200) });
     out.push({ role: 'assistant', content: `reply ${i} content ` + 'A'.repeat(200) });
   }
   return out;
 };
 
-const inContesto = (msgs) =>
+const inContext = (msgs) =>
   msgs.filter((m) => m && m.customType === 'cwl-compressed').map((m) => String(m.content)).join('\n');
 
-const testo = (res) => res.content.map((c) => c.text).join('\n');
+const text = (res) => res.content.map((c) => c.text).join('\n');
 
 test('the old node replaces the micros with the synthesis, and does not lose the leaves', async () => {
   const { sandbox, home, tools, hooks, ctx } = await boot();
   try {
     // 0. Not due: no node. The tool must REFUSE, not merge nothing.
-    const presto = await tools.get('cwl_old').execute('t', { text: 'SINTESI-PRECOCE' }, undefined, undefined, ctx);
+    const tooEarly = await tools.get('cwl_old').execute('t', { text: 'SINTESI-PRECOCE' }, undefined, undefined, ctx);
     assert.equal(
-      presto.details.ok,
+      tooEarly.details.ok,
       false,
       'cwl_old merged when there was nothing to merge yet: the synthesis would describe the void',
     );
@@ -101,23 +101,23 @@ test('the old node replaces the micros with the synthesis, and does not lose the
     // Five leaves, each with its micro. With looseLeaves 1 and nodeCapacity 2:
     // the newest stays loose, the other four form TWO nodes.
     for (let i = 1; i <= 5; i++) {
-      await hook(hooks, ctx, conversazione(1, i + 3));
+      await hook(hooks, ctx, conversation(1, i + 3));
       const res = await tools.get('cwl_compress_range').execute(
         't', { summary: `CORPO-${i} ` + 'x'.repeat(300) }, undefined, undefined, ctx,
       );
       assert.equal(res.details.ok, true, `round ${i}: the leaf was not born: ${JSON.stringify(res.details)}`);
     }
-    const foglie = statoDi(sandbox).spans;
-    assert.equal(foglie.length, 5, `expected 5 leaves, ${foglie.length} in the state`);
+    const leaves = stateOf(sandbox).spans;
+    assert.equal(leaves.length, 5, `expected 5 leaves, ${leaves.length} in the state`);
     for (let i = 0; i < 5; i++) {
-      const r = await tools.get('cwl_micro').execute('t', { id: foglie[i].id, text: `MICRO-${i + 1}` }, undefined, undefined, ctx);
+      const r = await tools.get('cwl_micro').execute('t', { id: leaves[i].id, text: `MICRO-${i + 1}` }, undefined, undefined, ctx);
       assert.equal(r.details.ok, true, `micro on leaf ${i + 1} failed: ${JSON.stringify(r.details)}`);
     }
 
     // One turn to form the nodes. The merge is DUE and must be declared.
-    const primaDelPozzo = logDi(sandbox).length;
-    await hook(hooks, ctx, conversazione(1, 12));
-    const log = logDi(sandbox).slice(primaDelPozzo);
+    const beforePit = logOf(sandbox).length;
+    await hook(hooks, ctx, conversation(1, 12));
+    const log = logOf(sandbox).slice(beforePit);
     assert.match(
       log,
       /OLD NODE due/,
@@ -125,9 +125,9 @@ test('the old node replaces the micros with the synthesis, and does not lose the
     );
 
     // Before the merge the micros are ALL in the context: it is the premise.
-    const prima = inContesto(await hook(hooks, ctx, conversazione(1, 12)));
+    const before = inContext(await hook(hooks, ctx, conversation(1, 12)));
     for (let i = 1; i <= 5; i++) {
-      assert.ok(prima.includes(`MICRO-${i}`), `before the merge MICRO-${i} is missing: the fixture does not hold`);
+      assert.ok(before.includes(`MICRO-${i}`), `before the merge MICRO-${i} is missing: the fixture does not hold`);
     }
 
     // The merge: the oldest node (leaves 1 and 2) enters the pit.
@@ -137,39 +137,39 @@ test('the old node replaces the micros with the synthesis, and does not lose the
     assert.equal(acc.details.ok, true, `cwl_old refused when it was due: ${JSON.stringify(acc.details)}`);
     assert.equal(acc.details.nodes, 1, `it had to merge ONE node (the oldest), it declares ${acc.details.nodes}`);
     assert.equal(acc.details.leaves, 2, `it had to merge 2 leaves, it declares ${acc.details.leaves}`);
-    const pozzo = acc.details.id;
-    assert.match(String(pozzo), /^old-[0-9a-f]{8}$/, `unexpected pit id: ${pozzo}`);
+    const pit = acc.details.id;
+    assert.match(String(pit), /^old-[0-9a-f]{8}$/, `unexpected pit id: ${pit}`);
 
     // The next turn: the synthesis is in the context, the merged micros are NOT there anymore.
-    const dopo = inContesto(await hook(hooks, ctx, conversazione(1, 12)));
-    assert.ok(dopo.includes('RIASSUNTONE-1'), 'the synthesis did not enter the context: the leaves went out and nobody stands for them');
+    const after = inContext(await hook(hooks, ctx, conversation(1, 12)));
+    assert.ok(after.includes('RIASSUNTONE-1'), 'the synthesis did not enter the context: the leaves went out and nobody stands for them');
     for (const i of [1, 2]) {
       assert.ok(
-        !dopo.includes(`MICRO-${i}`),
+        !after.includes(`MICRO-${i}`),
         `MICRO-${i} is still in the context: the pit's leaves are still injected, so the merge freed nothing`,
       );
     }
     // And the YOUNG node no: the present does not enter the pit.
     for (const i of [3, 4, 5]) {
-      assert.ok(dopo.includes(`MICRO-${i}`), `MICRO-${i} vanished from the context: it ended up in the pit together with the past`);
+      assert.ok(after.includes(`MICRO-${i}`), `MICRO-${i} vanished from the context: it ended up in the pit together with the past`);
     }
 
     // The pit page: the synthesis, and the SHAPE of what it holds inside.
-    const pagina = await tools.get('cwl_open').execute('t', { id: pozzo }, undefined, undefined, ctx);
-    assert.equal(pagina.details.ok, true, `the pit does not open: ${JSON.stringify(pagina.details)}`);
-    assert.equal(pagina.details.nodes, 1, `the pit declares ${pagina.details.nodes} nodes inside instead of 1`);
-    assert.ok(testo(pagina).includes('RIASSUNTONE-1'), 'the pit page does not report the synthesis');
+    const page = await tools.get('cwl_open').execute('t', { id: pit }, undefined, undefined, ctx);
+    assert.equal(page.details.ok, true, `the pit does not open: ${JSON.stringify(page.details)}`);
+    assert.equal(page.details.nodes, 1, `the pit declares ${page.details.nodes} nodes inside instead of 1`);
+    assert.ok(text(page).includes('RIASSUNTONE-1'), 'the pit page does not report the synthesis');
     assert.match(
-      testo(pagina),
+      text(page),
       /2 leaf\/leaves/,
-      `the page does not declare the shape (how many leaves) of the node it holds: ${testo(pagina).slice(0, 200)}`,
+      `the page does not declare the shape (how many leaves) of the node it holds: ${text(page).slice(0, 200)}`,
     );
 
     // And nothing was lost: the merged leaves reopen WHOLE.
-    const riaperta = await tools.get('cwl_open').execute('t', { id: foglie[0].id }, undefined, undefined, ctx);
-    assert.equal(riaperta.details.ok, true, `the merged leaf does not reopen: ${JSON.stringify(riaperta.details)}`);
+    const reopened = await tools.get('cwl_open').execute('t', { id: leaves[0].id }, undefined, undefined, ctx);
+    assert.equal(reopened.details.ok, true, `the merged leaf does not reopen: ${JSON.stringify(reopened.details)}`);
     assert.ok(
-      testo(riaperta).includes('CORPO-1'),
+      text(reopened).includes('CORPO-1'),
       'the body of the merged leaf does not come back whole: the saving would be a throwing away, not a compressing',
     );
   } finally {

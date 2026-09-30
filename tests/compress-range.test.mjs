@@ -76,9 +76,9 @@ test('the safety window is not touched: the range stops earlier', async () => {
     // of the last 2 turns (the last 4 messages of the list).
     const { createHash } = await import('node:crypto');
     const hashOf = (s) => createHash('sha256').update(s).digest('hex').slice(0, 12);
-    const protetti = messages.slice(-4).map((m) => hashOf(m.content));
-    assert.ok(!protetti.includes(out.details.startHash ?? ''), 'start inside the window');
-    assert.ok(!protetti.includes(out.details.endHash ?? ''), 'end inside the window');
+    const protectedHashes = messages.slice(-4).map((m) => hashOf(m.content));
+    assert.ok(!protectedHashes.includes(out.details.startHash ?? ''), 'start inside the window');
+    assert.ok(!protectedHashes.includes(out.details.endHash ?? ''), 'end inside the window');
     // And it must instead include the first message (outside the window).
     assert.equal(out.content[0].text.includes('Compresso'), true);
   } finally { home.restore(); sandbox.cleanup(); }
@@ -93,11 +93,11 @@ test('with nothing to compress it refuses instead of inventing a range', async (
   // compaction possible).
   const { sandbox, home, tools, hooks, ctx } = await boot(config({ protectedTurns: 99 }));
   try {
-    const minimale = [
+    const minimal = [
       { role: 'user', content: 'question ' + 'U'.repeat(200) },
       { role: 'assistant', content: 'answer ' + 'A'.repeat(200) },
     ];
-    await hooks.get('context')({ messages: minimale }, ctx);
+    await hooks.get('context')({ messages: minimal }, ctx);
     const out = await call(tools, ctx, 'summary');
     assert.equal(out.details.ok, false);
     assert.equal(out.details.error, 'nothing-to-compress');
@@ -124,11 +124,11 @@ test('an already-compressed range is not proposed again', async () => {
     // The next hook recomputes the range ON WHAT REMAINS.
     await hooks.get('context')({ messages }, ctx);
     const status = await tools.get('cwl_status').execute('id', {}, undefined, undefined, ctx);
-    const testo = status.content.map((c) => c.text).join('\n');
+    const text = status.content.map((c) => c.text).join('\n');
     // Either nothing remains, or a range different from the first one remains.
-    const hasRange = /Intervallo comprimibile/.test(testo);
+    const hasRange = /Intervallo comprimibile/.test(text);
     if (hasRange) {
-      assert.ok(!testo.includes(`${first.details.startHash}..${first.details.endHash}`),
+      assert.ok(!text.includes(`${first.details.startHash}..${first.details.endHash}`),
         'the already-compressed range is proposed again');
     }
   } finally { home.restore(); sandbox.cleanup(); }
@@ -142,10 +142,10 @@ test('the saving is counted ONCE: re-applying the span does not inflate the tota
   // re-application produces a number that grows by itself, turn after turn, and
   // that number is the only proof the operator has that the thing works.
   const { sandbox, home, tools, hooks, ctx } = await boot(config());
-  const risparmiati = async () => {
+  const savedTokens = async () => {
     const s = await tools.get('cwl_status').execute('id', {}, undefined, undefined, ctx);
-    const testo = s.content.map((c) => c.text).join('\n');
-    const m = /token risparmiati:\s*([\d.]+)/.exec(testo);
+    const text = s.content.map((c) => c.text).join('\n');
+    const m = /token risparmiati:\s*([\d.]+)/.exec(text);
     return m ? Number(m[1].replace(/\./g, '')) : -1;
   };
   try {
@@ -156,31 +156,31 @@ test('the saving is counted ONCE: re-applying the span does not inflate the tota
     // The counting happens when the span is APPLIED, that is at the next
     // turn: the tool writes the address, the hook applies it.
     await hooks.get('context')({ messages }, ctx);
-    const dopoLaCompressione = await risparmiati();
-    assert.ok(dopoLaCompressione > 0, 'the compression must have saved something');
+    const afterCompression = await savedTokens();
+    assert.ok(afterCompression > 0, 'the compression must have saved something');
 
     // Three turns in which exactly the same list is handed back: no new
     // compression, no new eviction. The total must not move.
     for (let i = 0; i < 3; i++) await hooks.get('context')({ messages }, ctx);
-    const dopoTreTurni = await risparmiati();
-    assert.equal(dopoTreTurni, dopoLaCompressione,
-      `the saving grew without new compressions: ${dopoLaCompressione} -> ${dopoTreTurni}`);
+    const afterThreeTurns = await savedTokens();
+    assert.equal(afterThreeTurns, afterCompression,
+      `the saving grew without new compressions: ${afterCompression} -> ${afterThreeTurns}`);
   } finally { home.restore(); sandbox.cleanup(); }
 });
 
 /** Broken toolCall/toolResult pairs: they are exactly what the provider rejects. */
-const orfani = (messages) => {
-  const chiamate = new Set();
-  const risultati = new Set();
+const orphans = (messages) => {
+  const calls = new Set();
+  const results = new Set();
   for (const m of messages) {
     if (Array.isArray(m.content)) {
-      for (const b of m.content) if (b && b.type === 'toolCall' && b.id) chiamate.add(b.id);
+      for (const b of m.content) if (b && b.type === 'toolCall' && b.id) calls.add(b.id);
     }
-    if (typeof m.toolCallId === 'string') risultati.add(m.toolCallId);
+    if (typeof m.toolCallId === 'string') results.add(m.toolCallId);
   }
   return {
-    senzaRisultato: [...chiamate].filter((id) => !risultati.has(id)),
-    senzaChiamata: [...risultati].filter((id) => !chiamate.has(id)),
+    callsWithoutResult: [...calls].filter((id) => !results.has(id)),
+    resultsWithoutCall: [...results].filter((id) => !calls.has(id)),
   };
 };
 
@@ -211,17 +211,17 @@ test('the compression leaves no orphan toolResult', async () => {
   // falls halfway down the list — exactly where it fell in the real session.
   const { sandbox, home, tools, hooks, ctx } = await boot(config({ protectedTurns: 4 }));
   try {
-    const testo = (t) => `${t} ` + 'X'.repeat(240);
-    const scambio = (n) => ([
-      { role: 'assistant', content: [{ type: 'text', text: testo(`thinking ${n}`) }, { type: 'toolCall', id: `tc${n}`, name: 'bash', arguments: { command: 'ls' } }] },
-      { role: 'toolResult', toolCallId: `tc${n}`, content: [{ type: 'text', text: testo(`output ${n}`) }] },
+    const text = (t) => `${t} ` + 'X'.repeat(240);
+    const exchange = (n) => ([
+      { role: 'assistant', content: [{ type: 'text', text: text(`thinking ${n}`) }, { type: 'toolCall', id: `tc${n}`, name: 'bash', arguments: { command: 'ls' } }] },
+      { role: 'toolResult', toolCallId: `tc${n}`, content: [{ type: 'text', text: text(`output ${n}`) }] },
     ]);
     const messages = [
-      { role: 'user', content: testo('turn 1') },
-      ...scambio(1),
-      ...scambio(2),
-      ...scambio(3),
-      { role: 'user', content: testo('turn 2') },
+      { role: 'user', content: text('turn 1') },
+      ...exchange(1),
+      ...exchange(2),
+      ...exchange(3),
+      { role: 'user', content: text('turn 2') },
     ];
 
     await hooks.get('context')({ messages }, ctx);
@@ -231,11 +231,11 @@ test('the compression leaves no orphan toolResult', async () => {
     // The hook is the only point where the list is rewritten: it is what goes to the provider.
     const res = await hooks.get('context')({ messages }, ctx);
     const kept = res.messages;
-    const { senzaRisultato, senzaChiamata } = orfani(kept);
-    assert.deepEqual(senzaChiamata, [],
-      `tool_result without its tool_use: the provider answers 400. Orphans: ${senzaChiamata.join(', ')}`);
-    assert.deepEqual(senzaRisultato, [],
-      `tool_use without its result: the provider answers 400. Orphans: ${senzaRisultato.join(', ')}`);
+    const { callsWithoutResult, resultsWithoutCall } = orphans(kept);
+    assert.deepEqual(resultsWithoutCall, [],
+      `tool_result without its tool_use: the provider answers 400. Orphans: ${resultsWithoutCall.join(', ')}`);
+    assert.deepEqual(callsWithoutResult, [],
+      `tool_use without its result: the provider answers 400. Orphans: ${callsWithoutResult.join(', ')}`);
     // The safety window stays untouchable: extending the range to the
     // toolResult must not become "eat everything to the bottom".
     assert.ok(kept.some((m) => m.role === 'user' && String(m.content).includes('turn 2')),
@@ -258,17 +258,17 @@ test('bulk results are not repaired by position: the guarantee is by id', async 
   // "No tool call found for function call output with call_id ..." from Codex.
   const { sandbox, home, tools, hooks, ctx } = await boot(config({ protectedTurns: 4, debug: true }));
   try {
-    const testo = (t) => `${t} ` + 'X'.repeat(240);
+    const text = (t) => `${t} ` + 'X'.repeat(240);
     const messages = [
-      { role: 'user', content: testo('turn 1') },
+      { role: 'user', content: text('turn 1') },
       // Last valid endpoint below the floor: the range ends here.
-      { role: 'assistant', content: [{ type: 'text', text: testo('A thinks') }, { type: 'toolCall', id: 'ca', name: 'bash', arguments: { command: 'ls' } }] },
+      { role: 'assistant', content: [{ type: 'text', text: text('A thinks') }, { type: 'toolCall', id: 'ca', name: 'bash', arguments: { command: 'ls' } }] },
       // Index >= floor: it stays outside, with its pair intact.
-      { role: 'assistant', content: [{ type: 'text', text: testo('B thinks') }, { type: 'toolCall', id: 'cb', name: 'bash', arguments: { command: 'ls' } }] },
+      { role: 'assistant', content: [{ type: 'text', text: text('B thinks') }, { type: 'toolCall', id: 'cb', name: 'bash', arguments: { command: 'ls' } }] },
       // The result of A arrives AFTER the assistant B: its call is inside the
       // range and disappears, so this result is orphan and must be discarded.
-      { role: 'toolResult', toolCallId: 'ca', content: [{ type: 'text', text: testo('output from A') }] },
-      { role: 'toolResult', toolCallId: 'cb', content: [{ type: 'text', text: testo('output from B') }] },
+      { role: 'toolResult', toolCallId: 'ca', content: [{ type: 'text', text: text('output from A') }] },
+      { role: 'toolResult', toolCallId: 'cb', content: [{ type: 'text', text: text('output from B') }] },
     ];
 
     await hooks.get('context')({ messages }, ctx);
@@ -282,11 +282,11 @@ test('bulk results are not repaired by position: the guarantee is by id', async 
     assert.ok(kept.some((m) => m.customType === 'cwl-compressed'),
       'the span must have been applied, otherwise the test proves nothing');
 
-    const { senzaRisultato, senzaChiamata } = orfani(kept);
-    assert.deepEqual(senzaChiamata, [],
-      `tool_result without its tool_use: the provider answers 400. Orphans: ${senzaChiamata.join(', ')}`);
-    assert.deepEqual(senzaRisultato, [],
-      `tool_use without its result: the provider answers 400. Orphans: ${senzaRisultato.join(', ')}`);
+    const { callsWithoutResult, resultsWithoutCall } = orphans(kept);
+    assert.deepEqual(resultsWithoutCall, [],
+      `tool_result without its tool_use: the provider answers 400. Orphans: ${resultsWithoutCall.join(', ')}`);
+    assert.deepEqual(callsWithoutResult, [],
+      `tool_use without its result: the provider answers 400. Orphans: ${callsWithoutResult.join(', ')}`);
     // Opposite mutation ("repair by discarding everything"): the pair of B has nothing
     // to do with the range and must survive ENTIRE, call and result.
     assert.ok(kept.some((m) => m.role === 'toolResult' && m.toolCallId === 'cb'),
@@ -315,9 +315,9 @@ test('two messages with the SAME text do not collapse onto a single address', as
   // assistant) and it is that which distinguishes two identical texts.
   const { sandbox, home, tools, hooks, ctx } = await boot(config({ protectedTurns: 4 }));
   try {
-    const testo = (t) => `${t} ` + 'X'.repeat(240);
+    const text = (t) => `${t} ` + 'X'.repeat(240);
     const messages = [
-      { role: 'user', content: testo('turn 1'), timestamp: 1000 },
+      { role: 'user', content: text('turn 1'), timestamp: 1000 },
       // Last valid endpoint below the floor: the range ends here.
       { role: 'assistant', content: 'ok', timestamp: 2000 },
       // A non-endpoint message, to make the floor fall after the first "ok".
@@ -325,8 +325,8 @@ test('two messages with the SAME text do not collapse onto a single address', as
       // SAME TEXT as the first, but beyond the window: here the ambiguous address
       // made the span reach this far, swallowing it.
       { role: 'assistant', content: 'ok', timestamp: 9000 },
-      { role: 'user', content: testo('turn 2'), timestamp: 9500 },
-      { role: 'assistant', content: testo('recent answer'), timestamp: 9600 },
+      { role: 'user', content: text('turn 2'), timestamp: 9500 },
+      { role: 'assistant', content: text('recent answer'), timestamp: 9600 },
     ];
 
     await hooks.get('context')({ messages }, ctx);
@@ -337,10 +337,10 @@ test('two messages with the SAME text do not collapse onto a single address', as
     const kept = res.messages;
     assert.ok(kept.some((m) => m.customType === 'cwl-compressed'),
       'the span must have been applied, otherwise the test proves nothing');
-    const primo = (l) => l.some((m) => m.role === 'assistant' && m.content === 'ok' && m.timestamp === 2000);
-    const secondo = (l) => l.some((m) => m.role === 'assistant' && m.content === 'ok' && m.timestamp === 9000);
-    assert.ok(!primo(kept), 'the first "ok" is inside the range: the summary replaces it');
-    assert.ok(secondo(kept),
+    const hasFirstOk = (l) => l.some((m) => m.role === 'assistant' && m.content === 'ok' && m.timestamp === 2000);
+    const hasSecondOk = (l) => l.some((m) => m.role === 'assistant' && m.content === 'ok' && m.timestamp === 9000);
+    assert.ok(!hasFirstOk(kept), 'the first "ok" is inside the range: the summary replaces it');
+    assert.ok(hasSecondOk(kept),
       'the second "ok" is BEYOND the window: with the ambiguous address the span reached that far and erased it');
   } finally { home.restore(); sandbox.cleanup(); }
 });
@@ -355,34 +355,34 @@ test('an episode whose anchors left the context is STATED, not assumed evacuated
   const { sandbox, home, tools, hooks, ctx } = await boot(config());
   try {
     const delim = (id, params) => tools.get('delimiter').execute(id, params, undefined, undefined, ctx);
-    const apri = await delim('T1', { action: 'start', name: 'ep-anchor', type: 'expl' });
-    assert.equal(apri.details.ok, true, `opening rejected: ${JSON.stringify(apri.details)}`);
-    const chiudi = await delim('T2', { action: 'end', name: 'ep-anchor', description: 'done' });
-    assert.equal(chiudi.details.ok, true, `closing rejected: ${JSON.stringify(chiudi.details)}`);
+    const openResult = await delim('T1', { action: 'start', name: 'ep-anchor', type: 'expl' });
+    assert.equal(openResult.details.ok, true, `opening rejected: ${JSON.stringify(openResult.details)}`);
+    const closeResult = await delim('T2', { action: 'end', name: 'ep-anchor', description: 'done' });
+    assert.equal(closeResult.details.ok, true, `closing rejected: ${JSON.stringify(closeResult.details)}`);
 
-    const corpo = 'X'.repeat(200);
-    const completa = [
-      { role: 'user', content: `before ${corpo}` },
-      { role: 'assistant', content: `work ${corpo}` },
+    const body = 'X'.repeat(200);
+    const complete = [
+      { role: 'user', content: `before ${body}` },
+      { role: 'assistant', content: `work ${body}` },
       { role: 'toolResult', toolCallId: 'T1', content: [{ type: 'text', text: 'episode start' }] },
-      { role: 'assistant', content: `inside ${corpo}` },
+      { role: 'assistant', content: `inside ${body}` },
       { role: 'toolResult', toolCallId: 'T2', content: [{ type: 'text', text: 'episode end' }] },
-      { role: 'user', content: `after ${corpo}` },
-      { role: 'assistant', content: `last ${corpo}` },
+      { role: 'user', content: `after ${body}` },
+      { role: 'assistant', content: `last ${body}` },
     ];
 
-    await hooks.get('context')({ messages: completa }, ctx);
-    const conAncore = await tools.get('cwl_status').execute('t', {}, undefined, undefined, ctx);
-    assert.equal(conAncore.details.unlocatable, 0,
-      'with the anchors in the context the episode is locatable: ' + JSON.stringify(conAncore.details));
+    await hooks.get('context')({ messages: complete }, ctx);
+    const withAnchors = await tools.get('cwl_status').execute('t', {}, undefined, undefined, ctx);
+    assert.equal(withAnchors.details.unlocatable, 0,
+      'with the anchors in the context the episode is locatable: ' + JSON.stringify(withAnchors.details));
 
     // The native compaction takes away the two results of delimiter: the episode
     // is no longer locatable, and it must be STATED.
-    const senzaAncore = completa.filter((m) => m.toolCallId !== 'T1' && m.toolCallId !== 'T2');
-    await hooks.get('context')({ messages: senzaAncore }, ctx);
-    const senza = await tools.get('cwl_status').execute('t', {}, undefined, undefined, ctx);
-    assert.equal(senza.details.unlocatable, 1,
-      'an unlocatable episode must be counted and stated: ' + JSON.stringify(senza.details));
+    const withoutAnchors = complete.filter((m) => m.toolCallId !== 'T1' && m.toolCallId !== 'T2');
+    await hooks.get('context')({ messages: withoutAnchors }, ctx);
+    const without = await tools.get('cwl_status').execute('t', {}, undefined, undefined, ctx);
+    assert.equal(without.details.unlocatable, 1,
+      'an unlocatable episode must be counted and stated: ' + JSON.stringify(without.details));
   } finally { home.restore(); sandbox.cleanup(); }
 });
 
@@ -394,26 +394,26 @@ test('after the first compression the address is renewed: you can compress again
   // longer compress, while the conversation kept growing.
   const { sandbox, home, tools, hooks, ctx } = await boot(config());
   try {
-    const turno = (i) => ([
+    const turn = (i) => ([
       { role: 'user', content: `turn ${i} content ` + 'U'.repeat(200) },
       { role: 'assistant', content: `answer ${i} content ` + 'A'.repeat(200) },
     ]);
-    const lista = [];
-    for (let i = 1; i <= 6; i++) lista.push(...turno(i));
+    const list = [];
+    for (let i = 1; i <= 6; i++) list.push(...turn(i));
 
-    await hooks.get('context')({ messages: lista }, ctx);
-    const prima = await call(tools, ctx, 'summary of the first half');
-    assert.equal(prima.details.ok, true,
-      `the first compression must pass: ${JSON.stringify(prima.details)}`);
+    await hooks.get('context')({ messages: list }, ctx);
+    const firstCall = await call(tools, ctx, 'summary of the first half');
+    assert.equal(firstCall.details.ok, true,
+      `the first compression must pass: ${JSON.stringify(firstCall.details)}`);
 
     // The conversation grows: new turns enter the compressible zone.
-    for (let i = 7; i <= 10; i++) lista.push(...turno(i));
+    for (let i = 7; i <= 10; i++) list.push(...turn(i));
 
-    await hooks.get('context')({ messages: lista }, ctx);
-    const seconda = await call(tools, ctx, 'summary of the second half');
-    assert.equal(seconda.details.ok, true,
+    await hooks.get('context')({ messages: list }, ctx);
+    const secondCall = await call(tools, ctx, 'summary of the second half');
+    assert.equal(secondCall.details.ok, true,
       'after the first compression the address must be renewed, or the agent can no longer compress: '
-      + JSON.stringify(seconda.details));
+      + JSON.stringify(secondCall.details));
   } finally { home.restore(); sandbox.cleanup(); }
 });
 
@@ -424,25 +424,25 @@ test('a span whose endpoints left the context is pruned, and it shows', async ()
   // carried 38,459 characters of summaries on 51,880 bytes of file.
   const { sandbox, home, tools, hooks, ctx } = await boot(config());
   try {
-    const turno = (i) => ([
+    const turn = (i) => ([
       { role: 'user', content: `turn ${i} content ` + 'U'.repeat(200) },
       { role: 'assistant', content: `answer ${i} content ` + 'A'.repeat(200) },
     ]);
-    const lista = [];
-    for (let i = 1; i <= 6; i++) lista.push(...turno(i));
+    const list = [];
+    for (let i = 1; i <= 6; i++) list.push(...turn(i));
 
-    await hooks.get('context')({ messages: lista }, ctx);
+    await hooks.get('context')({ messages: list }, ctx);
     const out = await call(tools, ctx, 'summary of the first half');
     assert.equal(out.details.ok, true, `rejected: ${JSON.stringify(out.details)}`);
     assert.equal(out.details.spans, 1, 'the span just created must exist');
 
-    const vivo = await tools.get('cwl_status').execute('t', {}, undefined, undefined, ctx);
-    assert.equal(vivo.details.spans, 1, 'a span with its endpoints in the context must NOT be pruned');
+    const live = await tools.get('cwl_status').execute('t', {}, undefined, undefined, ctx);
+    assert.equal(live.details.spans, 1, 'a span with its endpoints in the context must NOT be pruned');
 
     // A native compaction replaces that history: the endpoints of the span
     // are no longer in the list, and they will not come back.
-    const dopoCompattazione = lista.slice(-2);
-    await hooks.get('context')({ messages: dopoCompattazione }, ctx);
+    const afterCompaction = list.slice(-2);
+    await hooks.get('context')({ messages: afterCompaction }, ctx);
 
     const stat = await tools.get('cwl_status').execute('t', {}, undefined, undefined, ctx);
     assert.equal(stat.details.spans, 0,

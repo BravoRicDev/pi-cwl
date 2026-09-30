@@ -35,7 +35,7 @@ const config = () => ({
 });
 
 async function boot() {
-  const sandbox = makeSandbox({ name: `etichetta-${seq++}`, config: config() });
+  const sandbox = makeSandbox({ name: `label-${seq++}`, config: config() });
   const home = withHome(sandbox.dir);
   const { tools, hooks } = await bootExtension(sandbox);
   const ctx = sessionCtx(path.join(sandbox.dir, 'sessione.jsonl'));
@@ -48,18 +48,18 @@ const hook = async (hooks, ctx, messages) => {
   return (res && res.messages) || messages;
 };
 
-const logDi = (sandbox) => fs.readFileSync(path.join(sandbox.dir, '.pi', 'cwl', 'cwl.log'), 'utf8');
+const logOf = (sandbox) => fs.readFileSync(path.join(sandbox.dir, '.pi', 'cwl', 'cwl.log'), 'utf8');
 
-const statoDi = (sandbox) => {
+const stateOf = (sandbox) => {
   const dir = path.join(sandbox.dir, '.pi', 'cwl', 'state');
   const file = fs.readdirSync(dir).find((f) => f.endsWith('.json'));
   assert.ok(file, 'the session state was not created');
   return JSON.parse(fs.readFileSync(path.join(dir, file), 'utf8'));
 };
 
-const conversazione = (da, a) => {
+const conversation = (from, to) => {
   const out = [];
-  for (let i = da; i <= a; i++) {
+  for (let i = from; i <= to; i++) {
     out.push({ role: 'user', content: `turn ${i} content ` + 'U'.repeat(200), timestamp: 1000 + i * 2 });
     out.push({ role: 'assistant', content: `answer ${i} content ` + 'A'.repeat(200), timestamp: 1001 + i * 2 });
   }
@@ -67,16 +67,16 @@ const conversazione = (da, a) => {
 };
 
 /** The leaf is born WITH its body and its label, in the same call. */
-const ETICHETTA = (i) => `LABEL-${i}: leaf ${i} tells about turn ${i} and what was decided there`;
+const LABEL = (i) => `LABEL-${i}: leaf ${i} tells about turn ${i} and what was decided there`;
 
 test('the leaf is born with its label, and the body stays whole', async () => {
   const { sandbox, home, tools, hooks, ctx } = await boot();
   try {
     for (let i = 1; i <= 7; i++) {
-      await hook(hooks, ctx, conversazione(1, i + 3));
+      await hook(hooks, ctx, conversation(1, i + 3));
       const res = await tools.get('cwl_compress_range').execute(
         't',
-        { summary: `BODY-${i} ` + 'x'.repeat(300), micro: ETICHETTA(i) },
+        { summary: `BODY-${i} ` + 'x'.repeat(300), micro: LABEL(i) },
         undefined,
         undefined,
         ctx,
@@ -84,47 +84,47 @@ test('the leaf is born with its label, and the body stays whole', async () => {
       assert.equal(res.details.ok, true, `round ${i}: the leaf was not born: ${JSON.stringify(res.details)}`);
     }
 
-    const foglie = statoDi(sandbox).spans;
-    assert.equal(foglie.length, 7, 'seven leaves are needed: with `looseLeaves` = 5 the last five stay loose');
+    const leaves = stateOf(sandbox).spans;
+    assert.equal(leaves.length, 7, 'seven leaves are needed: with `looseLeaves` = 5 the last five stay loose');
     assert.ok(
-      foglie.slice(0, 2).every((f) => f.micro && f.micro.includes('LABEL')),
+      leaves.slice(0, 2).every((f) => f.micro && f.micro.includes('LABEL')),
       'the labels were not saved on the leaf: the parameter arrived and was not written',
     );
 
     // The turn after, the older leaves leave the `looseLeaves` window.
-    const prima = logDi(sandbox).length;
-    const out = await hook(hooks, ctx, conversazione(1, 10));
-    const log = logDi(sandbox).slice(prima);
+    const before = logOf(sandbox).length;
+    const out = await hook(hooks, ctx, conversation(1, 10));
+    const log = logOf(sandbox).slice(before);
 
     // 1. Nobody waits for anything any more: the labels were already there.
-    const riga = /NODES: (\d+) node\(s\) \[([^\]]*)\], (\d+) leaf\/leaves waiting/.exec(log);
-    assert.ok(riga, `the turn does not declare the nodes: ${log.trim().split('\n').slice(-3).join(' | ')}`);
+    const row = /NODES: (\d+) node\(s\) \[([^\]]*)\], (\d+) leaf\/leaves waiting/.exec(log);
+    assert.ok(row, `the turn does not declare the nodes: ${log.trim().split('\n').slice(-3).join(' | ')}`);
     assert.equal(
-      Number(riga[3]),
+      Number(row[3]),
       0,
-      `the leaves still wait for a micro (${riga[3]} waiting): the labels were not used at birth, ` +
+      `the leaves still wait for a micro (${row[3]} waiting): the labels were not used at birth, ` +
         'so the node does not form and the extension has to ask for them later — the batch of five that was meant to be avoided.',
     );
-    assert.ok(Number(riga[1]) >= 1, `no node formed (${riga[1]}): the leaves with a label did not enter a node`);
+    assert.ok(Number(row[1]) >= 1, `no node formed (${row[1]}): the leaves with a label did not enter a node`);
 
     // 2. The body stays whole: the label did not end up inside it.
-    const aperta = await tools.get('cwl_open').execute('t', { id: foglie[0].id }, undefined, undefined, ctx);
-    const testo = aperta.content.map((c) => c.text).join('\n');
+    const opened = await tools.get('cwl_open').execute('t', { id: leaves[0].id }, undefined, undefined, ctx);
+    const text = opened.content.map((c) => c.text).join('\n');
     assert.ok(
-      testo.includes('BODY-1 '),
-      `cwl_open no longer returns the leaf body: ${testo.slice(0, 200)}`,
+      text.includes('BODY-1 '),
+      `cwl_open no longer returns the leaf body: ${text.slice(0, 200)}`,
     );
     assert.ok(
-      !testo.includes('LABEL-1'),
+      !text.includes('LABEL-1'),
       'the micro was written INSIDE the body: `cwl_open` no longer returns the original, and the promise ' +
         '"nothing is lost" becomes false. The micro is a separate field, never a body edit.',
     );
 
     // 3. And nobody asks for the micro, because there is nothing to ask for.
-    const richieste = out.filter((m) => m.customType === 'cwl-demand').map((m) => String(m.content)).join('\n');
+    const requests = out.filter((m) => m.customType === 'cwl-demand').map((m) => String(m.content)).join('\n');
     assert.ok(
-      !richieste.includes('cwl_micro'),
-      `the extension still asks for the micros that have already arrived: ${richieste.slice(0, 200)}`,
+      !requests.includes('cwl_micro'),
+      `the extension still asks for the micros that have already arrived: ${requests.slice(0, 200)}`,
     );
   } finally {
     home.restore();

@@ -20,7 +20,7 @@ import * as path from 'node:path';
 import { makeSandbox, bootExtension, withHome, sessionCtx } from './_helpers.mjs';
 
 let seq = 0;
-const TETTO = 1400;
+const CEILING = 1400;
 
 const config = () => ({
   tokenBudget: 600,
@@ -32,7 +32,7 @@ const config = () => ({
 });
 
 async function boot() {
-  const sandbox = makeSandbox({ name: `tetto-${seq++}`, config: config() });
+  const sandbox = makeSandbox({ name: `ceiling-${seq++}`, config: config() });
   const home = withHome(sandbox.dir);
   const { tools, hooks } = await bootExtension(sandbox);
   const ctx = sessionCtx(path.join(sandbox.dir, 'sessione.jsonl'));
@@ -40,11 +40,11 @@ async function boot() {
   return { sandbox, home, tools, hooks, ctx };
 }
 
-const logDi = (sandbox) => fs.readFileSync(path.join(sandbox.dir, '.pi', 'cwl', 'cwl.log'), 'utf8');
+const logOf = (sandbox) => fs.readFileSync(path.join(sandbox.dir, '.pi', 'cwl', 'cwl.log'), 'utf8');
 
-const conversazione = (da, a) => {
+const conversation = (from, to) => {
   const out = [];
-  for (let i = da; i <= a; i++) {
+  for (let i = from; i <= to; i++) {
     out.push({ role: 'user', content: `turn ${i} content ` + 'U'.repeat(200), timestamp: 1000 + i * 2 });
     out.push({ role: 'assistant', content: `answer ${i} content ` + 'A'.repeat(200), timestamp: 1001 + i * 2 });
   }
@@ -52,29 +52,29 @@ const conversazione = (da, a) => {
 };
 
 /** Drives the hook (which computes the address) and then compresses with the requested label. */
-async function comprimi(sandbox, hooks, ctx, tools, etichetta) {
-  const base = conversazione(1, 7);
+async function compressLabeled(sandbox, hooks, ctx, tools, label) {
+  const base = conversation(1, 7);
   await hooks.get('context')({ messages: base }, ctx);
-  const prima = logDi(sandbox).length;
+  const before = logOf(sandbox).length;
   const res = await tools
     .get('cwl_compress_range')
-    .execute('t', { summary: 'BODY-1 ' + 'x'.repeat(300), micro: etichetta }, undefined, undefined, ctx);
-  const testo = res.content.map((c) => c.text).join('\n');
-  return { res, testo, dopo: logDi(sandbox).slice(prima) };
+    .execute('t', { summary: 'BODY-1 ' + 'x'.repeat(300), micro: label }, undefined, undefined, ctx);
+  const text = res.content.map((c) => c.text).join('\n');
+  return { res, text, after: logOf(sandbox).slice(before) };
 }
 
 test("a label over the ceiling is RECORDED and the excess DECLARED in the result and in the log", async () => {
   const { sandbox, home, hooks, ctx, tools } = await boot();
   try {
-    const { res, testo, dopo } = await comprimi(sandbox, hooks, ctx, tools, 'E'.repeat(TETTO + 100));
+    const { res, text, after } = await compressLabeled(sandbox, hooks, ctx, tools, 'E'.repeat(CEILING + 100));
     assert.equal(res.details.ok, true, `the compression did not go through: ${JSON.stringify(res.details)}`);
     assert.match(
-      testo,
-      new RegExp(String(TETTO)),
+      text,
+      new RegExp(String(CEILING)),
       "the result does not name the ceiling: the agent does not know it blew the measure, and the next label will be just as long",
     );
     assert.match(
-      dopo,
+      after,
       /MICRO over ceiling: \S+ is \d+ characters \(~\d+t\) against a ceiling of \d+ \(~\d+t\)/,
       'the log did not measure the excess: no line, no number, no way to notice it',
     );
@@ -86,10 +86,10 @@ test("a label over the ceiling is RECORDED and the excess DECLARED in the result
 test("a label under the ceiling produces no declaration (measuring is not a ritual)", async () => {
   const { sandbox, home, hooks, ctx, tools } = await boot();
   try {
-    const { res, testo, dopo } = await comprimi(sandbox, hooks, ctx, tools, 'E'.repeat(TETTO - 100));
+    const { res, text, after } = await compressLabeled(sandbox, hooks, ctx, tools, 'E'.repeat(CEILING - 100));
     assert.equal(res.details.ok, true, `the compression did not go through: ${JSON.stringify(res.details)}`);
-    assert.doesNotMatch(testo, new RegExp(String(TETTO)), 'the result names the ceiling even when it was not blown');
-    assert.doesNotMatch(dopo, /MICRO over ceiling/, 'the log declares an excess that did not happen');
+    assert.doesNotMatch(text, new RegExp(String(CEILING)), 'the result names the ceiling even when it was not blown');
+    assert.doesNotMatch(after, /MICRO over ceiling/, 'the log declares an excess that did not happen');
   } finally {
     home.restore();
   }

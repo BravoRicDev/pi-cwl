@@ -40,7 +40,7 @@ import { makeSandbox, bootExtension, withHome, sessionCtx } from './_helpers.mjs
 let seq = 0;
 
 /** Full eviction only: the `removed` level is the one that adds the marker. */
-const soloRimozione = (extra = {}) => ({
+const onlyRemoval = (extra = {}) => ({
   tokenBudget: 1000,
   thresholdRatio: 0.5,
   protectedTurns: 0,
@@ -59,7 +59,7 @@ async function boot(config) {
   return { sandbox, home, tools, hooks, ctx };
 }
 
-const logDi = (sandbox) => {
+const logOf = (sandbox) => {
   const p = path.join(sandbox.dir, '.pi', 'cwl', 'cwl.log');
   return fs.existsSync(p) ? fs.readFileSync(p, 'utf8') : '';
 };
@@ -75,10 +75,10 @@ const assistant = (marker) => ({
 });
 
 /** The line I am measuring, read from the real log. */
-const RIGA = /EVICTION applied: (\d+) msg removed, (\d+) reduced, (\d+)t -> (\d+)t \(saved (\d+)t\)/;
+const ROW = /EVICTION applied: (\d+) msg removed, (\d+) reduced, (\d+)t -> (\d+)t \(saved (\d+)t\)/;
 
 test('the EVICTION line declares the MEASURED saving, not the plan estimate', async () => {
-  const { sandbox, home, tools, hooks, ctx } = await boot(soloRimozione());
+  const { sandbox, home, tools, hooks, ctx } = await boot(onlyRemoval());
   try {
     // A closed episode entirely inside the range: its full eviction
     // is what adds the re-entry marker (cause no.1 of the defect).
@@ -96,7 +96,7 @@ test('the EVICTION line declares the MEASURED saving, not the plan estimate', as
     assert.ok(!JSON.stringify(out).includes('INSIDE-1'),
       'no eviction happened: the test proves nothing');
 
-    const m = RIGA.exec(logDi(sandbox));
+    const m = ROW.exec(logOf(sandbox));
     assert.ok(m, 'the EVICTION line was not written to the log');
     const [, dropped, , before, after, saved] = m.map(Number);
     assert.ok(dropped >= 1, 'the line says zero messages removed: this is not an eviction');
@@ -124,20 +124,20 @@ test('the EVICTION line is consistent also when the eviction REDUCES instead of 
     await tools.get('delimiter').execute('call-e', { action: 'end', name: 'reduction', description: 'takeaway' }, undefined, undefined, ctx);
     // A huge toolResult inside the episode: the `bulk` level cuts it without
     // removing it, and it is the branch where `truncatedTokens` uses the other estimator.
-    const grasso = { role: 'toolResult', toolCallId: 'call-big', toolName: 'bash', content: [{ type: 'text', text: 'B'.repeat(60000) }] };
+    const bold = { role: 'toolResult', toolCallId: 'call-big', toolName: 'bash', content: [{ type: 'text', text: 'B'.repeat(60000) }] };
     const messages = [
       { role: 'user', content: 'prologue' },
       { role: 'toolResult', toolCallId: 'call-s', toolName: 'delimiter', content: [{ type: 'text', text: 'opened' }] },
-      grasso,
+      bold,
       assistant('INSIDE-1'),
       { role: 'toolResult', toolCallId: 'call-e', toolName: 'delimiter', content: [{ type: 'text', text: 'closed' }] },
       { role: 'user', content: 'recent question' },
     ];
     const out = await hook(hooks, ctx, messages);
-    const ridotto = JSON.stringify(out).length < JSON.stringify(messages).length;
-    assert.ok(ridotto, 'no reduction happened: the test proves nothing');
+    const reduced = JSON.stringify(out).length < JSON.stringify(messages).length;
+    assert.ok(reduced, 'no reduction happened: the test proves nothing');
 
-    const m = RIGA.exec(logDi(sandbox));
+    const m = ROW.exec(logOf(sandbox));
     assert.ok(m, 'the EVICTION line was not written to the log');
     const [, , , before, after, saved] = m.map(Number);
     assert.equal(

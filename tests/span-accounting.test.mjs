@@ -63,7 +63,7 @@ async function boot() {
   return { sandbox, home, tools, hooks, ctx };
 }
 
-const logDi = (sandbox) => fs.readFileSync(path.join(sandbox.dir, '.pi', 'cwl', 'cwl.log'), 'utf8');
+const logOf = (sandbox) => fs.readFileSync(path.join(sandbox.dir, '.pi', 'cwl', 'cwl.log'), 'utf8');
 
 const hook = async (hooks, ctx, messages) => {
   const res = await hooks.get('context')({ messages }, ctx);
@@ -71,7 +71,7 @@ const hook = async (hooks, ctx, messages) => {
 };
 
 /** 6 `user` + 6 `assistant`: half of the range survives the span (the user turns). */
-const conversazione = () => {
+const conversation = () => {
   const out = [];
   for (let i = 1; i <= 6; i++) {
     out.push({ role: 'user', content: `turn ${i} content ` + 'U'.repeat(200) });
@@ -83,7 +83,7 @@ const conversazione = () => {
 test('the saving declared by a span is what the context has really lost', async () => {
   const { sandbox, home, tools, hooks, ctx } = await boot();
   try {
-    const base = conversazione();
+    const base = conversation();
     // Turn 1: the extension takes the measurements and stores the address to compress.
     await hook(hooks, ctx, base);
     const comp = await tools.get('cwl_compress_range').execute('t', { summary: 'SINTESI-1 of the first turns' }, undefined, undefined, ctx);
@@ -91,15 +91,15 @@ test('the saving declared by a span is what the context has really lost', async 
 
     // Turn 2: the span is applied for the first time.
     const out = await hook(hooks, ctx, base);
-    const log = logDi(sandbox);
+    const log = logOf(sandbox);
 
-    const prima = /RANGE \S+ \(~\d+t\) \| 12 msgs, (\d+)t vs trigger/.exec(log);
-    const dichiarato = /SPANS applied: \d+ \(new \d+\), saved (\d+)t/.exec(log);
-    const dopo = /SPANS applied \((\d+)t\) still above trigger/.exec(log);
+    const before = /RANGE \S+ \(~\d+t\) \| 12 msgs, (\d+)t vs trigger/.exec(log);
+    const declared = /SPANS applied: \d+ \(new \d+\), saved (\d+)t/.exec(log);
+    const after = /SPANS applied \((\d+)t\) still above trigger/.exec(log);
     assert.ok(
-      prima && dichiarato && dopo,
+      before && declared && after,
       'all three lines are needed (measure before, declared saving, measure after): ' +
-      `prima=${!!prima} dichiarato=${!!dichiarato} dopo=${!!dopo}`,
+      `before=${!!before} declared=${!!declared} after=${!!after}`,
     );
 
     // NON-VACUITY: the `user` turns inside the span really survive, so the
@@ -109,10 +109,10 @@ test('the saving declared by a span is what the context has really lost', async 
       'the `user` turns inside the span turn out to be removed: the test\'s premise no longer holds');
 
     assert.equal(
-      Number(dichiarato[1]),
-      Number(prima[1]) - Number(dopo[1]),
-      `the span declares it saved ${dichiarato[1]}t but the context dropped from ${prima[1]}t to ${dopo[1]}t, ` +
-      `that is ${Number(prima[1]) - Number(dopo[1])}t: the user turns inside the span stay in the context and keep costing`,
+      Number(declared[1]),
+      Number(before[1]) - Number(after[1]),
+      `the span declares it saved ${declared[1]}t but the context dropped from ${before[1]}t to ${after[1]}t, ` +
+      `that is ${Number(before[1]) - Number(after[1])}t: the user turns inside the span stay in the context and keep costing`,
     );
   } finally { home.restore(); sandbox.cleanup(); }
 });
@@ -120,25 +120,25 @@ test('the saving declared by a span is what the context has really lost', async 
 test('the injected message no longer declares more tokens than the context has lost', async () => {
   const { sandbox, home, tools, hooks, ctx } = await boot();
   try {
-    const base = conversazione();
+    const base = conversation();
     await hook(hooks, ctx, base);
     const comp = await tools.get('cwl_compress_range').execute('t', { summary: 'SINTESI-1 of the first turns' }, undefined, undefined, ctx);
     assert.equal(comp.details.ok, true, `the span was not created: ${JSON.stringify(comp.details)}`);
 
     const out = await hook(hooks, ctx, base);
-    const log = logDi(sandbox);
-    const prima = /RANGE \S+ \(~\d+t\) \| 12 msgs, (\d+)t vs trigger/.exec(log);
-    const dopo = /SPANS applied \((\d+)t\) still above trigger/.exec(log);
-    assert.ok(prima && dopo, 'measurements missing: the test proves nothing');
-    const persi = Number(prima[1]) - Number(dopo[1]);
+    const log = logOf(sandbox);
+    const before = /RANGE \S+ \(~\d+t\) \| 12 msgs, (\d+)t vs trigger/.exec(log);
+    const after = /SPANS applied \((\d+)t\) still above trigger/.exec(log);
+    assert.ok(before && after, 'measurements missing: the test proves nothing');
+    const lost = Number(before[1]) - Number(after[1]);
 
-    const iniettato = out.find((m) => m?.customType === 'cwl-compressed');
-    assert.ok(iniettato, 'the compressed summary was not injected');
-    const claim = /~(\d+) token risparmiati/.exec(JSON.stringify(iniettato));
+    const injected = out.find((m) => m?.customType === 'cwl-compressed');
+    assert.ok(injected, 'the compressed summary was not injected');
+    const claim = /~(\d+) token risparmiati/.exec(JSON.stringify(injected));
     assert.ok(claim, 'the injected message does not declare the saved tokens');
     assert.ok(
-      Number(claim[1]) <= persi,
-      `the injected message declares ~${claim[1]} token risparmiati but the context has lost ${persi}: ` +
+      Number(claim[1]) <= lost,
+      `the injected message declares ~${claim[1]} token risparmiati but the context has lost ${lost}: ` +
       'the number was the size of the RANGE, not the saving',
     );
   } finally { home.restore(); sandbox.cleanup(); }

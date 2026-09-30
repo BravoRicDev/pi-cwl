@@ -54,25 +54,25 @@ const hook = async (hooks, ctx, messages) => {
   return (res && res.messages) || messages;
 };
 
-const logDi = (sandbox) => fs.readFileSync(path.join(sandbox.dir, '.pi', 'cwl', 'cwl.log'), 'utf8');
+const logOf = (sandbox) => fs.readFileSync(path.join(sandbox.dir, '.pi', 'cwl', 'cwl.log'), 'utf8');
 
-const statoDi = (sandbox) => {
+const stateOf = (sandbox) => {
   const dir = path.join(sandbox.dir, '.pi', 'cwl', 'state');
   const file = fs.readdirSync(dir).find((f) => f.endsWith('.json'));
   assert.ok(file, 'the session state was not created');
   return JSON.parse(fs.readFileSync(path.join(dir, file), 'utf8'));
 };
 
-const conversazione = (da, a) => {
+const conversation = (from, to) => {
   const out = [];
-  for (let i = da; i <= a; i++) {
+  for (let i = from; i <= to; i++) {
     out.push({ role: 'user', content: `turn ${i} content ` + 'U'.repeat(200) });
     out.push({ role: 'assistant', content: `answer ${i} content ` + 'A'.repeat(200) });
   }
   return out;
 };
 
-const testo = (res) => res.content.map((c) => c.text).join('\n');
+const text = (res) => res.content.map((c) => c.text).join('\n');
 
 test('the oldest leaves enter ONE node, only once and in order', async () => {
   const { sandbox, home, tools, hooks, ctx } = await boot();
@@ -80,46 +80,46 @@ test('the oldest leaves enter ONE node, only once and in order', async () => {
     // Eight leaves. Each round: the conversation grows (so a new
     // compressible region exists) and that region is compressed.
     for (let i = 1; i <= 8; i++) {
-      await hook(hooks, ctx, conversazione(1, i + 3));
+      await hook(hooks, ctx, conversation(1, i + 3));
       const res = await tools.get('cwl_compress_range').execute(
         't', { summary: `BODY-${i} ` + 'x'.repeat(300) }, undefined, undefined, ctx,
       );
       assert.equal(res.details.ok, true, `round ${i}: the leaf was not born: ${JSON.stringify(res.details)}`);
       assert.equal(
-        statoDi(sandbox).spans.length,
+        stateOf(sandbox).spans.length,
         i,
-        `round ${i}: the leaves in the state should be ${i}, not ${statoDi(sandbox).spans.length}`,
+        `round ${i}: the leaves in the state should be ${i}, not ${stateOf(sandbox).spans.length}`,
       );
     }
 
-    const foglie = statoDi(sandbox).spans;
-    assert.equal(foglie.length, 8, 'eight leaves are needed: with fewer, the 5 loose ones cover everything and the node has no subject');
+    const leaves = stateOf(sandbox).spans;
+    assert.equal(leaves.length, 8, 'eight leaves are needed: with fewer, the 5 loose ones cover everything and the node has no subject');
 
     // Micros on the two OLDEST and not on the third: so the node has 2 leaves and the
     // third is the one that "waits for a micro".
     for (const [i, t] of [[0, 'MICRO-1: the first story'], [1, 'MICRO-2: the second story']]) {
-      const r = await tools.get('cwl_micro').execute('t', { id: foglie[i].id, text: t }, undefined, undefined, ctx);
+      const r = await tools.get('cwl_micro').execute('t', { id: leaves[i].id, text: t }, undefined, undefined, ctx);
       assert.equal(r.details.ok, true, `micro on leaf ${i + 1} failed: ${JSON.stringify(r.details)}`);
     }
 
     // Two turns: the second is the one that unmasks an idempotency defect.
-    await hook(hooks, ctx, conversazione(1, 12));
-    const prima = logDi(sandbox).length;
-    await hook(hooks, ctx, conversazione(1, 12));
-    const log = logDi(sandbox).slice(prima);
+    await hook(hooks, ctx, conversation(1, 12));
+    const before = logOf(sandbox).length;
+    await hook(hooks, ctx, conversation(1, 12));
+    const log = logOf(sandbox).slice(before);
 
     // The node is NOT read from the file: it is DERIVED (refreshNodes rebuilds it from
     // leaves and micros at every turn), so the only honest way to observe it is
     // what the extension SAYS — the log — and what the tool DELIVERS.
-    const rigaNodi = /NODES: (\d+) node\(s\) \[([^\]]*)\]/.exec(log);
+    const nodesRow = /NODES: (\d+) node\(s\) \[([^\]]*)\]/.exec(log);
     assert.ok(
-      rigaNodi,
+      nodesRow,
       `the turn does not declare the state of the nodes: without that line one does not know which leaves were grouped. Log of the turn: ${log.trim().split('\n').slice(-3).join(' | ')}`,
     );
-    assert.equal(Number(rigaNodi[1]), 1, `expected ONE node, declared ${rigaNodi[1]}: ${rigaNodi[2]}`);
+    assert.equal(Number(nodesRow[1]), 1, `expected ONE node, declared ${nodesRow[1]}: ${nodesRow[2]}`);
 
-    const ndId = /^(nd-[0-9a-f]{8}):(\d+)$/.exec(rigaNodi[2].trim());
-    assert.ok(ndId, `the nodes line does not name the node and its size: "${rigaNodi[2]}"`);
+    const ndId = /^(nd-[0-9a-f]{8}):(\d+)$/.exec(nodesRow[2].trim());
+    assert.ok(ndId, `the nodes line does not name the node and its size: "${nodesRow[2]}"`);
     assert.equal(
       Number(ndId[2]),
       2,
@@ -127,22 +127,22 @@ test('the oldest leaves enter ONE node, only once and in order', async () => {
     );
 
     // The page of the node: the micros of its leaves, with the ids that open them.
-    const aperto = await tools.get('cwl_open').execute('t', { id: ndId[1] }, undefined, undefined, ctx);
-    assert.equal(aperto.details.ok, true, `the node does not open: ${JSON.stringify(aperto.details)}`);
-    assert.equal(aperto.details.leaves, 2, `the page of the node declares ${aperto.details.leaves} leaves instead of 2`);
+    const opened = await tools.get('cwl_open').execute('t', { id: ndId[1] }, undefined, undefined, ctx);
+    assert.equal(opened.details.ok, true, `the node does not open: ${JSON.stringify(opened.details)}`);
+    assert.equal(opened.details.leaves, 2, `the page of the node declares ${opened.details.leaves} leaves instead of 2`);
 
     // 1. The two leaves of the node are EXACTLY the two oldest, in
     //    chronological order, and none appears twice: if a leaf were in two
     //    places the content would be counted twice.
-    const idsPagina = [...testo(aperto).matchAll(/(sp-[0-9a-f]{8})/g)].map((m) => m[1]);
+    const pageIds = [...text(opened).matchAll(/(sp-[0-9a-f]{8})/g)].map((m) => m[1]);
     assert.deepEqual(
-      idsPagina,
-      [foglie[0].id, foglie[1].id],
-      `the page of the node must name the two oldest leaves in order: ${JSON.stringify(idsPagina)}`,
+      pageIds,
+      [leaves[0].id, leaves[1].id],
+      `the page of the node must name the two oldest leaves in order: ${JSON.stringify(pageIds)}`,
     );
     assert.ok(
-      testo(aperto).includes('MICRO-1') && testo(aperto).includes('MICRO-2'),
-      `the micros are not on the page: ${testo(aperto).slice(0, 160)}`,
+      text(opened).includes('MICRO-1') && text(opened).includes('MICRO-2'),
+      `the micros are not on the page: ${text(opened).slice(0, 160)}`,
     );
 
     // 4. The old leaf without a micro is DECLARED, not hidden.
@@ -153,20 +153,20 @@ test('the oldest leaves enter ONE node, only once and in order', async () => {
     );
 
     // 5. The way back also passes THROUGH the node: by removing the micro, the leaf leaves.
-    const via = await tools.get('cwl_micro').execute('t', { id: foglie[0].id, text: '' }, undefined, undefined, ctx);
-    assert.equal(via.details.ok, true, `removing the micro failed: ${JSON.stringify(via.details)}`);
-    // The offset is taken HERE, not earlier: from `prima` onward there are TWO turns, and
+    const wayBack = await tools.get('cwl_micro').execute('t', { id: leaves[0].id, text: '' }, undefined, undefined, ctx);
+    assert.equal(wayBack.details.ok, true, `removing the micro failed: ${JSON.stringify(wayBack.details)}`);
+    // The offset is taken HERE, not earlier: from `before` onward there are TWO turns, and
     // `exec` would return the line of the first — which still says :2. It is the third time
     // today that this trap bites: one reads the log stretch of the turn being
     // measured, never "from point X onward".
-    const primaDelRitorno = logDi(sandbox).length;
-    await hook(hooks, ctx, conversazione(1, 12));
-    const dopo = /NODES: (\d+) node\(s\) \[([^\]]*)\]/.exec(logDi(sandbox).slice(primaDelRitorno));
-    assert.ok(dopo, 'after removing the micro the turn no longer declares the state of the nodes');
+    const beforeReturn = logOf(sandbox).length;
+    await hook(hooks, ctx, conversation(1, 12));
+    const after = /NODES: (\d+) node\(s\) \[([^\]]*)\]/.exec(logOf(sandbox).slice(beforeReturn));
+    assert.ok(after, 'after removing the micro the turn no longer declares the state of the nodes');
     assert.equal(
-      dopo[2].trim(),
+      after[2].trim(),
       `${ndId[1]}:1`,
-      `by removing the micro the leaf stayed in the node: ${dopo[2]} — the body went back into the context, so the node would count it twice`,
+      `by removing the micro the leaf stayed in the node: ${after[2]} — the body went back into the context, so the node would count it twice`,
     );
   } finally {
     home.restore();

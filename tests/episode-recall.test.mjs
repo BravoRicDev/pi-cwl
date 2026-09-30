@@ -87,10 +87,10 @@ test('cwl_recall_episode returns the original text of an evicted episode', async
 test('cwl_recall_episode truncates by default and does not bloat the context it just freed', async () => {
   const { sandbox, home, realFile } = setup({ name: 'ep-trunc' });
   try {
-    const lungo = 'X'.repeat(20000);
+    const long = 'X'.repeat(20000);
     fs.writeFileSync(realFile, [
       record('r1', 'toolResult', text('opened'), { toolCallId: 'call-start-1', toolName: 'delimiter' }),
-      record('r2', 'assistant', text(lungo)),
+      record('r2', 'assistant', text(long)),
       record('r4', 'toolResult', text('closed'), { toolCallId: 'call-end-1', toolName: 'delimiter' }),
     ].join('\n') + '\n');
     const ctx = sessionCtx(realFile);

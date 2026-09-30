@@ -187,7 +187,7 @@ export async function bootExtension(sandbox, { name = 'ext' } = {}) {
  * `buildContextEntries` is what Pi builds the context list from, and it is the only way
  * a tool has to review the messages: `cwl_compress` uses it to check that an
  * interval chosen BY HAND does not sit inside an already existing leaf. The test fills it with
- * `ctx.__mostra(lista)`; the list is the one the hook receives, because extension
+ * `ctx.__show(list)`; the list is the one the hook receives, because extension
  * injections are not session entries.
  */
 export const sessionCtx = (sessionFile, cwd = '/tmp/progetto') => {
@@ -201,9 +201,9 @@ export const sessionCtx = (sessionFile, cwd = '/tmp/progetto') => {
       buildContextEntries: () => entries,
     },
   };
-  ctx.__mostra = (messaggi) => {
+  ctx.__show = (messages) => {
     entries.length = 0;
-    for (const m of messaggi) entries.push({ type: 'message', message: m });
+    for (const m of messages) entries.push({ type: 'message', message: m });
   };
   return ctx;
 };

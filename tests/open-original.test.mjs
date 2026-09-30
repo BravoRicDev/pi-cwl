@@ -39,7 +39,7 @@ const config = () => ({
 });
 
 async function boot() {
-  const sandbox = makeSandbox({ name: `originale-${seq++}`, config: config() });
+  const sandbox = makeSandbox({ name: `original-${seq++}`, config: config() });
   const home = withHome(sandbox.dir);
   const { tools, hooks } = await bootExtension(sandbox);
   const ctx = sessionCtx(path.join(sandbox.dir, 'sessione.jsonl'));
@@ -52,17 +52,17 @@ const hook = async (hooks, ctx, messages) => {
   return (res && res.messages) || messages;
 };
 
-const statoDi = (sandbox) => {
+const stateOf = (sandbox) => {
   const dir = path.join(sandbox.dir, '.pi', 'cwl', 'state');
   const file = fs.readdirSync(dir).find((f) => f.endsWith('.json'));
   assert.ok(file, 'the session state was not created');
   return JSON.parse(fs.readFileSync(path.join(dir, file), 'utf8'));
 };
 
-const testo = (res) => res.content.map((c) => c.text).join('\n');
+const text = (res) => res.content.map((c) => c.text).join('\n');
 
 /** Messages with a timestamp: that is what `stableIdOf` uses as identity. */
-const conversazione = () => {
+const conversation = () => {
   const out = [];
   for (let i = 1; i <= 6; i++) {
     out.push({ role: 'user', content: `turn ${i} content ` + 'U'.repeat(200), timestamp: 1000 + i * 2 });
@@ -74,30 +74,30 @@ const conversazione = () => {
 test('a pruned leaf is reopened from the transcript, and it says so', async () => {
   const { sandbox, home, tools, hooks, ctx } = await boot();
   try {
-    const conv = conversazione();
+    const conv = conversation();
     await hook(hooks, ctx, conv);
     const comp = await tools.get('cwl_compress_range').execute('t', { summary: 'SUMMARY-A of the first turns' }, undefined, undefined, ctx);
     assert.equal(comp.details.ok, true, `the leaf was not born: ${JSON.stringify(comp.details)}`);
 
     // One turn to let the span RESOLVE: that is where the stable ids are written.
     await hook(hooks, ctx, conv);
-    const sp = statoDi(sandbox).spans[0];
+    const sp = stateOf(sandbox).spans[0];
     assert.ok(
       sp && sp.startSid && sp.endSid,
       `the leaf has no stable ids: without them, after pruning, the id can no longer find anything. Found: ${JSON.stringify(sp)}`,
     );
 
     // The transcript, as Pi writes it: one record per message, with the timestamp.
-    const righe = conv.map((m) =>
+    const rows = conv.map((m) =>
       JSON.stringify({ message: { role: m.role, timestamp: m.timestamp, content: [{ type: 'text', text: String(m.content) }] } }),
     );
-    fs.writeFileSync(path.join(sandbox.dir, 'sessione.jsonl'), righe.join('\n') + '\n');
+    fs.writeFileSync(path.join(sandbox.dir, 'sessione.jsonl'), rows.join('\n') + '\n');
 
     // A list that NO LONGER contains the anchors: the native compaction has
     // replaced that prefix, so the span is dead and gets pruned.
-    const altrove = [{ role: 'user', content: 'the story moved on, this prefix is no longer here', timestamp: 999999 }];
-    await hook(hooks, ctx, altrove);
-    const st = statoDi(sandbox);
+    const elsewhere = [{ role: 'user', content: 'the story moved on, this prefix is no longer here', timestamp: 999999 }];
+    await hook(hooks, ctx, elsewhere);
+    const st = stateOf(sandbox);
     assert.equal(st.spans.length, 0, `the leaf had to be pruned, ${st.spans.length} are left`);
     assert.ok(
       st.graves && st.graves.length === 1,
@@ -110,11 +110,11 @@ test('a pruned leaf is reopened from the transcript, and it says so', async () =
     assert.equal(res.details.ok, true, `the pruned leaf does not reopen: ${JSON.stringify(res.details)}`);
     assert.equal(res.details.kind, 'original', `the tool does not declare it is delivering the original: ${JSON.stringify(res.details)}`);
     assert.ok(
-      testo(res).includes('turn 1 content'),
-      `the original text did not come back: ${testo(res).slice(0, 200)}`,
+      text(res).includes('turn 1 content'),
+      `the original text did not come back: ${text(res).slice(0, 200)}`,
     );
     assert.ok(
-      !testo(res).includes('SUMMARY-A'),
+      !text(res).includes('SUMMARY-A'),
       'the tool delivered the SUMMARY: but the summary was lost with the state, so either it is inventing it or it did not understand what was asked of it',
     );
   } finally {

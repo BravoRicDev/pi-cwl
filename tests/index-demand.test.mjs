@@ -37,7 +37,7 @@ const config = () => ({
 });
 
 async function boot() {
-  const sandbox = makeSandbox({ name: `grilletto-${seq++}`, config: config() });
+  const sandbox = makeSandbox({ name: `trigger-${seq++}`, config: config() });
   const home = withHome(sandbox.dir);
   const { tools, hooks } = await bootExtension(sandbox);
   const ctx = sessionCtx(path.join(sandbox.dir, 'sessione.jsonl'));
@@ -50,16 +50,16 @@ const hook = async (hooks, ctx, messages) => {
   return (res && res.messages) || messages;
 };
 
-const statoDi = (sandbox) => {
+const stateOf = (sandbox) => {
   const dir = path.join(sandbox.dir, '.pi', 'cwl', 'state');
   const file = fs.readdirSync(dir).find((f) => f.endsWith('.json'));
   assert.ok(file, 'the session state was not created');
   return JSON.parse(fs.readFileSync(path.join(dir, file), 'utf8'));
 };
 
-const conversazione = (da, a) => {
+const conversation = (from, to) => {
   const out = [];
-  for (let i = da; i <= a; i++) {
+  for (let i = from; i <= to; i++) {
     out.push({ role: 'user', content: `turn ${i} content ` + 'U'.repeat(200) });
     out.push({ role: 'assistant', content: `answer ${i} content ` + 'A'.repeat(200) });
   }
@@ -67,53 +67,53 @@ const conversazione = (da, a) => {
 };
 
 /** The request, if any, as the provider would see it. */
-const richiesta = (msgs) =>
+const demandRequest = (msgs) =>
   msgs.filter((m) => m && m.customType === 'cwl-demand').map((m) => String(m.content)).join('\n');
 
 test('the merge request reaches the context, and only when it is due', async () => {
   const { sandbox, home, tools, hooks, ctx } = await boot();
   try {
     // 1. A single leaf: there is no node, so nothing to ask for.
-    await hook(hooks, ctx, conversazione(1, 4));
-    const uno = await tools.get('cwl_compress_range').execute('t', { summary: 'BODY-1' }, undefined, undefined, ctx);
-    assert.equal(uno.details.ok, true, `the first leaf was not born: ${JSON.stringify(uno.details)}`);
-    const conUna = await hook(hooks, ctx, conversazione(1, 6));
+    await hook(hooks, ctx, conversation(1, 4));
+    const first = await tools.get('cwl_compress_range').execute('t', { summary: 'BODY-1' }, undefined, undefined, ctx);
+    assert.equal(first.details.ok, true, `the first leaf was not born: ${JSON.stringify(first.details)}`);
+    const withOne = await hook(hooks, ctx, conversation(1, 6));
     assert.equal(
-      richiesta(conUna).length,
+      demandRequest(withOne).length,
       0,
-      `the request is already there with ONE leaf and no node: a perpetual warning is noise, and noise teaches to ignore warnings. Found: ${richiesta(conUna).slice(0, 160)}`,
+      `the request is already there with ONE leaf and no node: a perpetual warning is noise, and noise teaches to ignore warnings. Found: ${demandRequest(withOne).slice(0, 160)}`,
     );
 
     // 2. Five leaves with a micro: two young nodes form, and the merge becomes due.
     for (let i = 2; i <= 5; i++) {
-      await hook(hooks, ctx, conversazione(1, i + 3));
+      await hook(hooks, ctx, conversation(1, i + 3));
       const res = await tools.get('cwl_compress_range').execute(
         't', { summary: `BODY-${i} ` + 'x'.repeat(300) }, undefined, undefined, ctx,
       );
       assert.equal(res.details.ok, true, `round ${i}: the leaf was not born: ${JSON.stringify(res.details)}`);
     }
-    const foglie = statoDi(sandbox).spans;
-    for (let i = 0; i < foglie.length; i++) {
-      await tools.get('cwl_micro').execute('t', { id: foglie[i].id, text: `MICRO-${i + 1}` }, undefined, undefined, ctx);
+    const leaves = stateOf(sandbox).spans;
+    for (let i = 0; i < leaves.length; i++) {
+      await tools.get('cwl_micro').execute('t', { id: leaves[i].id, text: `MICRO-${i + 1}` }, undefined, undefined, ctx);
     }
 
-    const dovuto = await hook(hooks, ctx, conversazione(1, 12));
-    const testo = richiesta(dovuto);
+    const due = await hook(hooks, ctx, conversation(1, 12));
+    const text = demandRequest(due);
     assert.ok(
-      testo.length > 0,
+      text.length > 0,
       'the merge is due and the request is NOT in the context: the extension knows it, the operator reads it in the log, and the agent — the only one who can write the summary — will never know',
     );
-    assert.match(testo, /cwl_old/, `the request does not say what to do (cwl_old): ${testo.slice(0, 200)}`);
-    assert.match(testo, /2/, `the request does not say HOW MANY nodes must be merged: ${testo.slice(0, 200)}`);
+    assert.match(text, /cwl_old/, `the request does not say what to do (cwl_old): ${text.slice(0, 200)}`);
+    assert.match(text, /2/, `the request does not say HOW MANY nodes must be merged: ${text.slice(0, 200)}`);
 
     // 3. Merged: the merge is no longer due, and the request disappears.
-    const acc = await tools.get('cwl_old').execute('t', { text: 'BIG-SUMMARY-1' }, undefined, undefined, ctx);
-    assert.equal(acc.details.ok, true, `the merge failed: ${JSON.stringify(acc.details)}`);
-    const dopo = await hook(hooks, ctx, conversazione(1, 12));
+    const merged = await tools.get('cwl_old').execute('t', { text: 'BIG-SUMMARY-1' }, undefined, undefined, ctx);
+    assert.equal(merged.details.ok, true, `the merge failed: ${JSON.stringify(merged.details)}`);
+    const after = await hook(hooks, ctx, conversation(1, 12));
     assert.equal(
-      richiesta(dopo).length,
+      demandRequest(after).length,
       0,
-      `the request stayed after the merge: ${richiesta(dopo).slice(0, 200)} — the agent would redo work already done`,
+      `the request stayed after the merge: ${demandRequest(after).slice(0, 200)} — the agent would redo work already done`,
     );
   } finally {
     home.restore();

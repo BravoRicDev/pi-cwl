@@ -59,10 +59,10 @@ const hook = async (hooks, ctx, messages) => {
   return (res && res.messages) || messages;
 };
 
-const logDi = (sandbox) => fs.readFileSync(path.join(sandbox.dir, '.pi', 'cwl', 'cwl.log'), 'utf8');
+const logOf = (sandbox) => fs.readFileSync(path.join(sandbox.dir, '.pi', 'cwl', 'cwl.log'), 'utf8');
 
 /** Sixteen autonomous turns after the operator's last prompt, which is days earlier. */
-const listaAutonoma = () => {
+const autonomousList = () => {
   const out = [
     { role: 'user', content: 'operator, days ago ' + 'U'.repeat(300), timestamp: 1 },
     { role: 'assistant', content: 'the reply from back then ' + 'A'.repeat(300), timestamp: 2 },
@@ -83,22 +83,22 @@ const listaAutonoma = () => {
 test('an autonomous turn (wake-up, card) counts as an operator turn', async () => {
   const { sandbox, home, tools, hooks, ctx } = await boot();
   try {
-    const lista = listaAutonoma();
-    const prima = logDi(sandbox).length;
-    await hook(hooks, ctx, lista);
-    const log = logDi(sandbox).slice(prima);
+    const list = autonomousList();
+    const before = logOf(sandbox).length;
+    await hook(hooks, ctx, list);
+    const log = logOf(sandbox).slice(before);
 
-    const riga = /CONTEXT (\d+)t still above trigger \d+t: (\d+)t in the protected window/.exec(log);
+    const row = /CONTEXT (\d+)t still above trigger \d+t: (\d+)t in the protected window/.exec(log);
     assert.ok(
-      riga,
+      row,
       `the turn does not declare the floor (the two figures are needed to measure): ${log.trim().split('\n').slice(-3).join(' | ')}`,
     );
-    const totale = Number(riga[1]);
-    const protetto = Number(riga[2]);
-    const quota = protetto / totale;
+    const total = Number(row[1]);
+    const protectedTokens = Number(row[2]);
+    const share = protectedTokens / total;
     assert.ok(
-      quota < 0.5,
-      `the protected window covers ${protetto}t of ${totale}t (${Math.round(quota * 100)}%): with the \`user\` messages alone the ` +
+      share < 0.5,
+      `the protected window covers ${protectedTokens}t of ${total}t (${Math.round(share * 100)}%): with the \`user\` messages alone the ` +
         'floor slips onto the operator\'s last prompt — which in an autonomous session is days old — and almost all of the ' +
         'context stays protected. The wake-ups and the card must count as turns.',
     );
@@ -122,12 +122,12 @@ test('an autonomous turn (wake-up, card) counts as an operator turn', async () =
  * card renewal and maybe another extension's notification arrive together. None of
  * them is an extra turn: they are the SAME start.
  */
-const scambiConIniezioniConsecutive = (scambi) => {
+const exchangesWithConsecutiveInjections = (exchanges) => {
   const out = [
     { role: 'user', content: 'operator, days ago ' + 'U'.repeat(300), timestamp: 1 },
     { role: 'assistant', content: 'the reply from back then ' + 'A'.repeat(300), timestamp: 2 },
   ];
-  for (let i = 1; i <= scambi; i++) {
+  for (let i = 1; i <= exchanges; i++) {
     out.push({ role: 'custom', customType: 'background-task-notification', content: `wake-up ${i}`, timestamp: 100 + i * 10 });
     out.push({ role: 'custom', customType: 'anti-amnesia', content: `card ${i}`, timestamp: 101 + i * 10 });
     out.push({ role: 'custom', customType: 'background-task-notification', content: `another wake-up ${i}`, timestamp: 102 + i * 10 });
@@ -140,15 +140,15 @@ const scambiConIniezioniConsecutive = (scambi) => {
 test('three consecutive injections count as ONE single turn', async () => {
   const { sandbox, home, hooks, ctx } = await boot();
   try {
-    const prima = logDi(sandbox).length;
-    await hook(hooks, ctx, scambiConIniezioniConsecutive(10));
-    const log = logDi(sandbox).slice(prima);
-    const riga = /CONTEXT (\d+)t still above trigger \d+t: (\d+)t in the protected window/.exec(log);
-    assert.ok(riga, `the turn does not declare the floor: ${log.trim().split('\n').slice(-3).join(' | ')}`);
-    const quota = Number(riga[2]) / Number(riga[1]);
+    const before = logOf(sandbox).length;
+    await hook(hooks, ctx, exchangesWithConsecutiveInjections(10));
+    const log = logOf(sandbox).slice(before);
+    const row = /CONTEXT (\d+)t still above trigger \d+t: (\d+)t in the protected window/.exec(log);
+    assert.ok(row, `the turn does not declare the floor: ${log.trim().split('\n').slice(-3).join(' | ')}`);
+    const share = Number(row[2]) / Number(row[1]);
     assert.ok(
-      quota > 0.35,
-      `the protected window covers only ${Math.round(quota * 100)}% of the context: the ADJACENT boundaries are counting ` +
+      share > 0.35,
+      `the protected window covers only ${Math.round(share * 100)}% of the context: the ADJACENT boundaries are counting ` +
         'one by one, so the three injections that open the same exchange eat three "turns" and the window slips ' +
         'toward the present. Four turns must stay four exchanges, even when several tools fire in sequence.',
     );
@@ -161,7 +161,7 @@ test('three consecutive injections count as ONE single turn', async () => {
  * A case is needed where the difference is VISIBLE: with few turns, if our injections
  * counted as boundaries the floor would slip by four turns in one go.
  */
-const listaCorta = () => {
+const shortList = () => {
   const out = [
     { role: 'user', content: 'operator, days ago ' + 'U'.repeat(300), timestamp: 1 },
     { role: 'assistant', content: 'the reply from back then ' + 'A'.repeat(300), timestamp: 2 },
@@ -180,15 +180,15 @@ const listaCorta = () => {
 test('OUR injections do not count as turns', async () => {
   const { sandbox, home, hooks, ctx } = await boot();
   try {
-    const prima = logDi(sandbox).length;
-    await hook(hooks, ctx, listaCorta());
-    const log = logDi(sandbox).slice(prima);
-    const riga = /CONTEXT (\d+)t still above trigger \d+t: (\d+)t in the protected window/.exec(log);
-    assert.ok(riga, `the turn does not declare the floor: ${log.trim().split('\n').slice(-3).join(' | ')}`);
-    const quota = Number(riga[2]) / Number(riga[1]);
+    const before = logOf(sandbox).length;
+    await hook(hooks, ctx, shortList());
+    const log = logOf(sandbox).slice(before);
+    const row = /CONTEXT (\d+)t still above trigger \d+t: (\d+)t in the protected window/.exec(log);
+    assert.ok(row, `the turn does not declare the floor: ${log.trim().split('\n').slice(-3).join(' | ')}`);
+    const share = Number(row[2]) / Number(row[1]);
     assert.ok(
-      quota > 0.5,
-      `the protected window covers only ${Math.round(quota * 100)}% of the context: the four OUR injections at the bottom ` +
+      share > 0.5,
+      `the protected window covers only ${Math.round(share * 100)}% of the context: the four OUR injections at the bottom ` +
         'of the list are counting as turns, so the floor slips by four turns and the real autonomous turns stay ' +
         'uncovered. An index request or a summary do not open a turn: they stand where the compression stands, or at the bottom ' +
         'of the list because they are needed now.',

@@ -252,20 +252,20 @@ test('the debug log rotates instead of growing without limit', async () => {
 
     // A log already above the cap, with recognizable content: so one can see
     // whether the old generation is preserved or lost.
-    const vecchio = 'OLD LOG\n'.repeat(300000); // ~2.4 MB
-    fs.writeFileSync(logPath, vecchio);
+    const oldLog = 'OLD LOG\n'.repeat(300000); // ~2.4 MB
+    fs.writeFileSync(logPath, oldLog);
     assert.ok(fs.statSync(logPath).size > 2_000_000, 'the starting log must exceed the cap');
 
     const { hooks } = await bootExtension(sandbox);
     await hooks.get('session_start')({}, session);
 
-    const ruotato = `${logPath}.1`;
-    assert.ok(fs.existsSync(ruotato), 'the log above the cap must be rotated to .1');
-    assert.equal(fs.readFileSync(ruotato, 'utf8'), vecchio,
+    const rotatedLog = `${logPath}.1`;
+    assert.ok(fs.existsSync(rotatedLog), 'the log above the cap must be rotated to .1');
+    assert.equal(fs.readFileSync(rotatedLog, 'utf8'), oldLog,
       'the previous generation must stay intact, not be thrown away');
-    const nuovo = fs.readFileSync(logPath, 'utf8');
-    assert.ok(nuovo.includes('SESSION START'),
-      `the new log must contain the startup line, found: ${nuovo.slice(0, 200)}`);
+    const newLog = fs.readFileSync(logPath, 'utf8');
+    assert.ok(newLog.includes('SESSION START'),
+      `the new log must contain the startup line, found: ${newLog.slice(0, 200)}`);
     assert.ok(fs.statSync(logPath).size < 2_000_000, 'the new log must restart small');
   } finally {
     home.restore();

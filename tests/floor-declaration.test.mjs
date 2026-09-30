@@ -50,14 +50,14 @@ async function boot() {
   return { sandbox, home, tools, hooks, ctx };
 }
 
-const logDi = (sandbox) => fs.readFileSync(path.join(sandbox.dir, '.pi', 'cwl', 'cwl.log'), 'utf8');
+const logOf = (sandbox) => fs.readFileSync(path.join(sandbox.dir, '.pi', 'cwl', 'cwl.log'), 'utf8');
 
 const hook = async (hooks, ctx, messages) => {
   const res = await hooks.get('context')({ messages }, ctx);
   return (res && res.messages) || messages;
 };
 
-const conversazione = () => {
+const conversation = () => {
   const out = [];
   for (let i = 1; i <= 6; i++) {
     out.push({ role: 'user', content: `turn ${i} content ` + 'U'.repeat(200) });
@@ -78,7 +78,7 @@ test('the floor line partitions the context: the four numbers add up to the tota
     // and is skipped by the range computation: the closing falls then on the
     // previous assistant, which is exactly the shape measured in
     // production (`0 of 27 spans located here` with 27 spans applied).
-    const conv = conversazione();
+    const conv = conversation();
     const base = [...conv.slice(0, 10), { role: 'user', content: '' }, ...conv.slice(10)];
     await hook(hooks, ctx, base);
     const comp = await tools.get('cwl_compress_range').execute('t', { summary: 'SINTESI-1 of the first turns' }, undefined, undefined, ctx);
@@ -87,45 +87,45 @@ test('the floor line partitions the context: the four numbers add up to the tota
     // active levels there is nothing else to do, so it goes through `finish` above budget.
     await hook(hooks, ctx, base);
 
-    const log = logDi(sandbox);
+    const log = logOf(sandbox);
     // The LAST line, not the first: the declaration appears once for every
     // turn passed through `finish` above budget, and in the FIRST turn (the one
-    // that creates the address) the spans do not exist yet, so `dentro` would be
+    // that creates the address) the spans do not exist yet, so `inside` would be
     // zero by construction and the test would prove nothing.
-    const righe = [...log.matchAll(/CONTEXT (\d+)t still above trigger \d+t: (\d+)t in the protected window \(last \d+ user turns\), (\d+)t inside the spans \(counted from (\d+) of (\d+) spans\), (\d+)t freely compressible, (\d+)t elsewhere/g)];
-    assert.ok(righe.length > 0, 'the floor line was not written: the context is above the trigger and `finish` did not declare why');
-    const [, totale, protetto, dentro, contati, tenuti, libero, altrove] = righe[righe.length - 1].map(Number);
+    const rows = [...log.matchAll(/CONTEXT (\d+)t still above trigger \d+t: (\d+)t in the protected window \(last \d+ user turns\), (\d+)t inside the spans \(counted from (\d+) of (\d+) spans\), (\d+)t freely compressible, (\d+)t elsewhere/g)];
+    assert.ok(rows.length > 0, 'the floor line was not written: the context is above the trigger and `finish` did not declare why');
+    const [, total, protectedTokens, inside, counted, kept, free, elsewhere] = rows[rows.length - 1].map(Number);
     assert.equal(
-      protetto + dentro + libero + altrove,
-      totale,
-      `the four numbers must partition the context: ${protetto} + ${dentro} + ${libero} + ${altrove} != ${totale}`,
+      protectedTokens + inside + free + elsewhere,
+      total,
+      `the four numbers must partition the context: ${protectedTokens} + ${inside} + ${free} + ${elsewhere} != ${total}`,
     );
     // The line DECLARES how many spans it counted. If the count comes from a
     // RE-RESOLUTION of the compressed list, there it finds nothing anymore
     // (the closing anchor is an `assistant`, and the span removed it) and the number
     // would be 0: this is the defect this test must kill.
-    assert.ok(tenuti > 0, 'the test did not create any span: it proves nothing');
+    assert.ok(kept > 0, 'the test did not create any span: it proves nothing');
     assert.equal(
-      contati,
-      tenuti,
-      `the count must come from ALL ${tenuti} kept spans, not from ${contati}: if it comes from a re-resolution of the compressed list, the closing anchors are gone`,
+      counted,
+      kept,
+      `the count must come from ALL ${kept} kept spans, not from ${counted}: if it comes from a re-resolution of the compressed list, the closing anchors are gone`,
     );
     // NON-VACUITY: with a 1-turn window and one applied span, two of the four
     // terms must be non-zero, otherwise the identity is true by accident.
-    assert.ok(protetto > 0, 'the protected window is empty with protectedTurns=1: the test proves nothing');
-    assert.ok(dentro > 0, 'the content inside the spans is zero: the test proves nothing');
+    assert.ok(protectedTokens > 0, 'the protected window is empty with protectedTurns=1: the test proves nothing');
+    assert.ok(inside > 0, 'the content inside the spans is zero: the test proves nothing');
     // The breakdown by role. The three parts must add up to the total of the
     // line ABOVE (two lines, one number: you cannot make it up), and in the
     // fixture only the `user` turns and the injected summary survive inside the
     // span: NO system/developer/custom. If the classification is wrong, either
-    // `utente` goes to zero, or `altro` stops being zero.
-    const contenuto = [...log.matchAll(/SPANS content: (\d+)t inside the spans = (\d+)t of summaries \+ (\d+)t of user turns \+ (\d+)t of other roles/g)];
-    assert.ok(contenuto.length > 0, 'the breakdown line was not written with an applied span: you cannot know what the spans hold');
-    const [, dentro2, riassunti, utente, altro] = contenuto[contenuto.length - 1].map(Number);
-    assert.equal(dentro2, dentro, `the breakdown must concern the same total as the CONTEXT line: ${dentro2} != ${dentro}`);
-    assert.equal(riassunti + utente + altro, dentro, `the three parts must add up to the total: ${riassunti} + ${utente} + ${altro} != ${dentro}`);
-    assert.ok(utente > 0, 'the user turns must survive inside the span: if the count does not see them, the classification is broken');
-    assert.ok(riassunti > 0, 'the injected summary is inside the span: if the count does not see it, the classification is broken');
-    assert.equal(altro, 0, `there is no system/developer/custom message inside the span in the fixture, but ${altro}t show up: the classification is counting the wrong thing`);
+    // `userTurns` goes to zero, or `otherRoles` stops being zero.
+    const contentRows = [...log.matchAll(/SPANS content: (\d+)t inside the spans = (\d+)t of summaries \+ (\d+)t of user turns \+ (\d+)t of other roles/g)];
+    assert.ok(contentRows.length > 0, 'the breakdown line was not written with an applied span: you cannot know what the spans hold');
+    const [, inside2, summaries, userTurns, otherRoles] = contentRows[contentRows.length - 1].map(Number);
+    assert.equal(inside2, inside, `the breakdown must concern the same total as the CONTEXT line: ${inside2} != ${inside}`);
+    assert.equal(summaries + userTurns + otherRoles, inside, `the three parts must add up to the total: ${summaries} + ${userTurns} + ${otherRoles} != ${inside}`);
+    assert.ok(userTurns > 0, 'the user turns must survive inside the span: if the count does not see them, the classification is broken');
+    assert.ok(summaries > 0, 'the injected summary is inside the span: if the count does not see it, the classification is broken');
+    assert.equal(otherRoles, 0, `there is no system/developer/custom message inside the span in the fixture, but ${otherRoles}t show up: the classification is counting the wrong thing`);
   } finally { home.restore(); sandbox.cleanup(); }
 });

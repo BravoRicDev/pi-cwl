@@ -59,8 +59,8 @@ test('with an episode present, the reasoning blocks OUTSIDE an episode are remov
       thinking('outer-1'), thinking('outer-2'), thinking('outer-3'),
       { role: 'user', content: 'inquiry' },
     ];
-    const prima = messages.filter(hasThinking).length;
-    assert.equal(prima, 3);
+    const beforeCount = messages.filter(hasThinking).length;
+    assert.equal(beforeCount, 3);
 
     const res = await hooks.get('context')({ messages }, ctx);
     const out = (res && res.messages) || messages;
@@ -82,11 +82,11 @@ test('the safety window: the last N user turns are not touched', async () => {
     const res = await hooks.get('context')({ messages }, ctx);
     const out = (res && res.messages) || messages;
 
-    const sopravvissuti = out.filter(hasThinking).map((m) => m.content[0].thinking.slice(0, m.content[0].thinking.indexOf(':')));
+    const survivors = out.filter(hasThinking).map((m) => m.content[0].thinking.slice(0, m.content[0].thinking.indexOf(':')));
     // The first turns (outside the window) get cleaned up; the last N do not.
-    assert.ok(!sopravvissuti.includes('t1'), 'the oldest turn had to be cleaned up');
+    assert.ok(!survivors.includes('t1'), 'the oldest turn had to be cleaned up');
     for (let i = 12 - N + 1; i <= 12; i++) {
-      assert.ok(sopravvissuti.includes(`t${i}`), `turn ${i} is inside the safety window and had not to be touched`);
+      assert.ok(survivors.includes(`t${i}`), `turn ${i} is inside the safety window and had not to be touched`);
     }
     assert.equal(out.filter((m) => m.role === 'user').length, 12, 'a user turn was removed');
   } finally { home.restore(); sandbox.cleanup(); }
@@ -125,9 +125,9 @@ test('a conversation shorter than the window releases ONLY the oldest part', asy
     ];
     const res = await hooks.get('context')({ messages }, ctx);
     const out = (res && res.messages) || messages;
-    const rimasti = out.filter(hasThinking).length;
-    assert.ok(rimasti < 3, 'the oldest part had to be released: without this the context never closes');
-    assert.ok(rimasti >= 1, 'the most recent turn must not be touched');
+    const left = out.filter(hasThinking).length;
+    assert.ok(left < 3, 'the oldest part had to be released: without this the context never closes');
+    assert.ok(left >= 1, 'the most recent turn must not be touched');
     assert.equal(out.filter((m) => m.role === 'user').length, 3, 'the user turns are inviolable');
   } finally { home.restore(); sandbox.cleanup(); }
 });

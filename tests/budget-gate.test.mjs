@@ -97,19 +97,19 @@ test('the gate closes by EFFECT: context under budget = no request', async () =>
   try {
     const messages = heavy();
     for (let i = 0; i < 3; i++) await round(hooks, ctx, messages);
-    const attivo = await round(hooks, ctx, messages);
-    assert.equal(gateOf(attivo).length, 1, 'the gate should have been active');
+    const active = await round(hooks, ctx, messages);
+    assert.equal(gateOf(active).length, 1, 'the gate should have been active');
 
     // The context drops below the threshold (trigger = 100 * 0.5 = 50 tokens).
-    const leggero = [{ role: 'user', content: 'short' }];
-    const sotto = await hooks.get('context')({ messages: leggero }, ctx);
-    assert.equal(gateOf(sotto).length, 0, 'under budget the request must not appear');
+    const light = [{ role: 'user', content: 'short' }];
+    const under = await hooks.get('context')({ messages: light }, ctx);
+    assert.equal(gateOf(under).length, 0, 'under budget the request must not appear');
 
     // And the gate is DISARMED: the next hook, again above budget, must not ask
     // for anything. Without the disarm it would stay armed and ask again
     // immediately, which is exactly what this test must catch.
-    const dopo = await hooks.get('context')({ messages: messages }, ctx);
-    assert.equal(gateOf(dopo).length, 0,
+    const after = await hooks.get('context')({ messages: messages }, ctx);
+    assert.equal(gateOf(after).length, 0,
       'the gate stayed armed after being satisfied');
   } finally { home.restore(); sandbox.cleanup(); }
 });

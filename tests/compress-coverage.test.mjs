@@ -58,18 +58,18 @@ const hook = async (hooks, ctx, messages) => {
   return (res && res.messages) || messages;
 };
 
-const logDi = (sandbox) => fs.readFileSync(path.join(sandbox.dir, '.pi', 'cwl', 'cwl.log'), 'utf8');
+const logOf = (sandbox) => fs.readFileSync(path.join(sandbox.dir, '.pi', 'cwl', 'cwl.log'), 'utf8');
 
-const statoDi = (sandbox) => {
+const stateOf = (sandbox) => {
   const dir = path.join(sandbox.dir, '.pi', 'cwl', 'state');
   const file = fs.readdirSync(dir).find((f) => f.endsWith('.json'));
   assert.ok(file, 'the session state was not created');
   return JSON.parse(fs.readFileSync(path.join(dir, file), 'utf8'));
 };
 
-const conversazione = (da, a) => {
+const conversation = (from, to) => {
   const out = [];
-  for (let i = da; i <= a; i++) {
+  for (let i = from; i <= to; i++) {
     out.push({ role: 'user', content: `prompt ${i} content. ` + 'U'.repeat(200), timestamp: 1000 + i * 2 });
     out.push({ role: 'assistant', content: `answers ${i} content is ` + 'A'.repeat(200), timestamp: 1001 + i * 2 });
   }
@@ -79,59 +79,59 @@ const conversazione = (da, a) => {
 test('an interval inside a leaf is refused, and the same thing without coverage goes through', async () => {
   const { sandbox, home, tools, hooks, ctx } = await boot();
   try {
-    const base = conversazione(1, 7);
+    const base = conversation(1, 7);
     await hook(hooks, ctx, base); // the hook computes the offered address
-    ctx.__mostra(base); // this is the "session" the tools will see
+    ctx.__show(base); // this is the "session" the tools will see
 
-    const primo = await tools
+    const first = await tools
       .get('cwl_compress_range')
       .execute('t', { summary: 'BLOCK-1 ' + 'x'.repeat(300) }, undefined, undefined, ctx);
-    assert.equal(primo.details.ok, true, `the leaf was not born: ${JSON.stringify(primo.details)}`);
+    assert.equal(first.details.ok, true, `the leaf was not born: ${JSON.stringify(first.details)}`);
 
-    const foglia = statoDi(sandbox).spans[0];
-    assert.ok(foglia && foglia.startHash, 'no leaf with an address in the state: the test proves nothing');
+    const leaf = stateOf(sandbox).spans[0];
+    assert.ok(leaf && leaf.startHash, 'no leaf with an address in the state: the test proves nothing');
     // `cwl_compress` validates the two hashes against `knownHashes`, which holds the hash of the TEXT of
-    // every message (not the `id|testo` address the leaves carry: they are two different
+    // every message (not the `id|text` address the leaves carry: they are two different
     // namespaces, and `locateSpans` resolves both through `addressMaps`). The test therefore takes a
     // hash from the set the tool accepts — the oldest one — and uses it as an endpoint.
-    const stato = statoDi(sandbox);
-    const h = stato.knownHashes[0];
+    const state = stateOf(sandbox);
+    const h = state.knownHashes[0];
     assert.ok(typeof h === 'string' && h.length > 0, 'no persisted hash: the tool would refuse with unknown-hash');
 
     // (1) An interval that falls INSIDE the leaf: refused, with the reason in the log.
-    const primaDentro = logDi(sandbox).length;
-    const dentro = await tools
+    const beforeInside = logOf(sandbox).length;
+    const inside = await tools
       .get('cwl_compress')
       .execute('t', { startHash: h, endHash: h, summary: 'BLOCK-2' }, undefined, undefined, ctx);
     assert.equal(
-      dentro.details.error,
+      inside.details.error,
       'covered-range',
-      `expected the coverage refusal, got ${JSON.stringify(dentro.details)}`,
+      `expected the coverage refusal, got ${JSON.stringify(inside.details)}`,
     );
     assert.match(
-      logDi(sandbox).slice(primaDentro),
+      logOf(sandbox).slice(beforeInside),
       /COMPRESS refused [0-9a-f]+\.\.[0-9a-f]+: inside a live leaf \(\d+ span\(s\) resolved, \d+ message\(s\) read\)/,
       'the refusal does not say why, and does not declare on how many messages it looked',
     );
-    assert.equal(statoDi(sandbox).spans.length, 1, 'the refused leaf ended up in the state anyway');
+    assert.equal(stateOf(sandbox).spans.length, 1, 'the refused leaf ended up in the state anyway');
 
     // (2) NON-VACUITY: the same call with endpoints NOT placeable on the list read
     //     goes through, and the log must DECLARE that it did not check (never accept in silence).
     //     The fake session shows only the LAST message: the oldest hash of the set is no
     //     longer placeable on that list.
-    ctx.__mostra(base.slice(-1));
-    const primaFuori = logDi(sandbox).length;
-    const fuori = await tools
+    ctx.__show(base.slice(-1));
+    const beforeOutside = logOf(sandbox).length;
+    const outside = await tools
       .get('cwl_compress')
       .execute('t', { startHash: h, endHash: h, summary: 'BLOCK-3' }, undefined, undefined, ctx);
     assert.equal(
-      fuori.details.ok,
+      outside.details.ok,
       true,
-      `expected the declared pass-through, got ${JSON.stringify(fuori.details)}: a check that cannot place ` +
+      `expected the declared pass-through, got ${JSON.stringify(outside.details)}: a check that cannot place ` +
         'the endpoints must not reject a legitimate request',
     );
     assert.match(
-      logDi(sandbox).slice(primaFuori),
+      logOf(sandbox).slice(beforeOutside),
       /COMPRESS coverage: endpoints of .* are not placeable on the \d+ message\(s\) read — let through, NOT checked/,
       'the pass-through was not declared in the log: a check that does not run silently is the same thing as a missing check',
     );

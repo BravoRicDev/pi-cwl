@@ -56,14 +56,14 @@ const hook = async (hooks, ctx, messages) => {
   return (res && res.messages) || messages;
 };
 
-const statoDi = (sandbox) => {
+const stateOf = (sandbox) => {
   const dir = path.join(sandbox.dir, '.pi', 'cwl', 'state');
   const file = fs.readdirSync(dir).find((f) => f.endsWith('.json'));
   assert.ok(file, 'the session state was not created');
   return JSON.parse(fs.readFileSync(path.join(dir, file), 'utf8'));
 };
 
-const conversazione = () => {
+const conversation = () => {
   const out = [];
   for (let i = 1; i <= 6; i++) {
     out.push({ role: 'user', content: `prompt ${i} content. ` + 'U'.repeat(200) });
@@ -73,69 +73,69 @@ const conversazione = () => {
 };
 
 /** What the provider would receive: the blocks injected in place of the compressed ones. */
-const inContesto = (msgs) =>
+const inContext = (msgs) =>
   msgs.filter((m) => m && m.customType === 'cwl-compressed').map((m) => String(m.content)).join('\n');
 
-const testo = (res) => res.content.map((c) => c.text).join('\n');
+const text = (res) => res.content.map((c) => c.text).join('\n');
 
 test('the micro replaces the body in the context without destroying it', async () => {
   const { sandbox, home, tools, hooks, ctx } = await boot();
   try {
-    await hook(hooks, ctx, conversazione());
+    await hook(hooks, ctx, conversation());
 
-    const corpo = 'COMPLETED-SUMMARIES ' + 'x'.repeat(8000) + ' BODY-ENDS-HERE';
+    const body = 'COMPLETED-SUMMARIES ' + 'x'.repeat(8000) + ' BODY-ENDS-HERE';
     const micro = 'MICRO-SHORT: the points that matter most.';
-    const comp = await tools.get('cwl_compress_range').execute('t', { summary: corpo }, undefined, undefined, ctx);
+    const comp = await tools.get('cwl_compress_range').execute('t', { summary: body }, undefined, undefined, ctx);
     assert.equal(comp.details.ok, true, `the span was not created: ${JSON.stringify(comp.details)}`);
-    const sp = statoDi(sandbox).spans[0];
+    const sp = stateOf(sandbox).spans[0];
     assert.ok(sp && sp.id, `the span has no id: ${JSON.stringify(sp)}`);
 
     // Before the absorption the body is in the context, in full.
-    const prima = await hook(hooks, ctx, conversazione());
+    const before = await hook(hooks, ctx, conversation());
     assert.ok(
-      inContesto(prima).includes('BODY-ENDS-HERE'),
+      inContext(before).includes('BODY-ENDS-HERE'),
       'the premise of the test does not hold: the body was not in the context even before the absorption',
     );
 
     const ass = await tools.get('cwl_micro').execute('t', { id: sp.id, text: micro }, undefined, undefined, ctx);
     assert.equal(ass.details.ok, true, `the absorption failed: ${JSON.stringify(ass.details)}`);
 
-    const dopo = await hook(hooks, ctx, conversazione());
-    const contesto = inContesto(dopo);
+    const after = await hook(hooks, ctx, conversation());
+    const context = inContext(after);
 
     // 1. The body has GONE out of the context and the micro has entered: that is the whole point.
-    assert.ok(contesto.includes(micro), `the micro is not in the context: ${contesto.slice(0, 160)}`);
+    assert.ok(context.includes(micro), `the micro is not in the context: ${context.slice(0, 160)}`);
     assert.ok(
-      !contesto.includes('BODY-ENDS-HERE'),
+      !context.includes('BODY-ENDS-HERE'),
       'the body is still in the context: the absorption freed nothing, ' +
         'so the extension keeps paying for the same story',
     );
 
     // 2. The body was NOT destroyed: `cwl_open` gives it back whole.
-    const riaperto = await tools.get('cwl_open').execute('t', { id: sp.id }, undefined, undefined, ctx);
-    assert.equal(riaperto.details.ok, true, `the leaf no longer reopens: ${JSON.stringify(riaperto.details)}`);
+    const reopened = await tools.get('cwl_open').execute('t', { id: sp.id }, undefined, undefined, ctx);
+    assert.equal(reopened.details.ok, true, `the leaf no longer reopens: ${JSON.stringify(reopened.details)}`);
     assert.ok(
-      testo(riaperto).includes(corpo),
-      `the micro ate the body: cwl_open answers with ${testo(riaperto).length} characters, the body has ${corpo.length}. ` +
+      text(reopened).includes(body),
+      `the micro ate the body: cwl_open answers with ${text(reopened).length} characters, the body has ${body.length}. ` +
         'The promise "nothing is lost" would be false, and from the context one would not see it.',
     );
 
     // 3. A micro LONGER than the body is declared for what it is.
-    const lungo = await tools.get('cwl_micro').execute(
-      't', { id: sp.id, text: 'y'.repeat(corpo.length + 100) }, undefined, undefined, ctx,
+    const longer = await tools.get('cwl_micro').execute(
+      't', { id: sp.id, text: 'y'.repeat(body.length + 100) }, undefined, undefined, ctx,
     );
     assert.equal(
-      lungo.details.shorter,
+      longer.details.shorter,
       false,
       'a micro longer than the body it replaces was accepted as a saving: the context does not shrink, and the agent would not know',
     );
 
     // 4. The way back: an empty text puts the whole body back in the context.
-    const via = await tools.get('cwl_micro').execute('t', { id: sp.id, text: '' }, undefined, undefined, ctx);
-    assert.equal(via.details.ok, true, `removing the micro failed: ${JSON.stringify(via.details)}`);
-    const ritorno = inContesto(await hook(hooks, ctx, conversazione()));
+    const wayBack = await tools.get('cwl_micro').execute('t', { id: sp.id, text: '' }, undefined, undefined, ctx);
+    assert.equal(wayBack.details.ok, true, `removing the micro failed: ${JSON.stringify(wayBack.details)}`);
+    const returned = inContext(await hook(hooks, ctx, conversation()));
     assert.ok(
-      ritorno.includes('BODY-ENDS-HERE'),
+      returned.includes('BODY-ENDS-HERE'),
       'removing the micro did not put the body back in the context: the absorption was a one-way door',
     );
   } finally {

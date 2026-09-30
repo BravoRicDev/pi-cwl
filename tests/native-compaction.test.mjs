@@ -44,7 +44,7 @@ let seq = 0;
  * strip levels off, the escalation of the plan has no other choice than
  * reaching `removed`, which is the level where the range really matters.
  */
-const soloRimozione = (extra = {}) => ({
+const onlyRemoval = (extra = {}) => ({
   tokenBudget: 1000,
   thresholdRatio: 0.5,
   protectedTurns: 0,
@@ -63,7 +63,7 @@ async function boot(config) {
   return { sandbox, home, tools, hooks, ctx };
 }
 
-const logDi = (sandbox) => {
+const logOf = (sandbox) => {
   const p = path.join(sandbox.dir, '.pi', 'cwl', 'cwl.log');
   return fs.existsSync(p) ? fs.readFileSync(p, 'utf8') : '';
 };
@@ -73,34 +73,34 @@ const hook = async (hooks, ctx, messages) => {
   return (res && res.messages) || messages;
 };
 
-const testo = (m) => JSON.stringify(m ?? {});
-const contiene = (out, marker) => out.some((m) => testo(m).includes(marker));
+const text = (m) => JSON.stringify(m ?? {});
+const contains = (out, marker) => out.some((m) => text(m).includes(marker));
 /** Filler big enough to make the `removed` level necessary. */
 const assistant = (marker) => ({
   role: 'assistant',
   content: [{ type: 'text', text: `${marker} ` + 'X'.repeat(3000) }],
 });
 
-const RIEPILOGO = 'SUMMARY BORN FROM THE CUT ' + 'S'.repeat(4000);
-const riepilogo = () => ({
+const SUMMARY = 'SUMMARY BORN FROM THE CUT ' + 'S'.repeat(4000);
+const summaryMessage = () => ({
   role: 'compactionSummary',
-  summary: RIEPILOGO,
+  summary: SUMMARY,
   tokensBefore: 90000,
   timestamp: 1,
 });
 
 /** Episode born BEFORE the cut: its opening is no longer in the list. */
-async function apriEChiudi(tools, ctx, nome, tipo = 'expl') {
-  await tools.get('delimiter').execute('call-s', { action: 'start', name: nome, type: tipo }, undefined, undefined, ctx);
-  await tools.get('delimiter').execute('call-e', { action: 'end', name: nome, description: 'learned' }, undefined, undefined, ctx);
+async function openAndClose(tools, ctx, name, type = 'expl') {
+  await tools.get('delimiter').execute('call-s', { action: 'start', name, type }, undefined, undefined, ctx);
+  await tools.get('delimiter').execute('call-e', { action: 'end', name, description: 'learned' }, undefined, undefined, ctx);
 }
 
 test('an episode that lost its opening is located by deduction and evacuated', async () => {
-  const { sandbox, home, tools, hooks, ctx } = await boot(soloRimozione());
+  const { sandbox, home, tools, hooks, ctx } = await boot(onlyRemoval());
   try {
-    await apriEChiudi(tools, ctx, 'crosses');
+    await openAndClose(tools, ctx, 'crosses');
     const messages = [
-      riepilogo(),
+      summaryMessage(),
       assistant('INSIDE-1'),
       assistant('INSIDE-2'),
       // The closing anchor, alive: it is the only endpoint left. It lives at index 3,
@@ -109,20 +109,20 @@ test('an episode that lost its opening is located by deduction and evacuated', a
       { role: 'user', content: 'recent question' },
     ];
     const out = await hook(hooks, ctx, messages);
-    assert.ok(!contiene(out, 'INSIDE-1') && !contiene(out, 'INSIDE-2'),
+    assert.ok(!contains(out, 'INSIDE-1') && !contains(out, 'INSIDE-2'),
       'the range was not deduced: the episode stayed invisible to the evacuation');
     // The log must say it. A range deduced instead of read is a thing that
     // the operator must be able to see, otherwise the deduction is an assumption.
-    assert.match(logDi(sandbox), /EPISODES deduced: 1/, 'the log did not say that a range was deduced');
+    assert.match(logOf(sandbox), /EPISODES deduced: 1/, 'the log did not say that a range was deduced');
   } finally { home.restore(); sandbox.cleanup(); }
 });
 
 test('the summary of the native compaction survives that range', async () => {
-  const { sandbox, home, tools, hooks, ctx } = await boot(soloRimozione());
+  const { sandbox, home, tools, hooks, ctx } = await boot(onlyRemoval());
   try {
-    await apriEChiudi(tools, ctx, 'crosses');
+    await openAndClose(tools, ctx, 'crosses');
     const messages = [
-      riepilogo(),
+      summaryMessage(),
       assistant('INSIDE-1'),
       assistant('INSIDE-2'),
       { role: 'toolResult', toolCallId: 'call-e', toolName: 'delimiter', content: [{ type: 'text', text: 'closed' }] },
@@ -131,18 +131,18 @@ test('the summary of the native compaction survives that range', async () => {
     const out = await hook(hooks, ctx, messages);
     // The deduced range was applied (otherwise this test would prove
     // nothing about the summary: it would be alive only because nobody touched it).
-    assert.ok(!contiene(out, 'INSIDE-1'), 'the range was not applied: the test proves nothing');
-    assert.ok(contiene(out, RIEPILOGO),
+    assert.ok(!contains(out, 'INSIDE-1'), 'the range was not applied: the test proves nothing');
+    assert.ok(contains(out, SUMMARY),
       'the summary of the native compaction was evacuated: it was the only copy of the replaced history');
     assert.ok(out.some((m) => m.role === 'user'), 'a user turn was touched');
-    assert.match(logDi(sandbox), /SUMMARY GUARD: 1/, 'the guard did not count the summary it saved');
+    assert.match(logOf(sandbox), /SUMMARY GUARD: 1/, 'the guard did not count the summary it saved');
   } finally { home.restore(); sandbox.cleanup(); }
 });
 
 test('the opposite direction is NOT deduced: no range invented for an episode without closing', async () => {
-  const { sandbox, home, tools, hooks, ctx } = await boot(soloRimozione());
+  const { sandbox, home, tools, hooks, ctx } = await boot(onlyRemoval());
   try {
-    await apriEChiudi(tools, ctx, 'without-closing');
+    await openAndClose(tools, ctx, 'without-closing');
     const messages = [
       { role: 'user', content: 'opening' },
       // The opening is there, the closing is not: a prefix cut cannot produce
@@ -153,23 +153,23 @@ test('the opposite direction is NOT deduced: no range invented for an episode wi
       { role: 'user', content: 'recent question' },
     ];
     const out = await hook(hooks, ctx, messages);
-    assert.ok(contiene(out, 'INTACT-1') && contiene(out, 'INTACT-2'),
+    assert.ok(contains(out, 'INTACT-1') && contains(out, 'INTACT-2'),
       'a range [start, len-1] was invented for an episode whose closing is unexplained');
-    assert.ok(!/EPISODES deduced: [1-9]/.test(logDi(sandbox)), 'the log declares a deduction that must not exist');
+    assert.ok(!/EPISODES deduced: [1-9]/.test(logOf(sandbox)), 'the log declares a deduction that must not exist');
   } finally { home.restore(); sandbox.cleanup(); }
 });
 
 test('a located episode wins over the deduction inside its own range', async () => {
-  const { sandbox, home, tools, hooks, ctx } = await boot(soloRimozione());
+  const { sandbox, home, tools, hooks, ctx } = await boot(onlyRemoval());
   try {
     // 'crosses' is born first, before the cut: deduced, [0, 5].
-    await apriEChiudi(tools, ctx, 'crosses');
+    await openAndClose(tools, ctx, 'crosses');
     // 'inside' is born after the cut: both of its anchors are alive.
     await tools.get('delimiter').execute('call-s2', { action: 'start', name: 'inside', type: 'expl' }, undefined, undefined, ctx);
     await tools.get('delimiter').execute('call-e2', { action: 'end', name: 'inside', description: 'inside' }, undefined, undefined, ctx);
 
     const messages = [
-      riepilogo(),
+      summaryMessage(),
       assistant('CROSSES-1'),
       { role: 'toolResult', toolCallId: 'call-s2', toolName: 'delimiter', content: [{ type: 'text', text: 'open' }] },
       assistant('INSIDE-1'),
@@ -178,12 +178,12 @@ test('a located episode wins over the deduction inside its own range', async () 
       { role: 'user', content: 'recent question' },
     ];
     const out = await hook(hooks, ctx, messages);
-    assert.ok(!contiene(out, 'CROSSES-1'), 'the deduced episode was not evacuated');
+    assert.ok(!contains(out, 'CROSSES-1'), 'the deduced episode was not evacuated');
     // This is the contract: the deduced range reaches index 5 and covers
     // indices 2..4 of 'inside', but 'inside' is located and opened AFTER the
     // cut, so it writes last and claims its own. If one day the loop
     // were reordered in a naive way, this line dies.
-    assert.ok(contiene(out, 'INSIDE-1'),
+    assert.ok(contains(out, 'INSIDE-1'),
       'the deduced range ate the content of a located episode');
   } finally { home.restore(); sandbox.cleanup(); }
 });
