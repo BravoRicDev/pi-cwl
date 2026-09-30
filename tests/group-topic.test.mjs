@@ -427,3 +427,48 @@ test('a topic can be born INSIDE the old node: 3 leaves are enough, and the pit 
     home.restore();
   }
 });
+
+test('the pit can be re-catalogued after the fact: a fat node is split into topics, no leaf is left behind', async () => {
+  // `nodeCapacity: 6` so that a pit node is big enough to be split into two topics of three,
+  // and a cheap merge so the pit exists without a huge fixture.
+  const { sandbox, home, tools, hooks, ctx } = await boot({ nodeCapacity: 6, mergeMinRatio: 1, mergeMinChars: 100 });
+  try {
+    const st = await leavesWithMicros(sandbox, hooks, ctx, tools, 18);
+    const merged = await tools.get('cwl_old').execute('t', { text: 'SYNTHESIS-THAT-MUST-NOT-MOVE' }, undefined, undefined, ctx);
+    assert.equal(merged.details.ok, true, `the merge was refused: ${JSON.stringify(merged.details)}`);
+    const pit = merged.details.id;
+
+    const shapeOf = (line) => (line.match(/pit (\d+)n\/(\d+)l/) ?? []).slice(1, 3).join('/');
+    const before = await statusText(tools, ctx);
+    const pageBefore = await openPage(tools, ctx, pit);
+    const nodesBefore = (pageBefore.match(/^- nd-[0-9a-f]+/gm) ?? []).length;
+    assert.ok(nodesBefore >= 1, `the pit page lists no node: ${pageBefore.slice(0, 300)}`);
+
+    // The oldest leaves are the ones the pit absorbed, in the order the nodes were formed.
+    const fat = st.spans.slice(0, 6).map((s) => s.id);
+    const first = await group(tools, ctx, { leaves: fat.slice(0, 3), name: 'first-half', description: DESCRIPTION, pit: true });
+    const second = await group(tools, ctx, { leaves: fat.slice(3, 6), name: 'second-half', description: DESCRIPTION, pit: true });
+    assert.equal(first.details.ok, true, `the first half was not born: ${JSON.stringify(first.details)}`);
+    assert.equal(second.details.ok, true, `the second half was not born: ${JSON.stringify(second.details)}`);
+
+    const after = await statusText(tools, ctx);
+    const pageAfter = await openPage(tools, ctx, pit);
+
+    // THE INVARIANT THE OPERATOR ASKED FOR: every leaf that was in the pit is still in the pit.
+    // Only the number of NODES changes — the fat one is gone, two topics take its place.
+    assert.equal(shapeOf(after).split('/')[1], shapeOf(before).split('/')[1],
+      `the leaves in the pit changed: ${shapeOf(before)} -> ${shapeOf(after)}`);
+    assert.match(pageAfter, /TOPIC "first-half"/, `the pit page lost the first topic: ${pageAfter.slice(0, 400)}`);
+    assert.match(pageAfter, /TOPIC "second-half"/, `the pit page lost the second topic: ${pageAfter.slice(0, 400)}`);
+    assert.ok(pageAfter.includes('SYNTHESIS-THAT-MUST-NOT-MOVE'), `the pit synthesis was rewritten: ${pageAfter.slice(0, 300)}`);
+    assert.match(after, /Topics \(2\): /, `the catalogue does not list the two topics: ${after}`);
+
+    // The page's header counts the nodes the pit CLAIMS to hold; the index line counts the ones
+    // that really exist. An emptied node must leave BOTH, or the page starts lying.
+    const claimed = Number((pageAfter.match(/— (\d+) node\(s\) inside/) ?? [])[1]);
+    assert.equal(claimed, Number(shapeOf(after).split('/')[0]),
+      `the pit page claims ${claimed} node(s) but the index counts ${shapeOf(after).split('/')[0]}`);
+  } finally {
+    home.restore();
+  }
+});

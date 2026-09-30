@@ -384,7 +384,7 @@ const I18N: Record<Lang, CwlMessages> = {
       groupNode: 'Id of an existing TOPIC node to add the leaves to. Omit it to create a new topic, which then requires `name` and `description`.',
       groupName: 'Short name of the new topic, written ONCE: it is part of the index prefix, so it never changes. e.g. "login-otp".',
       groupText: 'Description of the new topic, written ONCE: it must already cover the future use of the topic, because it is what replaces the labels of its leaves in the index and it is never rewritten WHILE THE TOPIC IS OUTSIDE THE OLD NODE. The one exception: a topic that is already inside the old node may have its description rewritten, because there it no longer touches the index. Mandatory when creating.',
-      groupPit: 'Catalogue these leaves INSIDE the old node instead of creating a topic at the frontier: every leaf must already be in the pit (a leaf at the frontier is refused), the minimum is 3 leaves, and there is no size guard, because the pit synthesis is left exactly as it is and nothing in the index moves. A pit topic is a way to NAME material that is already archived, not a way to save tokens.',
+      groupPit: 'Catalogue these leaves INSIDE the old node instead of creating a topic at the frontier: every leaf must already be in the pit (a leaf at the frontier is refused), the minimum is 3 leaves, and there is no size guard, because the pit synthesis is left exactly as it is and nothing in the index moves. A pit topic is a way to NAME material that is already archived, not a way to save tokens. To put order in an archive that ALREADY exists, pass the id of a pit topic as `node` together with `pit: true`: the leaves move into it and its description may be rewritten. A node left empty is dropped, and every leaf has to end up somewhere: the pit synthesis is never touched either way.',
       recallEpisodeFull: 'false (default) returns a truncated preview; true returns the whole episode.',
       compressRangeDesc: 'Compresses the OLDEST usable range of the conversation into your summary. YOU DO NOT pick the range and you do not need any hash: the extension already computed the address and holds it. Call it when an eviction marker or the budget demand tells you to compact, and write a summary good enough to keep working without re-reading the originals. Nothing inside the protected window is touched.',
       compressRangeSummary: 'The summary that REPLACES the compressed range. Write WHOLE PIECES, not a digest: it must be enough to keep working without re-reading them. Include paths, file names, function names, numeric values, and what you decided and why.',
@@ -548,7 +548,7 @@ const I18N: Record<Lang, CwlMessages> = {
       groupNode: 'Id di un nodo TOPIC esistente a cui aggiungere le foglie. Omesso, crea un topic nuovo, che allora richiede `name` e `description`.',
       groupName: 'Nome breve del topic nuovo, scritto UNA VOLTA: fa parte del prefisso dell\'indice, quindi non cambia mai. Es. "login-otp".',
       groupText: 'Descrizione del topic nuovo, scritta UNA VOLTA: deve coprire gia\' l\'uso futuro del topic, perche\' e\' quello che sostituisce le etichette delle sue foglie nell\'indice e non viene mai riscritta FINCHE\' IL TOPIC E\' FUORI DAL NODO VECCHIO. Unica eccezione: un topic gia\' dentro il nodo vecchio puo\' avere la descrizione riscritta, perche\' li\' non tocca piu\' l\'indice. Obbligatoria alla creazione.',
-      groupPit: 'Cataloga queste foglie DENTRO il nodo vecchio invece di creare un topic sulla frontiera: ogni foglia deve essere gia\' nel pozzo (una foglia sulla frontiera viene rifiutata), il minimo sono 3 foglie, e non c\'e\' guard di dimensione, perche\' la sintesi del pozzo resta esattamente com\'e\' e nell\'indice non si muove niente. Un topic nel pozzo serve a DARE UN NOME a materiale gia\' archiviato, non a risparmiare token.',
+      groupPit: 'Cataloga queste foglie DENTRO il nodo vecchio invece di creare un topic sulla frontiera: ogni foglia deve essere gia\' nel pozzo (una foglia sulla frontiera viene rifiutata), il minimo sono 3 foglie, e non c\'e\' guard di dimensione, perche\' la sintesi del pozzo resta esattamente com\'e\' e nell\'indice non si muove niente. Un topic nel pozzo serve a DARE UN NOME a materiale gia\' archiviato, non a risparmiare token. Per mettere ordine in un archivio che esiste GIA\', passa l\'id di un topic del pozzo come `node` insieme a `pit: true`: le foglie si spostano dentro di esso e la sua descrizione si puo\' riscrivere. Un nodo lasciato vuoto viene eliminato, e ogni foglia deve finire da qualche parte: la sintesi del pozzo in nessuno dei due casi viene toccata.',
       recallEpisodeFull: 'false (default) restituisce un estratto troncato; true restituisce l\'episodio intero.',
       compressRangeDesc: "Comprime nel tuo riassunto l'intervallo PIU' VECCHIO utilizzabile della conversazione. NON scegli tu l'intervallo e non ti serve nessun hash: l'estensione ha gia' calcolato e tiene l'indirizzo. Chiamalo quando un marker di eviction o la richiesta di budget ti dicono di compattare, e scrivi un riassunto che basti a lavorare senza rileggere gli originali. Nulla dentro la finestra protetta viene toccato.",
       compressRangeSummary: "Il riassunto che SOSTITUISCE l'intervallo compresso. Scrivi PEZZI INTERI, non un sommario: deve bastare a lavorare senza rileggere. Includi path, nomi di file, nomi di funzione, valori numerici e cosa hai scelto e perche'.",
@@ -2020,6 +2020,13 @@ function refreshNodes(
   // buffer keeps its id, so the head of the index does not move either.
   const buffer = st.nodes[st.nodes.length - 1];
   st.nodes = st.nodes.filter((nd) => nd.leaves.length > 0 || nd === buffer);
+  // The pit's node list is a CLAIM about what the archive holds, and the old-node page prints
+  // its length. A node that died — emptied by a re-cataloguing, or pruned — must leave the list
+  // too, or the page starts counting nodes that do not exist.
+  if (st.oldNode) {
+    const alive = new Set(st.nodes.map((nd) => nd.id));
+    st.oldNode.nodes = st.oldNode.nodes.filter((id) => alive.has(id));
+  }
 
   // The nodes the pit absorbed are SETTLED: they keep their leaves and nothing new
   // enters them. That is exactly what lets their micros leave the context — the
