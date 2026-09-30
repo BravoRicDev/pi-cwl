@@ -6,7 +6,8 @@
   "types": "dist/index.d.ts",
   "scripts": {
     "build": "tsc",
-    "check": "tsc --noEmit"
+    "check": "bash check.sh",
+    "test": "node --test tests/*.test.mjs"
   },
   "devDependencies": {
     "typescript": "^5.4.0"

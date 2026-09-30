@@ -9,11 +9,7 @@
     "resolveJsonModule": true,
     "noEmit": true,
     "lib": ["ES2022", "dom"],
-    "paths": {
-      "@earendil-works/pi-coding-agent": ["/home/riccardo/.hermes/node/lib/node_modules/@earendil-works/pi-coding-agent"],
-      "@earendil-works/pi-agent-core": ["/home/riccardo/.hermes/node/lib/node_modules/@earendil-works/pi-coding-agent/node_modules/@earendil-works/pi-agent-core"],
-      "typebox": ["/home/riccardo/.hermes/node/lib/node_modules/@earendil-works/pi-coding-agent/node_modules/typebox"]
-    }
+    "types": []
   },
   "include": ["index.ts"]
 }
