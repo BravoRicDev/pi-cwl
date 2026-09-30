@@ -397,3 +397,33 @@ test('a topic survives a restart: the file carries the catalogue', async () => {
     home.restore();
   }
 });
+
+test('a topic can be born INSIDE the old node: 3 leaves are enough, and the pit does not move', async () => {
+  // A small capacity and a cheap merge, so that a pit exists without a huge fixture. The
+  // frontier guard is relaxed on purpose: the pit path must not be sneaking through it.
+  const { sandbox, home, tools, hooks, ctx } = await boot({ nodeCapacity: 3, mergeMinRatio: 1, mergeMinChars: 100 });
+  try {
+    const st = await leavesWithMicros(sandbox, hooks, ctx, tools, 12);
+    const merged = await tools.get('cwl_old').execute('t', { text: 'SYNTHESIS-BEFORE-THE-CATALOGUE' }, undefined, undefined, ctx);
+    assert.equal(merged.details.ok, true, `the merge was refused: ${JSON.stringify(merged.details)}`);
+    const pit = merged.details.id;
+    const before = await openPage(tools, ctx, pit);
+    assert.ok(before.includes('SYNTHESIS-BEFORE-THE-CATALOGUE'), `the merge summary is not on the page: ${before.slice(0, 200)}`);
+
+    // The oldest leaves are the ones the pit absorbed: the nodes are formed in time order.
+    const inside = st.spans.slice(0, 3).map((s) => s.id);
+    const thin = await group(tools, ctx, { leaves: inside.slice(0, 2), name: 'too-thin', description: DESCRIPTION, pit: true });
+    assert.equal(thin.details.why, 'pit-too-few', `two leaves were accepted inside the pit: ${JSON.stringify(thin.details)}`);
+
+    const born = await group(tools, ctx, { leaves: inside, name: 'pit-catalogue', description: DESCRIPTION, pit: true });
+    assert.equal(born.details.ok, true, `the pit topic was not born: ${JSON.stringify(born.details)}`);
+    assert.equal(born.details.pit, true, 'the response does not say the topic went into the pit');
+
+    const after = await openPage(tools, ctx, pit);
+    assert.ok(after.includes('SYNTHESIS-BEFORE-THE-CATALOGUE'), `the pit synthesis was rewritten: ${after.slice(0, 300)}`);
+    assert.match(after, /TOPIC "pit-catalogue"/, `the pit page does not name the new topic: ${after.slice(0, 400)}`);
+    assert.match(await statusText(tools, ctx), /Topics \(1\): pit-catalogue/, 'the catalogue does not list it');
+  } finally {
+    home.restore();
+  }
+});

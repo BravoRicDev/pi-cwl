@@ -159,6 +159,8 @@ type CwlMessages = {
   groupRefused: (why: string, detail: string) => string;
   groupTooSmall: (leaves: number, microChars: number, needChars: number) => string;
   groupCreated: (name: string, id: string, leaves: number, microChars: number) => string;
+  /** A topic born INSIDE the old node: catalogued there, and the pit's synthesis is NOT touched. */
+  pitTopicBorn: (name: string, id: string, leaves: number) => string;
   groupAdded: (name: string, id: string, leaves: number) => string;
   /** The header of the ONE block a topic node injects, where its first leaf used to be. */
   topicHead: (name: string, leaves: number, saved: number) => string;
@@ -224,7 +226,7 @@ type CwlMessages = {
     compressRangeDesc: string; compressRangeSummary: string; compressMicro: string;
     compressCovered: (start: string, end: string) => string;
     microOver: (where: string, chars: number, ceiling: number) => string;
-    groupDesc: string; groupLeaves: string; groupNode: string; groupName: string; groupText: string;
+    groupDesc: string; groupLeaves: string; groupNode: string; groupName: string; groupText: string; groupPit: string;
   };
   /** Parameter descriptions: read by the LLM on every invocation. */
   params: {
@@ -290,6 +292,8 @@ const I18N: Record<Lang, CwlMessages> = {
       `\n\nNo topic was born: the ${leaves} leaf/leaves hold ${microChars} characters, and a topic must free at least ${needChars}. A topic is born COLLAPSED — its description replaces the labels of those leaves from this moment on — so it has to be worth more than the description that replaces them (~3,600 characters times the ratio, and never less than the absolute floor). Group more leaves, or leave them in the buffer until the topic is big enough.`,
     groupCreated: (name, id, leaves, microChars) =>
       `Topic "${name}" born as ${id}: ${leaves} leaf/leaves (${microChars} characters of labels) now stand behind your description, and their bodies stay readable with cwl_open. More leaves can be added to it at any time, and it costs nothing: the description does not change.`,
+    pitTopicBorn: (name, id, leaves) =>
+      `Topic "${name}" born INSIDE the old node as ${id}: ${leaves} leaf/leaves catalogued there. The pit's synthesis was NOT touched, and nothing in the index moved, because those labels were already hidden behind it. You can add more leaves to it and rewrite its description: inside the pit that no longer touches the index.`,
     groupAdded: (name, id, leaves) =>
       `Leaf/leaves added to the topic "${name}" (${id}), which now holds ${leaves}.`,
     groupDescriptionUpdated: () =>
@@ -380,6 +384,7 @@ const I18N: Record<Lang, CwlMessages> = {
       groupNode: 'Id of an existing TOPIC node to add the leaves to. Omit it to create a new topic, which then requires `name` and `description`.',
       groupName: 'Short name of the new topic, written ONCE: it is part of the index prefix, so it never changes. e.g. "login-otp".',
       groupText: 'Description of the new topic, written ONCE: it must already cover the future use of the topic, because it is what replaces the labels of its leaves in the index and it is never rewritten WHILE THE TOPIC IS OUTSIDE THE OLD NODE. The one exception: a topic that is already inside the old node may have its description rewritten, because there it no longer touches the index. Mandatory when creating.',
+      groupPit: 'Catalogue these leaves INSIDE the old node instead of creating a topic at the frontier: every leaf must already be in the pit (a leaf at the frontier is refused), the minimum is 3 leaves, and there is no size guard, because the pit synthesis is left exactly as it is and nothing in the index moves. A pit topic is a way to NAME material that is already archived, not a way to save tokens.',
       recallEpisodeFull: 'false (default) returns a truncated preview; true returns the whole episode.',
       compressRangeDesc: 'Compresses the OLDEST usable range of the conversation into your summary. YOU DO NOT pick the range and you do not need any hash: the extension already computed the address and holds it. Call it when an eviction marker or the budget demand tells you to compact, and write a summary good enough to keep working without re-reading the originals. Nothing inside the protected window is touched.',
       compressRangeSummary: 'The summary that REPLACES the compressed range. Write WHOLE PIECES, not a digest: it must be enough to keep working without re-reading them. Include paths, file names, function names, numeric values, and what you decided and why.',
@@ -455,6 +460,8 @@ const I18N: Record<Lang, CwlMessages> = {
       `\n\nNessun topic e' nato: le ${leaves} foglia/e tengono ${microChars} caratteri, e un topic deve liberarne almeno ${needChars}. Un topic nasce GIA' COLLASSATO — la sua descrizione sostituisce le etichette di quelle foglie da questo momento — quindi deve valere piu' della descrizione che le sostituisce (~3.600 caratteri per il rapporto, e mai meno del minimo assoluto). Raggruppa piu' foglie, oppure lasciale nel buffer finche' il topic non e' abbastanza grande.`,
     groupCreated: (name, id, leaves, microChars) =>
       `Topic "${name}" nato come ${id}: ${leaves} foglia/e (${microChars} caratteri di etichette) ora stanno dietro la tua descrizione, e i loro corpi restano leggibili con cwl_open. Si possono aggiungere altre foglie in qualsiasi momento, e non costa niente: la descrizione non cambia.`,
+    pitTopicBorn: (name, id, leaves) =>
+      `Topic "${name}" nato DENTRO il nodo vecchio come ${id}: ${leaves} foglia/e catalogate li'. La sintesi del pozzo NON e' stata toccata, e nell'indice non si e' mosso niente, perche' quelle etichette erano gia' nascoste dietro di essa. Puoi aggiungergli altre foglie e riscriverne la descrizione: dentro il pozzo non tocca piu' l'indice.`,
     groupAdded: (name, id, leaves) =>
       `Foglia/e aggiunte al topic "${name}" (${id}), che ora ne tiene ${leaves}.`,
     groupDescriptionUpdated: () =>
@@ -541,6 +548,7 @@ const I18N: Record<Lang, CwlMessages> = {
       groupNode: 'Id di un nodo TOPIC esistente a cui aggiungere le foglie. Omesso, crea un topic nuovo, che allora richiede `name` e `description`.',
       groupName: 'Nome breve del topic nuovo, scritto UNA VOLTA: fa parte del prefisso dell\'indice, quindi non cambia mai. Es. "login-otp".',
       groupText: 'Descrizione del topic nuovo, scritta UNA VOLTA: deve coprire gia\' l\'uso futuro del topic, perche\' e\' quello che sostituisce le etichette delle sue foglie nell\'indice e non viene mai riscritta FINCHE\' IL TOPIC E\' FUORI DAL NODO VECCHIO. Unica eccezione: un topic gia\' dentro il nodo vecchio puo\' avere la descrizione riscritta, perche\' li\' non tocca piu\' l\'indice. Obbligatoria alla creazione.',
+      groupPit: 'Cataloga queste foglie DENTRO il nodo vecchio invece di creare un topic sulla frontiera: ogni foglia deve essere gia\' nel pozzo (una foglia sulla frontiera viene rifiutata), il minimo sono 3 foglie, e non c\'e\' guard di dimensione, perche\' la sintesi del pozzo resta esattamente com\'e\' e nell\'indice non si muove niente. Un topic nel pozzo serve a DARE UN NOME a materiale gia\' archiviato, non a risparmiare token.',
       recallEpisodeFull: 'false (default) restituisce un estratto troncato; true restituisce l\'episodio intero.',
       compressRangeDesc: "Comprime nel tuo riassunto l'intervallo PIU' VECCHIO utilizzabile della conversazione. NON scegli tu l'intervallo e non ti serve nessun hash: l'estensione ha gia' calcolato e tiene l'indirizzo. Chiamalo quando un marker di eviction o la richiesta di budget ti dicono di compattare, e scrivi un riassunto che basti a lavorare senza rileggere gli originali. Nulla dentro la finestra protetta viene toccato.",
       compressRangeSummary: "Il riassunto che SOSTITUISCE l'intervallo compresso. Scrivi PEZZI INTERI, non un sommario: deve bastare a lavorare senza rileggere. Includi path, nomi di file, nomi di funzione, valori numerici e cosa hai scelto e perche'.",
@@ -1819,6 +1827,10 @@ const NODE_PAGE_MAX = 30;
 // and numerous (no synthesis refacing there), so the page has to stay a page: the name and
 // a taste here, and cwl_open on the topic itself for the rest.
 const PIT_TOPIC_TASTE = 200;
+// A topic born inside the old node needs at least this many leaves. A floor, not a saving rule:
+// there is no size guard there (nothing in the index moves), but one or two leaves are a leaf
+// list, not a catalogue entry.
+const PIT_TOPIC_MIN_LEAVES = 3;
 
 /**
  * The synthesis one merge writes when the pit has none yet: ~900 tokens. MEASURED, not
@@ -3551,6 +3563,7 @@ export default function (pi: ExtensionAPI) {
       node: Type.Optional(Type.String({ description: t('tools').groupNode })),
       name: Type.Optional(Type.String({ description: t('tools').groupName })),
       description: Type.Optional(Type.String({ description: t('tools').groupText })),
+      pit: Type.Optional(Type.Boolean({ description: t('tools').groupPit })),
     }),
     async execute(_toolCallId, params, _signal, _onUpdate, ctx) {
       const key = sessionKey(ctx);
@@ -3568,12 +3581,24 @@ export default function (pi: ExtensionAPI) {
       const inPit = new Set(st.oldNode?.nodes ?? []);
       const buffer = st.nodes[st.nodes.length - 1];
       const ids = (Array.isArray(params.leaves) ? params.leaves : []).filter((s) => typeof s === 'string');
+      // `pit: true` — the topic is born INSIDE the old node, over leaves that are already
+      // archived. Same tool, opposite operation: see the two rules in the loop below.
+      const wantPit = params.pit === true;
 
       for (const id of ids) {
         const leaf = byId.get(id);
         if (!leaf) return refuse('unknown-leaf', id);
         if (!leaf.micro) return refuse('leaf-without-micro', id);
         const owner = nodeOf(id);
+        // TWO OPPOSITE OPERATIONS, one tool. At the frontier a topic collates leaves that are
+        // still open, and the pit is off limits for it. Inside the pit it is the other way
+        // round: the leaves must ALREADY be there — the pit's synthesis stands for them, and
+        // this only gives them a name — and the buffer rule does not apply, because nothing in
+        // the index is moving. A pit topic is a catalogue entry, not a saving.
+        if (wantPit) {
+          if (!owner || !inPit.has(owner.id)) return refuse('leaf-not-in-the-pit', `${id} (${owner ? owner.id : 'loose'})`);
+          continue;
+        }
         if (owner && inPit.has(owner.id)) return refuse('leaf-in-the-pit', `${id} (${owner.id})`);
         if (owner && owner !== buffer) return refuse('leaf-not-in-the-buffer', `${id} (${owner.id})`);
       }
@@ -3618,8 +3643,16 @@ export default function (pi: ExtensionAPI) {
       if (ids.length === 0) return refuse('no-leaves', '');
       if (!buffer) return refuse('no-buffer', '');
       const microChars = ids.reduce((n, id) => n + (byId.get(id)?.micro?.length ?? 0), 0);
+      // A topic INSIDE the old node has no size guard, because nothing in the index changes:
+      // the pit's synthesis already stands for those leaves, and the name only makes them
+      // findable again. The floor is a sanity rule, not a saving one: one or two leaves are a
+      // leaf list, not a catalogue entry.
+      if (wantPit) {
+        if (!st.oldNode) return refuse('no-pit', '');
+        if (ids.length < PIT_TOPIC_MIN_LEAVES) return refuse('pit-too-few', `${ids.length} of ${PIT_TOPIC_MIN_LEAVES}`);
+      }
       const needChars = Math.max(Math.round(cf.mergeMinRatio * MERGE_SYNTHESIS_CHARS), cf.mergeMinChars);
-      if (microChars < needChars) {
+      if (!wantPit && microChars < needChars) {
         debugLog(cf, `GROUP not-born: ${ids.length} leaf/leaves hold ${microChars} chars, need ${needChars}`);
         return {
           content: [{ type: 'text', text: t('groupTooSmall')(ids.length, microChars, needChars) }],
@@ -3632,12 +3665,24 @@ export default function (pi: ExtensionAPI) {
       const moving = new Set(ids);
       for (const nd of st.nodes) nd.leaves = nd.leaves.filter((x) => !moving.has(x));
       const node: SpanNode = { id, leaves: [...ids], name, description, at: Date.now() };
-      st.nodes.splice(Math.max(0, st.nodes.length - 1), 0, node);
+      if (wantPit && st.oldNode) {
+        // Inside the pit the topic joins the ARCHIVE's own node list, right after the last node
+        // already there. The pit's synthesis is left byte for byte as it was: no synthesis is
+        // written, and the prefix of the index — the pit block is the FIRST thing in it — does
+        // not move. That is the whole saving of this operation, and its whole point.
+        st.oldNode.nodes.push(id);
+        const lastPit = st.nodes.reduce((idx, nd, i) => (inPit.has(nd.id) ? i : idx), -1);
+        st.nodes.splice(lastPit + 1, 0, node);
+      } else {
+        st.nodes.splice(Math.max(0, st.nodes.length - 1), 0, node);
+      }
       saveState(key, st);
-      debugLog(cf, `GROUP ${id} "${name}": born with ${ids.length} leaf/leaves, ${microChars} chars of micros, description of ${description.length} chars`);
+      debugLog(cf, `GROUP ${id} "${name}": born ${wantPit ? 'INSIDE the pit' : 'at the frontier'} with ${ids.length} leaf/leaves, ${microChars} chars of micros, description of ${description.length} chars`);
       return {
-        content: [{ type: 'text', text: t('groupCreated')(name, id, ids.length, microChars) }],
-        details: { ok: true, id, name, leaves: ids.length, microChars, descriptionChars: description.length },
+        content: [{ type: 'text', text: wantPit
+          ? t('pitTopicBorn')(name, id, ids.length)
+          : t('groupCreated')(name, id, ids.length, microChars) }],
+        details: { ok: true, id, name, leaves: ids.length, microChars, descriptionChars: description.length, pit: wantPit },
       };
     },
   });
