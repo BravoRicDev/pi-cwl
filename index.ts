@@ -202,7 +202,7 @@ type CwlMessages = {
     microText: string;
     oldDesc: string;
     oldText: string;
-    compressRangeDesc: string; compressRangeSummary: string;
+    compressRangeDesc: string; compressRangeSummary: string; compressMicro: string;
   };
   /** Parameter descriptions: read by the LLM on every invocation. */
   params: {
@@ -298,8 +298,9 @@ const I18N: Record<Lang, CwlMessages> = {
       }
       if (canCompress) {
         opts.push(`  ${opts.length + 1}. compress a range you have already worked through: ` +
-          'cwl_compress_range(summary="<whole pieces, not a digest>") ' +
-          '\u2014 you do NOT need any hash, the extension already picked the range');
+          'cwl_compress_range(summary="<whole pieces, not a digest>", micro="<~200-word label>") ' +
+          '\u2014 you do NOT need any hash, the extension already picked the range; the micro is the label the index ' +
+          'will show for this leaf, so write it now and the leaf is ready for a node');
       }
       return `[CWL \u00b7 CONTEXT OVER BUDGET] The active context is ~${current} tokens against a budget of ${budget}, ` +
         `and the deterministic eviction has nothing left to take. Do ONE of these NOW, in this turn:\n` +
@@ -335,6 +336,7 @@ const I18N: Record<Lang, CwlMessages> = {
       recallEpisodeFull: 'false (default) returns a truncated preview; true returns the whole episode.',
       compressRangeDesc: 'Compresses the OLDEST usable range of the conversation into your summary. YOU DO NOT pick the range and you do not need any hash: the extension already computed the address and holds it. Call it when an eviction marker or the budget demand tells you to compact, and write a summary good enough to keep working without re-reading the originals. Nothing inside the protected window is touched.',
       compressRangeSummary: 'The summary that REPLACES the compressed range. Write WHOLE PIECES, not a digest: it must be enough to keep working without re-reading them. Include paths, file names, function names, numeric values, and what you decided and why.',
+      compressMicro: 'Your ~200-word LABEL for this leaf: what it contains, detailed enough that the index can show it instead of the body. Write it HERE, while you have the messages in front of you — the leaf is then ready for a node and nothing will have to ask you for it later. A compression without a label stays valid: the extension will ask for it when the leaf is due to join a node.',
     },
     params: {
       delimiterDesc: 'Marks the boundaries of a CWL episode. Types: "expl" (exploration: searches, reads, orientation — the content is not needed after the inference) and "act" (action: writes, edits, executions — persistent effects, first candidate for eviction). When you open an "act", declare the explorations it depends on. When you close an "expl", give the description of what you learned: it is the only content that survives eviction.',
@@ -428,8 +430,9 @@ const I18N: Record<Lang, CwlMessages> = {
       }
       if (canCompress) {
         opts.push(`  ${opts.length + 1}. comprimi un intervallo che hai gia' consumato: ` +
-          'cwl_compress_range(summary="<pezzi interi, non un sommario>") ' +
-          '\u2014 non ti serve nessun hash, l\'intervallo l\'ha gia\' scelto l\'estensione');
+          'cwl_compress_range(summary="<pezzi interi, non un sommario>", micro="<etichetta di ~200 parole>") ' +
+          '\u2014 non ti serve nessun hash, l\'intervallo l\'ha gia\' scelto l\'estensione; il micro e\' l\'etichetta che ' +
+          'l\'indice mostrera\' per questa foglia, scrivilo adesso e la foglia e\' pronta per un nodo');
       }
       return `[CWL \u00b7 CONTESTO OLTRE IL BUDGET] Il contesto attivo e' ~${current} token contro un budget di ${budget}, ` +
         `e l'eviction deterministica non ha piu' niente da prendere. Fai UNA di queste cose ORA, in questo turno:\n` +
@@ -465,6 +468,7 @@ const I18N: Record<Lang, CwlMessages> = {
       recallEpisodeFull: 'false (default) restituisce un estratto troncato; true restituisce l\'episodio intero.',
       compressRangeDesc: "Comprime nel tuo riassunto l'intervallo PIU' VECCHIO utilizzabile della conversazione. NON scegli tu l'intervallo e non ti serve nessun hash: l'estensione ha gia' calcolato e tiene l'indirizzo. Chiamalo quando un marker di eviction o la richiesta di budget ti dicono di compattare, e scrivi un riassunto che basti a lavorare senza rileggere gli originali. Nulla dentro la finestra protetta viene toccato.",
       compressRangeSummary: "Il riassunto che SOSTITUISCE l'intervallo compresso. Scrivi PEZZI INTERI, non un sommario: deve bastare a lavorare senza rileggere. Includi path, nomi di file, nomi di funzione, valori numerici e cosa hai scelto e perche'.",
+      compressMicro: "La tua ETICHETTA di ~200 parole per questa foglia: cosa contiene, con dettaglio sufficiente perche' l'indice la possa mostrare al posto del corpo. Scrivila QUI, mentre hai i messaggi davanti — la foglia e' cosi' pronta per un nodo e nessuno dovra' chiedertela dopo. Una compressione senza etichetta resta valida: l'estensione te la chiedera' quando la foglia dovra' entrare in un nodo.",
     },
     params: {
       delimiterDesc: 'Segna i confini di un episodio CWL. Tipi: "expl" (esplorazione: ricerca, letture, orientamento — il contenuto non serve dopo l\'inferenza) e "act" (azione: scritture, edit, esecuzioni — effetti persistenti, primo candidato all\'eviction). Quando apri un "act", dichiara le esplorazioni da cui dipende. Quando chiudi un "expl", fornisci la descrizione di cosa hai imparato: e\' l\'unico contenuto che sopravvive all\'eviction.',
@@ -1743,6 +1747,21 @@ const GRAVE_MAX = 200;
 const MICRO_DEMAND_IDS = 8;
 
 /**
+ * The label a compression may ALREADY carry: trimmed, or absent when empty.
+ *
+ * Whoever writes a compression summary has just read the messages it summarises, so the
+ * ~200-word micro is nearly free at that moment. Asking for it later means a second pass over
+ * a body that by then lives only in the state — and a batch of five leaves to label. Arriving
+ * here, the leaf is ready for a node the moment it is born and `leavesDue` never has to fire
+ * for it. It stays OPTIONAL: a compression without a label is valid, and the demand picks it
+ * up later.
+ */
+const microOrUndefined = (v: unknown): string | undefined => {
+  const s = String(v ?? '').trim();
+  return s.length > 0 ? s : undefined;
+};
+
+/**
  * What is left of a span the state DROPPED: enough to find its original again.
  *
  * A pruned span's summary is gone for good — it lived only in the state — but the
@@ -2656,6 +2675,7 @@ export default function (pi: ExtensionAPI) {
         description:
           t('tools').compressSummary,
       }),
+      micro: Type.Optional(Type.String({ description: t('tools').compressMicro })),
     }),
     async execute(_toolCallId, params, _signal, _onUpdate, ctx) {
       const key = sessionKey(ctx);
@@ -2694,6 +2714,7 @@ export default function (pi: ExtensionAPI) {
         endHash: params.endHash,
         id: spanId(params.startHash, params.endHash),
         summary: params.summary,
+        micro: microOrUndefined(params.micro),
         at: Date.now(),
       });
       // Durable immediately: the agent asked for this compression, so it must
@@ -2715,6 +2736,7 @@ export default function (pi: ExtensionAPI) {
     promptSnippet: t('snippets').compressRange,
     parameters: Type.Object({
       summary: Type.String({ description: t('tools').compressRangeSummary }),
+      micro: Type.Optional(Type.String({ description: t('tools').compressMicro })),
     }),
     async execute(_toolCallId, params, _signal, _onUpdate, ctx) {
       const key = sessionKey(ctx);
@@ -2734,7 +2756,7 @@ export default function (pi: ExtensionAPI) {
       const startHash = st.rangeStartHash;
       const endHash = st.rangeEndHash;
       const tokens = st.rangeTokens;
-      st.spans.push({ startHash, endHash, id: spanId(startHash, endHash), summary: params.summary, at: Date.now() });
+      st.spans.push({ startHash, endHash, id: spanId(startHash, endHash), summary: params.summary, micro: microOrUndefined(params.micro), at: Date.now() });
       // Spend the address: the next hook recomputes it on the smaller list, so a
       // second call cannot compress the same range twice.
       st.rangeStartHash = null;
