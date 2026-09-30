@@ -162,8 +162,12 @@ type CwlMessages = {
   /** A topic born INSIDE the old node: catalogued there, and the pit's synthesis is NOT touched. */
   pitTopicBorn: (name: string, id: string, leaves: number) => string;
   groupAdded: (name: string, id: string, leaves: number) => string;
+  /** Said when a topic absorbs other NODES: what left the head, and what stays readable. */
+  groupAbsorbed: (name: string, id: string, nodes: number, leaves: number, blocks: number) => string;
   /** The header of the ONE block a topic node injects, where its first leaf used to be. */
   topicHead: (name: string, leaves: number, saved: number) => string;
+  /** The shape of what a parent topic holds, MEASURED by the code and never written by the agent. */
+  topicHolds: (nodes: number, leaves: number) => string;
   /** Said after a merge that carried the immutable descriptions of the topics it absorbed. */
   oldTopicsConcatenated: (topics: number, chars: number) => string;
   /** Said when a description is rewritten inside the pit: the context does not move. */
@@ -232,7 +236,7 @@ type CwlMessages = {
     compressRangeDesc: string; compressRangeSummary: string; compressMicro: string;
     compressCovered: (start: string, end: string) => string;
     microOver: (where: string, chars: number, ceiling: number) => string;
-    groupDesc: string; groupLeaves: string; groupNode: string; groupName: string; groupText: string; groupPit: string;
+    groupDesc: string; groupLeaves: string; groupNodes: string; groupNode: string; groupName: string; groupText: string; groupPit: string;
   };
   /** Parameter descriptions: read by the LLM on every invocation. */
   params: {
@@ -302,10 +306,14 @@ const I18N: Record<Lang, CwlMessages> = {
       `Topic "${name}" born INSIDE the old node as ${id}: ${leaves} leaf/leaves catalogued there. The pit's synthesis was NOT touched, and nothing in the index moved, because those labels were already hidden behind it. You can add more leaves to it and rewrite its description: inside the pit that no longer touches the index.`,
     groupAdded: (name, id, leaves) =>
       `Leaf/leaves added to the topic "${name}" (${id}), which now holds ${leaves}.`,
+    groupAbsorbed: (name, id, nodes, leaves, blocks) =>
+      `\n\n"${name}" (${id}) now CONTAINS ${nodes} node(s) and ${leaves} leaf/leaves in all: their ${blocks} block(s) left the head and the parent's description stands for them. Nothing was deleted — cwl_open("<child id>") returns any of them whole.`,
     groupDescriptionUpdated: () =>
       `\n\nThe description was rewritten, and this changes NOTHING in the index: the node is inside the old node, whose synthesis was written before these leaves arrived. The pit's synthesis is a frozen snapshot; what you have just written is the living copy, readable with cwl_open.`,
     topicHead: (name, leaves, saved) =>
       `[CWL \u00b7 TOPIC "${name}" \u2014 ${leaves} leaf/leaves stand behind this description, which never changes (~${saved} tokens saved). Their bodies are whole and readable with cwl_open.\n\n`,
+    topicHolds: (nodes, leaves) =>
+      `(holds ${nodes} node(s), ${leaves} leaf/leaves in all \u2014 open them with cwl_open("<id>"))\n`,
     oldTopicsConcatenated: (topics, chars) =>
       `\n\nThe immutable description(s) of ${topics} topic node(s) were glued to this synthesis, word for word (${chars} characters): they are not rewritten and not to be rewritten.`,
     statusUnlocatable: (n) => `Episodes whose anchors left the context: ${n} (their content is not verifiable)`,
@@ -390,6 +398,7 @@ const I18N: Record<Lang, CwlMessages> = {
       oldText: 'The synthesis (merge summary) that replaces the micros of the merged nodes in the context. Write WHOLE PIECES: it is what the agent will see instead of them. It must cover the ORDINARY nodes you absorb — the description of any TOPIC node you absorb is glued to your text word for word, so do NOT rewrite what a topic already says. If the pit already holds a synthesis, cwl_open shows it: CARRY IT FORWARD, concatenated — a merge REPLACES the pit synthesis, it does not add to it.',
       groupDesc: 'Groups leaves into a TOPIC node, which is born COLLAPSED: the name and the description you write now stand for its leaves in the index from this moment on, so the description must already cover the FUTURE use of the topic. Only the leaves of the buffer (the last node, attached to the leaves still open) can be grouped or moved. When the topic already exists, pass `node` and the description is NOT rewritten — that is what makes adding leaves later free.',
       groupLeaves: 'Ids of the leaves to group or move. Only leaves of the buffer (or loose ones) can be moved, and each must already carry a micro.',
+      groupNodes: 'Ids of NODES to absorb into the topic: a topic can CONTAIN other topics. Containment only goes BACKWARD in time (a node absorbs only nodes that come after it), and the buffer is never absorbed. The absorbed node keeps its leaves and its description and stays readable with cwl_open: what changes is that its block is no longer injected, because the parent description stands for it.',
       groupNode: 'Id of an existing TOPIC node to add the leaves to. Omit it to create a new topic, which then requires `name` and `description`.',
       groupName: 'Short name of the new topic, written ONCE: it is part of the index prefix, so it never changes. e.g. "login-otp".',
       groupText: 'Description of the new topic, written ONCE: it must already cover the future use of the topic, because it is what replaces the labels of its leaves in the index and it is never rewritten WHILE THE TOPIC IS OUTSIDE THE OLD NODE. The one exception: a topic that is already inside the old node may have its description rewritten, because there it no longer touches the index. Mandatory when creating.',
@@ -473,10 +482,14 @@ const I18N: Record<Lang, CwlMessages> = {
       `Topic "${name}" nato DENTRO il nodo vecchio come ${id}: ${leaves} foglia/e catalogate li'. La sintesi del pozzo NON e' stata toccata, e nell'indice non si e' mosso niente, perche' quelle etichette erano gia' nascoste dietro di essa. Puoi aggiungergli altre foglie e riscriverne la descrizione: dentro il pozzo non tocca piu' l'indice.`,
     groupAdded: (name, id, leaves) =>
       `Foglia/e aggiunte al topic "${name}" (${id}), che ora ne tiene ${leaves}.`,
+    groupAbsorbed: (name, id, nodes, leaves, blocks) =>
+      `\n\n"${name}" (${id}) ora CONTIENE ${nodes} nodo/i e ${leaves} foglia/e in tutto: i loro ${blocks} blocco/chi sono usciti dalla testa e la descrizione del genitore sta per loro. Niente e' stato cancellato — cwl_open("<id figlio>") li restituisce interi.`,
     groupDescriptionUpdated: () =>
       `\n\nLa descrizione e' stata riscritta, e questo NON cambia niente nell'indice: il nodo e' dentro il nodo vecchio, la cui sintesi e' stata scritta prima che queste foglie arrivassero. La sintesi del pozzo e' un'istantanea congelata; quella che hai appena scritto e' la copia viva, leggibile con cwl_open.`,
     topicHead: (name, leaves, saved) =>
       `[CWL \u00b7 TOPIC "${name}" \u2014 ${leaves} foglia/e stanno dietro questa descrizione, che non cambia mai (~${saved} token risparmiati). I loro corpi sono interi e leggibili con cwl_open.\n\n`,
+    topicHolds: (nodes, leaves) =>
+      `(contiene ${nodes} nodo/i, ${leaves} foglia/e in tutto \u2014 aprili con cwl_open("<id>"))\n`,
     oldTopicsConcatenated: (topics, chars) =>
       `\n\nLe descrizioni immutabili di ${topics} nodo/i topic sono state incollate a questa sintesi, parola per parola (${chars} caratteri): non vengono riscritte e non vanno riscritte.`,
     statusUnlocatable: (n) => `Episodi le cui ancore sono uscite dal contesto: ${n} (contenuto non verificabile)`,
@@ -557,6 +570,7 @@ const I18N: Record<Lang, CwlMessages> = {
       oldText: 'La sintesi (riassuntone) che sostituisce i micro dei nodi accorpati nel contesto. Scrivi PEZZI INTERI: e\' quello che l\'agente vedra\' al posto loro. Deve coprire i nodi ORDINARI che accorpi — la descrizione dei nodi TOPIC che accorpi viene incollata al tuo testo parola per parola, quindi NON riscrivere cio\' che un topic dice gia\'. Se il pozzo ha gia\' una sintesi, cwl_open la mostra: PORTALA AVANTI, concatenata — un accorpamento la SOSTITUISCE, non ci si aggiunge.',
       groupDesc: 'Raggruppa le foglie in un nodo TOPIC, che nasce GIA\' COLLASSATO: il nome e la descrizione che scrivi adesso stanno per le sue foglie nell\'indice da questo momento, quindi la descrizione deve coprire GIA\' l\'uso futuro del topic. Si possono raggruppare o spostare solo le foglie del buffer (l\'ultimo nodo, attaccato alle foglie ancora aperte). Quando il topic esiste gia\', passa `node` e la descrizione NON viene riscritta: e\' questo che rende gratis l\'aggiunta di foglie.',
       groupLeaves: 'Id delle foglie da raggruppare o spostare. Si spostano solo foglie del buffer (o sciolte), e ognuna deve gia\' avere un micro.',
+      groupNodes: 'Id dei NODI da assorbire nel topic: un topic puo\' CONTENERE altri topic. Il contenimento va SOLO all\'indietro nel tempo (un nodo assorbe solo nodi che stanno dopo di lui) e il buffer non si assorbe mai. Il nodo assorbito tiene le sue foglie e la sua descrizione e resta leggibile con cwl_open: cambia solo che il suo blocco non viene piu\' iniettato, perche\' la descrizione del genitore sta per lui.',
       groupNode: 'Id di un nodo TOPIC esistente a cui aggiungere le foglie. Omesso, crea un topic nuovo, che allora richiede `name` e `description`.',
       groupName: 'Nome breve del topic nuovo, scritto UNA VOLTA: fa parte del prefisso dell\'indice, quindi non cambia mai. Es. "login-otp".',
       groupText: 'Descrizione del topic nuovo, scritta UNA VOLTA: deve coprire gia\' l\'uso futuro del topic, perche\' e\' quello che sostituisce le etichette delle sue foglie nell\'indice e non viene mai riscritta FINCHE\' IL TOPIC E\' FUORI DAL NODO VECCHIO. Unica eccezione: un topic gia\' dentro il nodo vecchio puo\' avere la descrizione riscritta, perche\' li\' non tocca piu\' l\'indice. Obbligatoria alla creazione.',
@@ -1877,7 +1891,7 @@ function indexShape(
   st: CwlState,
   cf: typeof DEFAULT_CONFIG,
 ): [number, number, number, number, number, number, number, string, number, string] {
-  const inPit = new Set(st.oldNode?.nodes ?? []);
+  const inPit = containedNodes(st, st.oldNode?.nodes ?? []);
   const pit = st.nodes.filter((nd) => inPit.has(nd.id));
   const young = st.nodes.filter((nd) => !inPit.has(nd.id));
   // A topic is a node with a description: born collapsed, immutable while it is outside the
@@ -1891,8 +1905,12 @@ function indexShape(
   // body is still in the context but the label is injected all the same). Counting only the
   // micros of the leaves inside a node undercounted the head by every loose leaf.
   const microOf = new Map(st.spans.map((s) => [idOfSpan(s), s.micro?.length ?? 0]));
+  // A node CONTAINED in another injects nothing: its parent's description stands for it, so
+  // charging its micros here would overcount the head by everything inside it.
+  const childIds = new Set(st.nodes.flatMap((nd) => nd.children ?? []));
   let headChars = 0;
   for (const nd of st.nodes) {
+    if (childIds.has(nd.id)) continue;
     if (nd.description) headChars += nd.description.length;
     else for (const id of nd.leaves) headChars += microOf.get(id) ?? 0;
   }
@@ -1954,11 +1972,49 @@ function pitView(st: CwlState): PitView | null {
  * description are in the map: an ordinary node is still injected one label at a time, as it
  * always was, and a state without topics behaves exactly as before.
  */
-function topicView(st: CwlState): Map<string, SpanNode> {
-  const view = new Map<string, SpanNode>();
+/**
+ * What the head needs to know about a topic: the node that injects the ONE block, and the
+ * shape of what that block stands for.
+ */
+interface TopicView {
+  node: SpanNode;
+  /** Nodes it CONTAINS (transitively), and the leaves inside them. Measured here, so the
+   *  shape line in the block can never lie. */
+  heldNodes: number;
+  heldLeaves: number;
+}
+
+function topicView(st: CwlState): Map<string, TopicView> {
+  // A leaf inside a CONTAINED node must map to the ROOT of the containment: the root's block
+  // is injected at the root's FIRST leaf, which comes before the child's leaves (containment
+  // only goes backward in time), so by the time the child's leaves are reached the root is
+  // already done and they inject nothing. That is exactly what makes a nested topic free.
+  const parent = new Map<string, string>();
+  for (const nd of st.nodes) for (const child of nd.children ?? []) parent.set(child, nd.id);
+  const byId = new Map(st.nodes.map((nd) => [nd.id, nd]));
+  const rootOf = (id: string): string => {
+    let cur = id;
+    // The hop bound is a guard, not a rule: a cycle would otherwise loop forever, and a
+    // cycle is impossible by construction (a node absorbs only nodes AFTER it).
+    for (let hop = 0; hop < 64; hop++) {
+      const up = parent.get(cur);
+      if (!up) return cur;
+      cur = up;
+    }
+    return cur;
+  };
+  const view = new Map<string, TopicView>();
   for (const nd of st.nodes) {
     if (!nd.description) continue;
-    for (const id of nd.leaves) view.set(id, nd);
+    const root = byId.get(rootOf(nd.id));
+    if (!root) continue;
+    const subtree = containedNodes(st, root.children ?? []);
+    const entry: TopicView = {
+      node: root,
+      heldNodes: subtree.size,
+      heldLeaves: st.nodes.filter((c) => subtree.has(c.id)).reduce((n, c) => n + c.leaves.length, 0),
+    };
+    for (const id of nd.leaves) view.set(id, entry);
   }
   return view;
 }
@@ -2014,7 +2070,41 @@ interface SpanNode {
    */
   name?: string;
   description?: string;
+  /**
+   * The nodes this one CONTAINS: a topic can hold other topics. Containment only goes
+   * BACKWARD in time — a node absorbs only nodes that come after it in `st.nodes` — so
+   * the position of the parent, and everything before it in the index, never move.
+   *
+   * The head still pays ONE block per node: a parent injects its description (plus a
+   * shape line the code computes) and its children inject NOTHING at all. Depth can be
+   * unlimited exactly because depth is never injected, and the children stay readable:
+   * `cwl_open("<child id>")` is the same page as any other node.
+   */
+  children?: string[];
   at: number;
+}
+
+/**
+ * The nodes a set of roots CONTAINS, transitively: the closure of `children`.
+ *
+ * It is the set of nodes whose leaves are already spoken for by a description higher up
+ * — the pit's synthesis, or a parent topic's — so nothing inside them may be injected or
+ * re-formed leaf by leaf. The transitivity is the whole point: a pit node that contains
+ * other nodes does not list them in `st.oldNode.nodes`, and without the closure its
+ * children would be counted as young, re-formed, and pruned as if the archive did not
+ * hold them.
+ */
+function containedNodes(st: CwlState, roots: Iterable<string>): Set<string> {
+  const byId = new Map(st.nodes.map((nd) => [nd.id, nd]));
+  const seen = new Set<string>();
+  const stack = [...roots];
+  while (stack.length) {
+    const id = stack.pop() as string;
+    if (seen.has(id)) continue;
+    seen.add(id);
+    for (const child of byId.get(id)?.children ?? []) stack.push(child);
+  }
+  return seen;
 }
 
 /**
@@ -2045,7 +2135,10 @@ function refreshNodes(
   // leaves were re-formed as young ones — the archive's contents walking back into the
   // head, which is the opposite of what the pit is for. A leaf that is not in the state
   // at all still leaves the node, pit or not: nothing could read it back.
-  const inPitIds = new Set(st.oldNode?.nodes ?? []);
+  // Transitive: a node the pit holds may itself CONTAIN nodes, and those are spoken for by
+  // the same synthesis. Without the closure a child of a pit node would be treated as young
+  // and its leaves would walk back into the head.
+  const inPitIds = containedNodes(st, st.oldNode?.nodes ?? []);
   for (const nd of st.nodes) {
     nd.leaves = nd.leaves.filter((id) => {
       const leaf = byId.get(id);
@@ -2059,7 +2152,17 @@ function refreshNodes(
   // topic node, which must never hold that position (it cannot act as a buffer). The
   // buffer keeps its id, so the head of the index does not move either.
   const buffer = st.nodes[st.nodes.length - 1];
-  st.nodes = st.nodes.filter((nd) => nd.leaves.length > 0 || nd === buffer);
+  // A node that CONTAINS nodes must not die while its children are alive: its description
+  // still stands for them, and killing it would send its whole subtree back into the head —
+  // the same failure the pit's exception above prevents, one level down. The children's
+  // lists are pruned FIRST, so a parent whose children all died dies in the same pass.
+  const aliveIds = new Set(st.nodes.map((nd) => nd.id));
+  for (const nd of st.nodes) {
+    if (nd.children?.length) nd.children = nd.children.filter((id) => id !== nd.id && aliveIds.has(id));
+  }
+  st.nodes = st.nodes.filter(
+    (nd) => nd.leaves.length > 0 || nd === buffer || (nd.children ?? []).length > 0,
+  );
   // The pit's node list is a CLAIM about what the archive holds, and the old-node page prints
   // its length. A node that died — emptied by a re-cataloguing, or pruned — must leave the list
   // too, or the page starts counting nodes that do not exist.
@@ -2071,7 +2174,7 @@ function refreshNodes(
   // The nodes the pit absorbed are SETTLED: they keep their leaves and nothing new
   // enters them. That is exactly what lets their micros leave the context — the
   // merge summary stands for all of them.
-  const inPit = new Set(st.oldNode?.nodes ?? []);
+  const inPit = inPitIds;
   const young = st.nodes.filter((nd) => !inPit.has(nd.id));
   const settled = new Set(st.nodes.flatMap((nd) => nd.leaves));
   const loose = new Set(leaves.slice(-cf.looseLeaves).map((l) => idOfSpan(l)));
@@ -2571,7 +2674,7 @@ function applySpans(
   messages: AgentMessage[],
   spans: CompressedSpan[],
   pit: PitView | null,
-  topics: Map<string, SpanNode>,
+  topics: Map<string, TopicView>,
   demand: string | null,
 ): {
   kept: AgentMessage[];
@@ -2689,18 +2792,25 @@ function applySpans(
     // nothing at all. Same shape as the pit above, and the same fixed point for the claim.
     const topic = topics.get(idOfSpan(sp));
     if (topic) {
-      if (topicDone.has(topic.id)) {
+      if (topicDone.has(topic.node.id)) {
         saved += removed;
         if (!sp.counted) { sp.counted = true; newSaved += removed; newApplied++; }
         injected.push(null);
         continue;
       }
-      topicDone.add(topic.id);
+      topicDone.add(topic.node.id);
       // The claim is printed INSIDE the message, so the saving is a fixed point: compute the
       // TEXT, not the message (the AgentMessage union does not expose `content`), exactly as
       // the pit block above does.
+      // The SHAPE of what it holds is measured in `topicView`, not written by the agent: a
+      // parent topic's block must say how much is inside it, and a number the code measures is
+      // always true. It costs no cache of its own — absorbing a LATER node already removes
+      // content after this block, so everything from here on is invalidated anyway.
+      const standsFor = topic.node.leaves.length + topic.heldLeaves;
       const topicText = (claim: number): string =>
-        t('topicHead')(topic.name ?? topic.id, topic.leaves.length, claim) + String(topic.description ?? '');
+        t('topicHead')(topic.node.name ?? topic.node.id, standsFor, claim)
+        + (topic.heldNodes ? t('topicHolds')(topic.heldNodes, topic.heldLeaves) : '')
+        + String(topic.node.description ?? '');
       // SAFETY: the same contract as the per-leaf notice and the pit block below — Pi
       // accepts `custom` in the context hook although the AgentMessage union does not
       // declare it, and the extra key `customType` is how the notice is recognised again.
@@ -3373,7 +3483,19 @@ export default function (pi: ExtensionAPI) {
         // only place to read them back — and the only proof that the leaves below are
         // held by a topic rather than by an ordinary node.
         const head = nd.description ? `TOPIC "${nd.name ?? nd.id}": ${nd.description}\n` : '';
-        const lines = head + nd.leaves
+        // A node that CONTAINS nodes prints them the way the pit's page does: id, shape, and
+        // a taste of the description, so the page stays a page. Opening one is the same call.
+        const childLines = (nd.children ?? [])
+          .map((childId) => st.nodes.find((n) => n.id === childId))
+          .filter((child): child is SpanNode => Boolean(child))
+          .map((child) => {
+            const shape = `${child.leaves.length} leaf/leaves (${child.leaves[0] ?? '-'} .. ${child.leaves[child.leaves.length - 1] ?? '-'})`;
+            if (!child.description) return `- ${child.id}: ${shape}`;
+            const taste = child.description.length > PIT_TOPIC_TASTE ? `${child.description.slice(0, PIT_TOPIC_TASTE)}...` : child.description;
+            return t('oldTopicLine')(child.id, child.name ?? '', shape, taste);
+          })
+          .join('\n');
+        const lines = head + (childLines ? `${childLines}\n` : '') + nd.leaves
           .map((leafId) => {
             const leaf = st.spans.find((s) => idOfSpan(s) === leafId);
             return leaf ? `- ${leafId}: ${leaf.micro ?? '(no micro yet)'}` : `- ${leafId}: (leaf gone)`;
@@ -3636,6 +3758,7 @@ export default function (pi: ExtensionAPI) {
     description: t('tools').groupDesc,
     parameters: Type.Object({
       leaves: Type.Optional(Type.Array(Type.String(), { description: t('tools').groupLeaves })),
+      nodes: Type.Optional(Type.Array(Type.String(), { description: t('tools').groupNodes })),
       node: Type.Optional(Type.String({ description: t('tools').groupNode })),
       name: Type.Optional(Type.String({ description: t('tools').groupName })),
       description: Type.Optional(Type.String({ description: t('tools').groupText })),
@@ -3657,6 +3780,7 @@ export default function (pi: ExtensionAPI) {
       const inPit = new Set(st.oldNode?.nodes ?? []);
       const buffer = st.nodes[st.nodes.length - 1];
       const ids = (Array.isArray(params.leaves) ? params.leaves : []).filter((s) => typeof s === 'string');
+      const nodeIds = (Array.isArray(params.nodes) ? params.nodes : []).filter((s) => typeof s === 'string');
       // `pit: true` — the topic is born INSIDE the old node, over leaves that are already
       // archived. Same tool, opposite operation: see the two rules in the loop below.
       const wantPit = params.pit === true;
@@ -3683,6 +3807,24 @@ export default function (pi: ExtensionAPI) {
         const target = st.nodes.find((nd) => nd.id === params.node);
         if (!target) return refuse('unknown-node', String(params.node));
         if (!target.description) return refuse('not-a-topic', target.id);
+        // ABSORBING NODES (the containment). Two rules carry the whole safety of the feature:
+        //   1. BACKWARD ONLY — a node absorbs only nodes that come AFTER it in `st.nodes`, so
+        //      the parent's position, and everything before it in the index, never move.
+        //   2. THE BUFFER IS NEVER ABSORBED — the last node is the one attached to the open
+        //      leaves and it must stay a plain node: a topic cannot act as a buffer.
+        // The absorbed node keeps its leaves and its description and stays readable with
+        // cwl_open: what changes is that its block is no longer injected, because the parent's
+        // description stands for it now. The cost is declared, never hidden.
+        const targetIdx = st.nodes.indexOf(target);
+        const absorbed: SpanNode[] = [];
+        for (const id of nodeIds) {
+          const child = st.nodes.find((nd) => nd.id === id);
+          if (!child) return refuse('unknown-node', id);
+          if (child === target) return refuse('node-contains-itself', id);
+          if (child === buffer) return refuse('node-is-the-buffer', id);
+          if (st.nodes.indexOf(child) < targetIdx) return refuse('only-backward', `${child.id} is older than ${target.id}`);
+          absorbed.push(child);
+        }
         // A topic INSIDE the pit is still a catalogue the agent keeps using, so it may keep
         // receiving leaves: the historical archive gets used, and long sessions stay
         // catalogued instead of piling everything into one buffer. THE TRADE-OFF, said out
@@ -3697,35 +3839,66 @@ export default function (pi: ExtensionAPI) {
         // topic usable when relevant leaves join it later.
         if (rewrite && !inThePit) return refuse('description-is-immutable', target.id);
         if (rewrite) target.description = rewrite;
-        if (ids.length === 0 && !rewrite) return refuse('no-leaves', target.id);
+        if (ids.length === 0 && !rewrite && absorbed.length === 0) return refuse('no-leaves', target.id);
         const moving = new Set(ids);
         for (const nd of st.nodes) if (nd !== target) nd.leaves = nd.leaves.filter((x) => !moving.has(x));
         target.leaves.push(...ids);
+        if (absorbed.length) {
+          const kids = new Set(target.children ?? []);
+          for (const child of absorbed) kids.add(child.id);
+          target.children = [...kids];
+        }
         saveState(key, st);
-        debugLog(cf, `GROUP ${target.id} "${target.name ?? ''}": +${ids.length} leaf/leaves (now ${target.leaves.length})${inThePit ? ', the node is in the pit' : ''}${rewrite ? `, description rewritten (${rewrite.length} chars)` : ''}`);
+        debugLog(cf, `GROUP ${target.id} "${target.name ?? ''}": +${ids.length} leaf/leaves (now ${target.leaves.length})${absorbed.length ? `, +${absorbed.length} node(s) absorbed (${absorbed.map((c) => c.id).join(', ')})` : ''}${inThePit ? ', the node is in the pit' : ''}${rewrite ? `, description rewritten (${rewrite.length} chars)` : ''}`);
         return {
           content: [{
             type: 'text' as const,
             text: t('groupAdded')(target.name ?? target.id, target.id, target.leaves.length)
+              + (absorbed.length
+                ? t('groupAbsorbed')(
+                    target.name ?? target.id, target.id, absorbed.length,
+                    absorbed.reduce((n, c) => n + c.leaves.length, 0), absorbed.length,
+                  )
+                : '')
               + (rewrite ? t('groupDescriptionUpdated') : ''),
           }],
-          details: { ok: true, id: target.id, name: target.name, leaves: target.leaves.length, added: ids.length, inPit: inThePit, descriptionUpdated: Boolean(rewrite) },
+          details: { ok: true, id: target.id, name: target.name, leaves: target.leaves.length, added: ids.length, absorbed: absorbed.map((c) => c.id), inPit: inThePit, descriptionUpdated: Boolean(rewrite) },
         };
       }
 
       const name = (params.name ?? '').trim();
       const description = (params.description ?? '').trim();
       if (!name || !description) return refuse('name-and-description-required', '');
-      if (ids.length === 0) return refuse('no-leaves', '');
+      // At the FRONTIER a new topic cannot be born from NODES: a parent must already exist to
+      // hold its position, so the containment there is always `node: <the parent>` +
+      // `nodes: [<the child>]`. Inside the pit a new parent over nodes is fine.
+      if (nodeIds.length > 0 && !wantPit) return refuse('nodes-need-a-topic', `${nodeIds.length} node(s)`);
+      if (ids.length === 0 && nodeIds.length === 0) return refuse('no-leaves', '');
       if (!buffer) return refuse('no-buffer', '');
       const microChars = ids.reduce((n, id) => n + (byId.get(id)?.micro?.length ?? 0), 0);
+      // A topic born INSIDE the pit over NODES: the same containment, with the parent created
+      // here. The absorbed nodes must sit AFTER the insertion point (the parent is placed right
+      // after the last node already in the pit), which is the backward rule, checked instead of
+      // assumed. Their blocks leave the head and the new description stands for them.
+      const absorbedNew: SpanNode[] = [];
+      if (wantPit && nodeIds.length > 0 && st.oldNode) {
+        const lastPitIdx = st.nodes.reduce((idx, nd, i) => (inPit.has(nd.id) ? i : idx), -1);
+        for (const id of nodeIds) {
+          const child = st.nodes.find((nd) => nd.id === id);
+          if (!child) return refuse('unknown-node', id);
+          if (child === buffer) return refuse('node-is-the-buffer', id);
+          if (st.nodes.indexOf(child) <= lastPitIdx) return refuse('only-backward', `${child.id} is not after the pit`);
+          absorbedNew.push(child);
+        }
+      }
       // A topic INSIDE the old node has no size guard, because nothing in the index changes:
       // the pit's synthesis already stands for those leaves, and the name only makes them
       // findable again. The floor is a sanity rule, not a saving one: one or two leaves are a
       // leaf list, not a catalogue entry.
       if (wantPit) {
         if (!st.oldNode) return refuse('no-pit', '');
-        if (ids.length < PIT_TOPIC_MIN_LEAVES) return refuse('pit-too-few', `${ids.length} of ${PIT_TOPIC_MIN_LEAVES}`);
+        const held = ids.length + absorbedNew.reduce((n, c) => n + c.leaves.length, 0);
+        if (held < PIT_TOPIC_MIN_LEAVES) return refuse('pit-too-few', `${held} of ${PIT_TOPIC_MIN_LEAVES}`);
       }
       const needChars = Math.max(Math.round(cf.mergeMinRatio * MERGE_SYNTHESIS_CHARS), cf.mergeMinChars);
       if (!wantPit && microChars < needChars) {
@@ -3735,12 +3908,19 @@ export default function (pi: ExtensionAPI) {
           details: { ok: false, error: 'too-small', leaves: ids.length, microChars, needChars },
         };
       }
-      const base = hashText(ids.join('|'));
+      const base = hashText([...ids, ...nodeIds].join('|'));
       let id = `nd-${base.slice(0, 8)}`;
       for (let n = 2; st.nodes.some((nd) => nd.id === id); n++) id = `nd-${base.slice(0, 8)}-${n}`;
       const moving = new Set(ids);
       for (const nd of st.nodes) nd.leaves = nd.leaves.filter((x) => !moving.has(x));
-      const node: SpanNode = { id, leaves: [...ids], name, description, at: Date.now() };
+      const node: SpanNode = {
+        id,
+        leaves: [...ids],
+        name,
+        description,
+        children: absorbedNew.length ? absorbedNew.map((c) => c.id) : undefined,
+        at: Date.now(),
+      };
       if (wantPit && st.oldNode) {
         // Inside the pit the topic joins the ARCHIVE's own node list, right after the last node
         // already there. The pit's synthesis is left byte for byte as it was: no synthesis is
