@@ -127,7 +127,7 @@ type CwlMessages = {
   statusEpisodes: (total: number, active: number, closed: number, stripped: number) => string;
   statusEvictions: (count: number, tokens: string) => string;
   /** Message injected instead of a compressed span (goes into the LLM context). */
-  compressedNotice: (from: string, to: string, saved: number) => string;
+  compressedNotice: (from: string, to: string, saved: number, id: string) => string;
   episodeClosed: (type: string, name: string) => string;
   statusMeasured: (tokens: string) => string;
   statusActive: (list: string) => string;
@@ -163,6 +163,9 @@ type CwlMessages = {
   episodeRecallEmpty: (name: string) => string;
   episodeRecallTruncatedHint: string;
   episodeRecallFound: (name: string, tokens: number, body: string) => string;
+  /** cwl_open: the WHOLE body of a compressed span, by id. */
+  openFound: (id: string, tokens: number, when: string) => string;
+  openMissing: (id: string) => string;
   /** Budget gate: the agent-driving channel. */
   gateDemand: (current: string, budget: string, turns: number, canClose: boolean, canCompress: boolean) => string;
   gateGiveUp: (attempts: number) => string;
@@ -173,6 +176,8 @@ type CwlMessages = {
     compressDesc: string; compressStart: string; compressEnd: string; compressSummary: string;
     recallDesc: string; recallQuery: string; recallLimit: string;
     recallEpisodeDesc: string; recallEpisodeName: string; recallEpisodeFull: string;
+    openDesc: string;
+    openId: string;
     compressRangeDesc: string; compressRangeSummary: string;
   };
   /** Parameter descriptions: read by the LLM on every invocation. */
@@ -206,8 +211,9 @@ const I18N: Record<Lang, CwlMessages> = {
     statusHeader: (budget, threshold) => `CWL — token budget: ${budget} (threshold: ${threshold}%)`,
     statusEpisodes: (total, active, closed, stripped) => `Episodes total: ${total} | active: ${active} | with evictable content: ${closed} | already stripped: ${stripped}`,
     statusEvictions: (count, tokens) => `Evictions total: ${count} | tokens saved: ${tokens}`,
-    compressedNotice: (from, to, saved) => `[CWL · RECALL] The messages from ${from} to ${to} were compressed into ` +
-      `this summary (~${saved} tokens saved).\n` +
+    compressedNotice: (from, to, saved, id) => `[CWL · RECALL] The messages from ${from} to ${to} were compressed into ` +
+      `this summary (~${saved} tokens saved). Leaf id: ${id}.\n` +
+      `To read the WHOLE summary again, call cwl_open with that id. ` +
       `If you need the original text, call cwl_recall with keywords from that content.\n\n`,
     episodeClosed: (type, name) => `Episode ${type} "${name}" closed.`,
     statusMeasured: (tokens) => `Measured context tokens: ~${tokens}`,
@@ -238,6 +244,8 @@ const I18N: Record<Lang, CwlMessages> = {
     episodeRecallEmpty: (name) => `Episode "${name}" resolved to no readable text.`,
     episodeRecallTruncatedHint: '\n\n… (truncated; pass full=true for the whole episode)',
     episodeRecallFound: (name, tokens, body) => `Original content of episode "${name}" (~${tokens} tokens):\n\n${body}`,
+    openFound: (id, tokens, when) => `[CWL leaf ${id} — compressed ${when}, ~${tokens} tokens. The WHOLE body follows; nothing is truncated.]\n\n`,
+    openMissing: (id) => `No leaf "${id}" in this session's state: either it never existed, or the state dropped it. A pruned span's SUMMARY is not recoverable — it lives only in the state — while the ORIGINAL messages are still in the append-only transcript: recover those with cwl_recall.`,
     gateDemand: (current, budget, turns, canClose, canCompress) => {
       // Only the options that are ACTUALLY available. Measured in a real session:
       // the demand listed both while all four episodes were closed and no
@@ -277,6 +285,8 @@ const I18N: Record<Lang, CwlMessages> = {
       recallLimit: 'How many results to return (default 5, minimum 1, maximum 50).',
       recallEpisodeDesc: 'Recovers the ORIGINAL text of an episode that was evicted from the context, by its name. The episode content still lives in the append-only transcript: eviction moves it out of the CONTEXT, it does not delete it. Use it when a marker says an episode was evicted and you need its detail.',
       recallEpisodeName: 'Name of the evicted episode, as it appears in the eviction marker.',
+      openDesc: 'Reads back a compressed span (a "leaf") by id, IN FULL. Use cwl_status to see the ids. Nothing is truncated: the body comes back whole, and its size is declared first.',
+      openId: 'Id of the leaf to open, as it appears in the compression notice (or in cwl_status).',
       recallEpisodeFull: 'false (default) returns a truncated preview; true returns the whole episode.',
       compressRangeDesc: 'Compresses the OLDEST usable range of the conversation into your summary. YOU DO NOT pick the range and you do not need any hash: the extension already computed the address and holds it. Call it when an eviction marker or the budget demand tells you to compact, and write a summary good enough to keep working without re-reading the originals. Nothing inside the protected window is touched.',
       compressRangeSummary: 'The summary that REPLACES the compressed range. Write WHOLE PIECES, not a digest: it must be enough to keep working without re-reading them. Include paths, file names, function names, numeric values, and what you decided and why.',
@@ -314,8 +324,9 @@ const I18N: Record<Lang, CwlMessages> = {
     statusHeader: (budget, threshold) => `CWL — token budget: ${budget} (threshold: ${threshold}%)`,
     statusEpisodes: (total, active, closed, stripped) => `Episodi totali: ${total} | attivi: ${active} | con contenuto evictabile: ${closed} | gia' stripped: ${stripped}`,
     statusEvictions: (count, tokens) => `Eviction totali: ${count} | token risparmiati: ${tokens}`,
-    compressedNotice: (from, to, saved) => `[CWL · RICHIAMO] I messaggi da ${from} a ${to} sono stati compressi in ` +
-      `questo riepilogo (~${saved} token risparmiati).\n` +
+    compressedNotice: (from, to, saved, id) => `[CWL · RICHIAMO] I messaggi da ${from} a ${to} sono stati compressi in ` +
+      `questo riepilogo (~${saved} token risparmiati). Id della foglia: ${id}.\n` +
+      `Per rileggere il riepilogo INTERO, chiama cwl_open con quell'id. ` +
       `Se ti serve il testo originale, chiama cwl_recall con parole chiave di quel contenuto.\n\n`,
     episodeClosed: (type, name) => `Episodio ${type} "${name}" chiuso.`,
     statusMeasured: (tokens) => `Token contesto misurati: ~${tokens}`,
@@ -346,6 +357,8 @@ const I18N: Record<Lang, CwlMessages> = {
     episodeRecallEmpty: (name) => `L'episodio "${name}" non ha prodotto testo leggibile.`,
     episodeRecallTruncatedHint: '\n\n… (troncato; passa full=true per l\'episodio intero)',
     episodeRecallFound: (name, tokens, body) => `Contenuto originale dell'episodio "${name}" (~${tokens} token):\n\n${body}`,
+    openFound: (id, tokens, when) => `[CWL foglia ${id} — compressa ${when}, ~${tokens} token. Segue il corpo INTERO; niente e' troncato.]\n\n`,
+    openMissing: (id) => `Nessuna foglia "${id}" nello stato di questa sessione: o non e' mai esistita, oppure lo stato l'ha potato. Il RIASSUNTO di uno span potato non e' recuperabile — vive solo nello stato — mentre i messaggi ORIGINALI sono ancora nel transcript append-only: recuperali con cwl_recall.`,
     gateDemand: (current, budget, turns, canClose, canCompress) => {
       const opts: string[] = [];
       if (canClose) {
@@ -381,6 +394,8 @@ const I18N: Record<Lang, CwlMessages> = {
       recallLimit: 'Quanti risultati restituire (default 5, minimo 1, massimo 50).',
       recallEpisodeDesc: "Recupera il testo ORIGINALE di un episodio evictato dal contesto, per nome. Il contenuto dell'episodio vive ancora nel transcript append-only: l'eviction lo sposta fuori dal CONTESTO, non lo cancella. Usalo quando un marker ti dice che un episodio e' stato evictato e te ne serve il dettaglio.",
       recallEpisodeName: "Nome dell'episodio evictato, come appare nel marker di eviction.",
+      openDesc: 'Rilegge per intero uno span compresso (una "foglia") dato il suo id. Gli id si vedono in cwl_status. Niente viene troncato: il corpo torna intero, e la sua dimensione viene dichiarata prima.',
+      openId: "Id della foglia da aprire, come appare nell'avviso di compressione (o in cwl_status).",
       recallEpisodeFull: 'false (default) restituisce un estratto troncato; true restituisce l\'episodio intero.',
       compressRangeDesc: "Comprime nel tuo riassunto l'intervallo PIU' VECCHIO utilizzabile della conversazione. NON scegli tu l'intervallo e non ti serve nessun hash: l'estensione ha gia' calcolato e tiene l'indirizzo. Chiamalo quando un marker di eviction o la richiesta di budget ti dicono di compattare, e scrivi un riassunto che basti a lavorare senza rileggere gli originali. Nulla dentro la finestra protetta viene toccato.",
       compressRangeSummary: "Il riassunto che SOSTITUISCE l'intervallo compresso. Scrivi PEZZI INTERI, non un sommario: deve bastare a lavorare senza rileggere. Includi path, nomi di file, nomi di funzione, valori numerici e cosa hai scelto e perche'.",
@@ -1477,9 +1492,32 @@ function globalReasoningStrip(
  * transcript, which is append-only: compression is therefore LOSSLESS, and
  * `cwl_recall` can retrieve the text in full.
  */
+/**
+ * Stable id of a compressed span — a "leaf" of the index.
+ *
+ * The two anchors hashed together, so it survives restarts and does not shift
+ * when the list moves: a summary lives ONLY in the state, and this id is how
+ * `cwl_open` asks for one back without walking the transcript.
+ */
+function spanId(startHash: string, endHash: string): string {
+  return `sp-${hashText(`${startHash}|${endHash}`).slice(0, 8)}`;
+}
+
+/**
+ * The id of a span, derived from its anchors when the persisted state predates
+ * ids. ONE definition: `cwl_open`, the injected notice and the tool that writes
+ * the compression must all agree on what a leaf is called, or the agent is handed
+ * an id that no tool accepts.
+ */
+function idOfSpan(sp: CompressedSpan): string {
+  return sp.id ?? spanId(sp.startHash, sp.endHash);
+}
+
 interface CompressedSpan {
   startHash: string;
   endHash: string;
+  /** Stable id, see `spanId`. */
+  id: string;
   summary: string;
   at: number;
   /**
@@ -1942,7 +1980,7 @@ function applySpans(
     const build = (claim: number): AgentMessage => ({
       role: 'custom',
       customType: 'cwl-compressed',
-      content: t('compressedNotice')(sp.startHash, sp.endHash, claim) + sp.summary,
+      content: t('compressedNotice')(sp.startHash, sp.endHash, claim, idOfSpan(sp)) + sp.summary,
       display: false,
       timestamp: Date.now(),
     } as unknown as AgentMessage);
@@ -2226,6 +2264,7 @@ export default function (pi: ExtensionAPI) {
       st.spans.push({
         startHash: params.startHash,
         endHash: params.endHash,
+        id: spanId(params.startHash, params.endHash),
         summary: params.summary,
         at: Date.now(),
       });
@@ -2267,7 +2306,7 @@ export default function (pi: ExtensionAPI) {
       const startHash = st.rangeStartHash;
       const endHash = st.rangeEndHash;
       const tokens = st.rangeTokens;
-      st.spans.push({ startHash, endHash, summary: params.summary, at: Date.now() });
+      st.spans.push({ startHash, endHash, id: spanId(startHash, endHash), summary: params.summary, at: Date.now() });
       // Spend the address: the next hook recomputes it on the smaller list, so a
       // second call cannot compress the same range twice.
       st.rangeStartHash = null;
@@ -2370,6 +2409,53 @@ export default function (pi: ExtensionAPI) {
       return {
         content: [{ type: 'text', text: t('episodeRecallFound')(params.name, tokens, body) }],
         details: { ok: true, episode: params.name, tokens, chars: text.length, full },
+      };
+    },
+  });
+
+  /**
+   * cwl_open: read back a compressed span (a "leaf") IN FULL.
+   *
+   * A summary lives ONLY in the state — the transcript holds the ORIGINAL
+   * messages, not the summaries — so this is the only way to see again what a
+   * compression set aside, without re-reading the source.
+   *
+   * It does NOT truncate, on purpose: the operator's models have 1M-token
+   * windows, and an agent that wants to see something must SEE it. The tool's
+   * only duty is to declare the size BEFORE handing it over, so the reader knows
+   * what it is about to pay.
+   */
+  pi.registerTool({
+    name: 'cwl_open',
+    label: 'CWL Open',
+    description: t('tools').openDesc,
+    parameters: Type.Object({
+      id: Type.String({ description: t('tools').openId }),
+    }),
+    async execute(_toolCallId, params, _signal, _onUpdate, ctx) {
+      const key = sessionKey(ctx);
+      const st = getState(key);
+      const cf = getConfig(key);
+      const wanted = String(params.id ?? '').trim();
+      // Spans written before ids existed have none in the persisted state:
+      // `idOfSpan` derives it, exactly as the injected notice does.
+      const sp = st.spans.find(
+        (s) => idOfSpan(s) === wanted || s.startHash === wanted || s.endHash === wanted,
+      );
+      if (!sp) {
+        return {
+          content: [{ type: 'text', text: t('openMissing')(wanted) }],
+          details: { ok: false, error: 'unknown-id', id: wanted, spans: st.spans.length },
+        };
+      }
+      const id = idOfSpan(sp);
+      const body = sp.summary;
+      const tokens = estimateTokens(body);
+      const when = new Date(sp.at).toISOString().slice(0, 16).replace('T', ' ');
+      debugLog(cf, `OPEN ${id}: ${tokens}t of body, ${body.length} chars`);
+      return {
+        content: [{ type: 'text', text: t('openFound')(id, tokens, when) + body }],
+        details: { ok: true, id, tokens, chars: body.length },
       };
     },
   });
