@@ -1824,10 +1824,33 @@ function locateSpans(
       while (end + 1 < messages.length && roleOf(messages[end + 1]) === 'toolResult') end++;
       return { sp, from, to: end };
     })
-    .filter((x): x is { sp: CompressedSpan; from: number; to: number } => x !== null)
-    .filter((x, _all, arr) => !arr.some((o) => o !== x && o.from <= x.from && o.to >= x.to))
-    .sort((a, b) => a.from - b.from);
-  return { resolved, dead };
+    .filter((x): x is { sp: CompressedSpan; from: number; to: number } => x !== null);
+
+  // A span contained in another can never apply on its own: the outer summary
+  // already covers its region, and a summary inside a summary describes less
+  // than what is already there. Dropping it is right; dropping it SILENTLY was
+  // not. This used to be a single `.filter(...)`, so an inner span ended up in
+  // NEITHER `resolved` nor `dead`: not applied, not declared anywhere, and its
+  // summary stayed in the state — thousands of characters re-saved on every
+  // turn, accounted for by no line of the log. MEASURED in a sandbox with three
+  // spans in the state (two inside the third): the log said `SPANS applied: 1`
+  // and nothing else, while the state kept all three.
+  // Equal ranges count as containment: the FIRST one wins, the others are pruned.
+  // Sorted by start and, for two spans with the same start, the WIDER one first:
+  // after that a single sweep is enough. A span is contained in an earlier one
+  // exactly when its `to` is not greater than the greatest `to` seen so far, and
+  // putting the wider first is what makes the equal-start case fall on the right
+  // side of that comparison. O(n log n) once, instead of a nested scan on a path
+  // that runs on every turn.
+  const ordered = resolved.sort((a, b) => a.from - b.from || b.to - a.to);
+  const survivors: typeof ordered = [];
+  let widestTo = -1;
+  for (const x of ordered) {
+    if (widestTo >= x.to) { dead.push(x.sp); continue; }
+    survivors.push(x);
+    widestTo = x.to;
+  }
+  return { resolved: survivors, dead };
 }
 
 /**
@@ -2607,7 +2630,7 @@ export default function (pi: ExtensionAPI) {
       // case that matters is when they are ALL dead — and said out loud.
       if (applied.dead.length > 0) {
         st.spans = st.spans.filter((s) => !applied.dead.includes(s));
-        debugLog(cf, `SPANS pruned: ${applied.dead.length} span(s) whose endpoints left the context (${st.spans.length} left)`);
+        debugLog(cf, `SPANS pruned: ${applied.dead.length} span(s) that can never apply again — endpoints gone, or contained in another span (${st.spans.length} left)`);
       }
       if (applied.applied > 0) {
         // Only spans counted for the FIRST time move the totals. The others are

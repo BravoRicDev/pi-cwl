@@ -4,8 +4,9 @@ node_modules/
 dist/
 __pycache__/
 
-# Documento di lavoro interno: mai nel repo pubblico.
+# Documenti di lavoro interni: mai nel repo pubblico.
 HANDOFF-COMPRESSIONE-OTTIMIZZATA.md
+PIANO-*.md
 
 # Lockfile: non e' portabile in questo repo. node_modules/ viene popolato dai
 # link a runtime verso il pacchetto Pi (tests/_helpers.mjs --link-deps), e npm
