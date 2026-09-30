@@ -178,6 +178,9 @@ type CwlMessages = {
   oldHot: (listed: number, total: number) => string;
   /** La richiesta di scrivere il riassuntone: e' l'unico grilletto che l'agente vede. */
   indexDue: (young: number, need: number) => string;
+  /** Una foglia potato: il riassunto e' perso, l'originale torna dal transcript. */
+  openOriginal: (id: string, tokens: number, body: string) => string;
+  openOriginalLost: (id: string) => string;
   /** cwl_micro: the body leaves the context, the micro takes its place. */
   microSet: (id: string, microChars: number, bodyChars: number, shorter: boolean) => string;
   /** Budget gate: the agent-driving channel. */
@@ -272,6 +275,8 @@ const I18N: Record<Lang, CwlMessages> = {
     oldPage: (id, nodes, tokens, body) => `[CWL old node ${id} — ${nodes} node(s) inside, ~${tokens} tokens. The synthesis first, then one line per node with its SHAPE; cwl_open("<node id>") opens one, and its leaves open in full.]\n\n${body}`,
     oldHot: (listed, total) => `--- Most consulted leaves (${listed} of ${total} in the old node; nothing was deleted, this is only the reading order) ---`,
     indexDue: (young, need) => `[CWL INDEX] ${young} node(s) of the index are due to merge (a merge starts at ${need}). Call cwl_old with the riassuntone: your synthesis replaces the micros of the oldest nodes, and their leaves stay readable with cwl_open.`,
+    openOriginal: (id, tokens, body) => `[CWL leaf ${id} — its SUMMARY was dropped when the state pruned it, so here is the ORIGINAL from the append-only transcript (~${tokens} tokens, in full).]\n\n${body}`,
+    openOriginalLost: (id) => `Leaf "${id}" was dropped from the state, and its anchors found NOTHING in the transcript. The original cannot be recovered by id from here: use cwl_recall with keywords from that content.`,
     microSet: (id, microChars, bodyChars, shorter) => microChars === 0
       ? `Leaf ${id}: micro removed — the WHOLE body is back in the context.`
       : `Leaf ${id}: a micro of ${microChars} chars now stands in the context in place of ${bodyChars} chars. ` +
@@ -403,6 +408,8 @@ const I18N: Record<Lang, CwlMessages> = {
     oldPage: (id, nodes, tokens, body) => `[CWL nodo vecchio ${id} — ${nodes} nodo/i dentro, ~${tokens} token. Prima la sintesi, poi una riga per nodo con la sua FORMA; cwl_open("<id nodo>") ne apre uno, e le sue foglie si aprono intere.]\n\n${body}`,
     oldHot: (listed, total) => `--- Foglie piu' consultate (${listed} di ${total} nel nodo vecchio; niente e' stato cancellato, questo e' solo l'ordine di lettura) ---`,
     indexDue: (young, need) => `[CWL INDICE] ${young} nodo/i dell'indice sono da accorpare (si accorpa da ${need} in su). Chiama cwl_old col riassuntone: la tua sintesi sostituisce i micro dei nodi piu' vecchi, e le loro foglie restano leggibili con cwl_open.`,
+    openOriginal: (id, tokens, body) => `[CWL foglia ${id} — il RIASSUNTO e' andato perso quando lo stato l'ha potato, quindi ecco l'ORIGINALE dal transcript append-only (~${tokens} token, per intero).]\n\n${body}`,
+    openOriginalLost: (id) => `La foglia "${id}" era stata potato dallo stato, e le sue ancore nel transcript non hanno trovato niente. Da qui l'originale non e' piu' recuperabile per id: usa cwl_recall con parole chiave di quel contenuto.`,
     microSet: (id, microChars, bodyChars, shorter) => microChars === 0
       ? `Foglia ${id}: micro rimosso — nel contesto e' tornato il corpo INTERO.`
       : `Foglia ${id}: un micro di ${microChars} caratteri sta ora nel contesto al posto di ${bodyChars}. ` +
@@ -844,6 +851,14 @@ interface CwlState {
   /** Nodes of level 1: containers of leaves, chronological. */
   nodes: SpanNode[];
   /**
+   * The graveyard: the anchors of the spans the state dropped.
+   *
+   * Capped: a leaf nobody asks for, for long enough, stops being recoverable by id — and
+   * that has to be DICHIARATO (see `cwl_open`), because a silent limit is the promise
+   * broken quietly.
+   */
+  graves: Grave[];
+  /**
    * The OLD node — the pit — once the agent has written its riassuntone.
    *
    * It holds young nodes instead of leaves, so `cwl_open` can still page through
@@ -894,6 +909,7 @@ function newState(): CwlState {
     deducedSeen: -1,
     spans: [],
     nodes: [],
+    graves: [],
     oldNode: null,
     knownHashes: new Set(),
     recallIndex: null,
@@ -979,6 +995,8 @@ interface PersistedState {
   savedAt: number;
   graph: { episodes: Episode[] };
   spans: CompressedSpan[];
+  /** The graveyard. Optional on load: an older state file simply has none. */
+  graves?: Grave[];
   /** The pit. Persisted because it carries the agent's riassuntone, which no rule can recompute. */
   oldNode?: OldNode | null;
   totalEvictions: number;
@@ -1014,6 +1032,7 @@ function saveState(key: string, st: CwlState): void {
       savedAt: Date.now(),
       graph: { episodes: st.graph.all },
       spans: st.spans,
+      graves: st.graves.slice(-GRAVE_MAX),
       oldNode: st.oldNode,
       totalEvictions: st.totalEvictions,
       totalEvictedTokens: st.totalEvictedTokens,
@@ -1044,6 +1063,7 @@ function loadPersistedState(key: string): CwlState | null {
     const st = newState();
     st.graph = EpisodeGraph.fromJSON(data.graph);
     st.spans = Array.isArray(data.spans) ? (data.spans as CompressedSpan[]) : [];
+    st.graves = Array.isArray(data.graves) ? (data.graves as Grave[]) : [];
     st.oldNode = data.oldNode && typeof data.oldNode.id === 'string' ? data.oldNode : null;
     st.totalEvictions = typeof data.totalEvictions === 'number' ? data.totalEvictions : 0;
     st.totalEvictedTokens = typeof data.totalEvictedTokens === 'number' ? data.totalEvictedTokens : 0;
@@ -1681,6 +1701,24 @@ function pitView(st: CwlState): PitView | null {
   return { id: pit.id, nodes: pit.nodes.length, summary: pit.summary, leaves };
 }
 
+/** How many dropped spans stay recoverable by id. */
+const GRAVE_MAX = 200;
+
+/**
+ * What is left of a span the state DROPPED: enough to find its original again.
+ *
+ * A pruned span's summary is gone for good — it lived only in the state — but the
+ * messages it replaced are still in the append-only transcript, and the stable ids are
+ * what find them. Without this record the leaf would be unreachable by id: the id is a
+ * HASH of the two anchors, so it cannot be turned back into them.
+ */
+interface Grave {
+  id: string;
+  startSid: string;
+  endSid: string;
+  at: number;
+}
+
 interface SpanNode {
   /** Stable id: `nd-` + 8 hex of the first leaf. */
   id: string;
@@ -1758,6 +1796,17 @@ interface CompressedSpan {
    */
   opens?: number;
   lastOpen?: number;
+  /**
+   * The STABLE IDS of the two anchors: `stableIdOf` of the messages they point at.
+   *
+   * Kept because they are the only thing that can find this range again in the
+   * transcript once the state has dropped the span. The hashes above cannot: `addressOf`
+   * mixes the id with the TEXT, and this extension strips reasoning from the messages it
+   * compacts — `contentToText` includes `part.thinking` — so a hash computed from the
+   * transcript can differ from the one computed from the context. A timestamp cannot.
+   */
+  startSid?: string;
+  endSid?: string;
   at: number;
   /**
    * Whether this span's saving has already been added to `totalEvictedTokens`.
@@ -2003,7 +2052,7 @@ function blocksToText(content: unknown): string {
  */
 function transcriptRecordText(
   rec: unknown,
-): { role: string; toolCallId?: string; text: string } | null {
+): { role: string; toolCallId?: string; text: string; sid: string } | null {
   if (!rec || typeof rec !== 'object') return null;
   const r = rec as Record<string, unknown>;
   const src = (r.message ?? r) as RealMessage;
@@ -2011,7 +2060,12 @@ function transcriptRecordText(
   if (!role) return null;
   const toolCallId = typeof src.toolCallId === 'string' ? src.toolCallId : undefined;
   const text = blocksToText(src.content) || (typeof r.text === 'string' ? r.text : '');
-  return { role, toolCallId, text };
+  // The SAME identity `stableIdOf` gives a live message: one definition, because a
+  // lookup that disagrees with the writer finds nothing and does not say why.
+  // SAFETY: real transcript records are messages in every field that matters here, but
+  // the union Pi declares is narrower than the JSON on disk.
+  const sid = stableIdOf(src as unknown as AgentMessage);
+  return { role, toolCallId, text, sid };
 }
 
 /**
@@ -2042,6 +2096,40 @@ function extractEpisodeText(
     }
     if (endToolCallId !== null && info.toolCallId === endToolCallId) break;
     if (info.text.trim()) parts.push(`[${info.role}] ${info.text}`);
+  }
+  return started ? parts.join('\n\n') : null;
+}
+
+/**
+ * Reads back the ORIGINAL messages between two anchors, by STABLE ID.
+ *
+ * Why the ids and not the text hashes: `addressOf` mixes the id with the TEXT, and this
+ * extension strips reasoning from the messages it compacts — `contentToText` includes
+ * `part.thinking` — so a hash computed from the transcript can differ from the one
+ * computed from the context, and the lookup would fail without saying why. The timestamp
+ * cannot drift. MEASURED: that difference is exactly what makes a hash-based lookup
+ * unreliable, and it is why a span carries `startSid`/`endSid` as well.
+ *
+ * Returns null when the OPENING anchor is missing: a dangling pointer, reported as such
+ * rather than as an empty range.
+ */
+function transcriptRangeText(raw: string, startSid: string, endSid: string | null): string | null {
+  const parts: string[] = [];
+  let started = false;
+  for (const line of raw.split(/\r?\n/)) {
+    if (!line) continue;
+    let rec: unknown;
+    try { rec = JSON.parse(line); } catch { continue; }
+    const info = transcriptRecordText(rec);
+    if (!info || !info.sid) continue;
+    if (!started) {
+      if (info.sid !== startSid) continue;
+      started = true;
+    }
+    // The anchors here ARE content (unlike an episode's delimiters): include both, or the
+    // two messages the span began and ended on would be missing from its own original.
+    if (info.text.trim()) parts.push(`[${info.role}] ${info.text}`);
+    if (endSid !== null && info.sid === endSid) break;
   }
   return started ? parts.join('\n\n') : null;
 }
@@ -2083,6 +2171,11 @@ function locateSpans(
       // Collect it so the caller can drop it: its summary is thousands of
       // characters of dead weight, re-saved in the state on every turn.
       if (from === undefined || to === undefined) { dead.push(sp); return null; }
+      // Backfill the stable ids the first time the endpoints are visible: this is the
+      // only place that has BOTH the span and the messages it points at, so it is the
+      // only place that can write down what will be needed to find it again later.
+      if (!sp.startSid) sp.startSid = stableIdOf(messages[from]);
+      if (!sp.endSid) sp.endSid = stableIdOf(messages[to]);
       // An endpoint is always a user/assistant message, but the message right
       // after an assistant is usually its tool RESULT (role 'toolResult').
       // Replacing the assistant while keeping that result leaves a tool_result
@@ -2785,6 +2878,30 @@ export default function (pi: ExtensionAPI) {
         (s) => idOfSpan(s) === wanted || s.startHash === wanted || s.endHash === wanted,
       );
       if (!sp) {
+        // Not in the state. Maybe it was DROPPED — native compaction took its anchors —
+        // and then the summary is gone for good while the ORIGINAL is still in the
+        // append-only transcript. The graveyard kept the stable ids that find it: the id
+        // itself could not, being a hash of the anchors.
+        const grave = st.graves.find((g) => g.id === wanted);
+        if (grave) {
+          const transcriptPath = findTranscript(key);
+          const raw = transcriptPath ? readFileOrNull(transcriptPath) : null;
+          const original = raw ? transcriptRangeText(raw, grave.startSid, grave.endSid) : null;
+          if (original && original.trim()) {
+            const tokens = estimateTokens(original);
+            debugLog(cf, `OPEN ${wanted}: ORIGINAL from the transcript, ${tokens}t (the summary went with the state)`);
+            return {
+              content: [{ type: 'text', text: t('openOriginal')(wanted, tokens, original) }],
+              details: { ok: true, id: wanted, kind: 'original', dropped: true, tokens, chars: original.length },
+            };
+          }
+          // Declared, never silent: the ids were there and found nothing, so the content
+          // is only reachable by MEANING from here on.
+          return {
+            content: [{ type: 'text', text: t('openOriginalLost')(wanted) }],
+            details: { ok: false, error: 'original-lost', id: wanted, kind: 'original' },
+          };
+        }
         return {
           content: [{ type: 'text', text: t('openMissing')(wanted) }],
           details: { ok: false, error: 'unknown-id', id: wanted, spans: st.spans.length },
@@ -3116,9 +3233,25 @@ export default function (pi: ExtensionAPI) {
      * thing we want (fewer tokens) is directly measurable, so it is measured, and
      * a hallucinated confirmation earns nothing.
      */
+    /**
+     * Durability without side effects.
+     *
+     * The hook must persist what cannot be recomputed — the stable ids written when a span
+     * first resolves, the graveyards the prune records — or a restart throws them away.
+     * But a session that never uses CWL must leave NOTHING on disk, and that is a tested
+     * contract (`tests/state-persistence`). The state file existing is exactly that
+     * difference: the tools write it the first time the agent compresses anything, and
+     * from then on the hook keeps it fresh. Saving unconditionally broke that contract the
+     * first time it ran, which is why the condition is written down here and not assumed.
+     */
+    const persistIfUsed = (): void => {
+      if (fs.existsSync(statePath(key))) saveState(key, st);
+    };
+
     const finish = (list: AgentMessage[]): { messages: AgentMessage[] } => {
       const after = list.reduce((s: number, m: AgentMessage) => s + estimateMessageTokens(m), 0);
       st.lastMeasuredTokens = after;
+      persistIfUsed();
       if (after <= trigger) {
         // Effect achieved: the gate has nothing left to ask for.
         st.overBudgetSince = -1;
@@ -3224,8 +3357,18 @@ export default function (pi: ExtensionAPI) {
       // on every turn. Pruned here — outside the `applied > 0` guard, because the
       // case that matters is when they are ALL dead — and said out loud.
       if (applied.dead.length > 0) {
+        // Before dropping them, write down what can find their original again: the stable
+        // ids of their anchors. The SUMMARY is lost for good — it lived only in the state
+        // — but the messages it replaced are still in the append-only transcript, and the
+        // id alone could not find them: it is a HASH of the anchors.
+        for (const sp of applied.dead) {
+          if (sp.startSid && sp.endSid) {
+            st.graves.push({ id: idOfSpan(sp), startSid: sp.startSid, endSid: sp.endSid, at: Date.now() });
+          }
+        }
+        st.graves = st.graves.slice(-GRAVE_MAX);
         st.spans = st.spans.filter((s) => !applied.dead.includes(s));
-        debugLog(cf, `SPANS pruned: ${applied.dead.length} span(s) that can never apply again — endpoints gone, or contained in another span (${st.spans.length} left)`);
+        debugLog(cf, `SPANS pruned: ${applied.dead.length} span(s) that can never apply again — endpoints gone, or contained in another span (${st.spans.length} left, ${st.graves.length} still recoverable by id from the transcript)`);
       }
       // A partial overlap leaves both spans applied on purpose (dropping one would
       // bring back what only it covers), but the shared messages are then inside
@@ -3294,6 +3437,13 @@ export default function (pi: ExtensionAPI) {
       st.gateArmedTurn = -1;
       debugLog(cf, `CONTEXT ${currentTokens}t under threshold ${Math.round(trigger)}t: no eviction`);
       // The demand from the previous call must still be removed even here.
+      // AND the state is persisted even here: this exit does NOT go through `finish`, which
+      // is where the other save lives, and by now the turn may have pruned spans (writing
+      // graveyards) or resolved one for the first time (writing stable ids). A save that
+      // depends on WHICH exit the turn took is a save that can be skipped in silence —
+      // measured: the file kept the pre-prune snapshot while the memory had the grave, so
+      // `cwl_open` could not find what it had just written.
+      persistIfUsed();
       return droppedGate ? { messages } : undefined;
     }
 
