@@ -1098,6 +1098,14 @@ interface PersistedState {
   graves?: Grave[];
   /** The pit. Persisted because it carries the agent's merge summary, which no rule can recompute. */
   oldNode?: OldNode | null;
+  /**
+   * The node structure: which leaves are grouped, and the name/description of the topics.
+   * NOTHING here is recomputable. `refreshNodes` can re-form nodes out of the leaves, but it
+   * cannot invent a topic's name; and without the pit's node ids the old-node page comes back
+   * EMPTY while the leaves it absorbed are re-formed as young ones — the head grows again
+   * under a synthesis that already stands for them.
+   */
+  nodes?: SpanNode[];
   totalEvictions: number;
   totalEvictedTokens: number;
   lastEvictionTurn: number;
@@ -1133,6 +1141,7 @@ function saveState(key: string, st: CwlState): void {
       spans: st.spans,
       graves: st.graves.slice(-GRAVE_MAX),
       oldNode: st.oldNode,
+      nodes: st.nodes,
       totalEvictions: st.totalEvictions,
       totalEvictedTokens: st.totalEvictedTokens,
       lastEvictionTurn: st.lastEvictionTurn,
@@ -1164,6 +1173,13 @@ function loadPersistedState(key: string): CwlState | null {
     st.spans = Array.isArray(data.spans) ? (data.spans as CompressedSpan[]) : [];
     st.graves = Array.isArray(data.graves) ? (data.graves as Grave[]) : [];
     st.oldNode = data.oldNode && typeof data.oldNode.id === 'string' ? data.oldNode : null;
+    // Restore the node structure BEFORE anything rebuilds it: `refreshNodes` keeps the nodes
+    // it finds and only prunes the leaves that lost their micro, so a topic's name, its
+    // description and its place in the pit survive the reload, and the leaves it holds are
+    // not re-formed as young ones.
+    if (Array.isArray(data.nodes)) {
+      st.nodes = data.nodes.filter((nd) => typeof nd.id === 'string' && Array.isArray(nd.leaves));
+    }
     st.totalEvictions = typeof data.totalEvictions === 'number' ? data.totalEvictions : 0;
     st.totalEvictedTokens = typeof data.totalEvictedTokens === 'number' ? data.totalEvictedTokens : 0;
     st.lastEvictionTurn = typeof data.lastEvictionTurn === 'number' ? data.lastEvictionTurn : -1;

@@ -9,11 +9,15 @@
  * makes adding leaves later free — their labels leave the head, the description stays, and
  * no synthesis is written a second time. Rewriting it would move the prefix of the index.
  *
- * WHAT THE TESTS CAN SEE. The nodes are NOT persisted: `saveState` writes the graph, the
- * spans, the graveyard and the pit, and `refreshNodes` rebuilds the nodes from the spans
- * every turn. So the shape of the index is observed through the tools — `cwl_status` (the
- * index line), `cwl_group` (its details) and `cwl_open` (the page of a node, which carries
- * the name and the description of a topic) — never by reading the state file.
+ * WHAT THE TESTS CAN SEE. The nodes ARE persisted: `saveState` writes the graph, the spans,
+ * the graveyard, the pit and the node structure (id, leaves, name, description), and
+ * `refreshNodes` keeps the nodes it finds, pruning only the leaves that lost their micro.
+ * Persisting them is not an optimization: a topic's name cannot be recomputed from a leaf,
+ * and without the pit's node ids the old-node page would come back EMPTY while the leaves it
+ * had absorbed were re-formed as young ones, back in the head under a description that no
+ * longer exists. So the shape is still observed through the tools — `cwl_status` (the index
+ * line), `cwl_group` (its details) and `cwl_open` (the page of a node) — and one test kills
+ * the in-memory state to prove that the file, and only the file, carries the catalogue.
  *
  * THE FIVE WAYS THIS TEST MUST DIE:
  *  1. the topic replaces the buffer instead of sitting BEHIND it -> the first node would be
@@ -359,6 +363,36 @@ test('the status names the topics, not just counts them', async () => {
     assert.equal(born.details.ok, true, `the topic was not born: ${JSON.stringify(born.details)}`);
     const line = await statusText(tools, ctx);
     assert.match(line, /Topics \(1\): login-otp/, `the status does not name the topic: ${line}`);
+  } finally {
+    home.restore();
+  }
+});
+
+test('a topic survives a restart: the file carries the catalogue', async () => {
+  const { sandbox, home, tools, hooks, ctx } = await boot();
+  try {
+    const st = await leavesWithMicros(sandbox, hooks, ctx, tools, 10);
+    const born = await group(tools, ctx, {
+      leaves: st.spans.slice(0, 9).map((s) => s.id), name: 'login-otp', description: DESCRIPTION,
+    });
+    assert.equal(born.details.ok, true, `the topic was not born: ${JSON.stringify(born.details)}`);
+    const before = await statusText(tools, ctx);
+    assert.match(before, /Topics \(1\): login-otp/, `before the restart: ${before}`);
+
+    // A NEW module over the SAME home and the same session: all that survives is the file.
+    // Without `nodes` in the payload the topic is gone here, and its nine leaves are
+    // re-formed as young ones: back in the head, with no description standing for them.
+    const run2 = await bootExtension(sandbox, { name: 'run2' });
+    await run2.hooks.get('session_start')({}, ctx);
+    const after = await statusText(run2.tools, ctx);
+    assert.match(after, /Topics \(1\): login-otp/, `the topic lost its name after the restart: ${after}`);
+    // The SHAPE must not move across the restart: a topic is a young node too (it is outside
+    // the pit), so the count has to match, not vanish. Compared as a STRING, because
+    // `youngOf` hands back a parsed shape, not a primitive. What proves the fix is the name.
+    const youngShape = (line) => ((line.match(/young (\d+)n\/(\d+)l/) ?? ['', '?', '?']).slice(1, 3).join('/'));
+    assert.equal(youngShape(after), youngShape(before), `the shape of the index moved across the restart: ${youngShape(before)} -> ${youngShape(after)}`);
+    const page = await openPage(run2.tools, ctx, born.details.id);
+    assert.ok(page.includes(DESCRIPTION), `the description did not survive the restart: ${page.slice(0, 200)}`);
   } finally {
     home.restore();
   }
