@@ -149,7 +149,7 @@ Optional, at `~/.pi/cwl/config.json`:
   (default `5`).
 - `nodeCapacity` — how many leaves a node holds before it is full (default `30`).
 - `mergeNodesAt` — how many young nodes trigger a merge into the old node (default `3`).
-- `mergeMinRatio` — how many times the synthesis a merge frees must outweigh the one it writes (default `3`).
+- `mergeMinRatio` — how many times the synthesis a merge frees must outweigh the one it writes (default `1.8`). It is the guard a merge AND a topic both pass: the topic floor is `ratio × 3,600` characters, never less than `mergeMinChars`, so with the defaults a topic must free at least `6,480` characters. Raising it makes topics rarer and merges harder; lowering it does the opposite for both.
 - `mergeMinChars` — the absolute floor, in characters: below it a merge is refused whatever the ratio says (default `6000`).
 - `topicInviteAt` — how many leaves the buffer may hold before the agent is invited to open a topic with `cwl_group` (default `18`). The buffer is the LAST node and the only one whose leaves can still be moved: a leaf that has entered a node can never be moved again, so this invitation is the last moment a topic can be born. It fires only when the group would pass the size guard, and it carries every number needed to act — the node id, how many leaves it holds, the characters of micro they carry, and the characters the guard requires.
 - `gate` — enables the contextual request to compress older material when the budget remains exceeded and deterministic eviction has nothing left to remove (default `true`).
@@ -321,7 +321,7 @@ Opzionale, in `~/.pi/cwl/config.json`:
   assorbita in un nodo (default `5`).
 - `nodeCapacity` — quante foglie tiene un nodo prima di essere pieno (default `30`).
 - `mergeNodesAt` — quanti nodi giovani fanno scattare l'accorpamento nel nodo vecchio (default `3`).
-- `mergeMinRatio` — quante volte la sintesi liberata da un accorpamento deve valere piu' di quella che scrive (default `3`).
+- `mergeMinRatio` — quante volte la sintesi liberata da un accorpamento deve valere piu' di quella che scrive (default `1.8`). E' il guard che passano sia un accorpamento sia un topic: la soglia di un topic e' `rapporto × 3.600` caratteri, mai meno di `mergeMinChars`, quindi con i default un topic deve liberare almeno `6.480` caratteri. Alzarlo rende i topic piu' rari e gli accorpamenti piu' difficili; abbassarlo fa l'opposto su entrambi.
 - `mergeMinChars` — il minimo assoluto, in caratteri: sotto quella soglia un accorpamento viene rifiutato comunque (default `6000`).
 - `topicInviteAt` — quante foglie puo' tenere il buffer prima che l'agente sia invitato ad aprire un topic con `cwl_group` (default `18`). Il buffer e' l'ULTIMO nodo e l'unico le cui foglie si possono ancora spostare: una foglia entrata in un nodo non si muove piu', quindi questo invito e' l'ultimo momento in cui un topic puo' nascere. Scatta solo quando il gruppo passerebbe il guard di dimensione, e porta con se' tutti i numeri per agire — l'id del nodo, quante foglie tiene, i caratteri di micro che portano, e i caratteri che il guard richiede.
 - `showWidget` — disegna la forma dell'indice (pozzo / giovani / topic / sciolte / in attesa / testa) in una riga della TUI sotto l'editor. Una widget e' UI: non entra mai nel contesto e non costa un token (default `true`).

@@ -244,10 +244,10 @@ test('the ratio guard refuses a merge that would free less than it writes', asyn
   try {
     await fiveLabelledLeaves(sandbox, hooks, ctx, tools);
     const res = await tools.get('cwl_old').execute('t', { text: 'TOO-EARLY-SYNTHESIS' }, undefined, undefined, ctx);
-    assert.equal(res.details.ok, false, 'a merge freeing 14 characters against a 10,800 guard was accepted');
+    assert.equal(res.details.ok, false, 'a merge freeing 14 characters against a 6,480 guard was accepted');
     assert.equal(res.details.error, 'too-small');
     const body = text(res);
-    assert.ok(body.includes('10800'), `the refusal does not say what it needed: ${body}`);
+    assert.ok(body.includes('6480'), `the refusal does not say what it needed: ${body}`);
     assert.ok(body.includes('14'), `the refusal does not say what it would free: ${body}`);
     const st = stateOf(sandbox);
     assert.equal(st.oldNode, null, 'a refused merge left a pit behind: the refusal half-merged');

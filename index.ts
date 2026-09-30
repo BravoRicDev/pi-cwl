@@ -701,7 +701,13 @@ const DEFAULT_CONFIG: CwlConfig = {
   looseLeaves: 5,
   nodeCapacity: 30,
   mergeNodesAt: 3,
-  mergeMinRatio: 3,
+  // 1.8, not 3: the ratio is the guard a merge AND a topic both pass, and at 3 it asked a
+  // topic for 3 x 3,600 = 10,800 characters of micro before one could be born — high
+  // enough that topics only appeared for the biggest rounds, or late. At 1.8 the floor is
+  // 6,480. MEASURED consequence, accepted deliberately: the same formula is `cwl_old`'s
+  // guard (against the REAL synthesis length, floored at MERGE_SYNTHESIS_CHARS), so merges
+  // into the pit become 40% easier too.
+  mergeMinRatio: 1.8,
   mergeMinChars: 6_000,
   // 18 of the 30 leaves a node holds. Early enough that the leaves are still in the
   // buffer and can be moved, late enough that the group already passes the size guard

@@ -154,18 +154,23 @@ test('a topic is born collapsed, behind the buffer', async () => {
 test('a topic below the size guard is refused, and the numbers are said', async () => {
   const { sandbox, home, tools, hooks, ctx } = await boot();
   try {
-    const st = await leavesWithMicros(sandbox, hooks, ctx, tools, 6);
-    const inBuffer = st.spans.slice(0, 5).map((s) => s.id);
+    // FOUR leaves in the buffer, not five: with `mergeMinRatio` at 1.8 the floor is 6,480
+    // characters, and five micros of ~1,309 hold ~6,545 — only 65 over, so the topic would
+    // be BORN and this test would assert a refusal that never happens. Four hold ~5,236,
+    // comfortably below. The margin is a coincidence of the fixture, not a property of the
+    // code: if the floor moves again, re-measure instead of guessing.
+    const st = await leavesWithMicros(sandbox, hooks, ctx, tools, 5);
+    const inBuffer = st.spans.slice(0, 4).map((s) => s.id);
     const res = await group(tools, ctx, { leaves: inBuffer, name: 'too-tiny', description: 'A topic that cannot pay for itself.' });
     assert.equal(res.details.ok, false, 'a topic below the guard was born');
     assert.equal(res.details.error, 'too-small');
     const body = text(res);
-    assert.ok(body.includes('10800'), `the refusal does not say what it needed: ${body}`);
+    assert.ok(body.includes('6480'), `the refusal does not say what it needed: ${body}`);
     assert.ok(body.includes(String(res.details.microChars)), `the refusal does not say what it would free: ${body}`);
 
     const after = youngOf(await statusText(tools, ctx));
     assert.equal(after.nodes, 1, 'a refused birth left a node behind');
-    assert.equal(st.spans.length, 6, 'a refused birth touched the leaves');
+    assert.equal(st.spans.length, 5, 'a refused birth touched the leaves');
   } finally {
     home.restore();
   }
