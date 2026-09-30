@@ -447,9 +447,14 @@ const DEFAULT_CONFIG: CwlConfig = {
   // attention does not degrade. If your context is 1M, raise this value.
   tokenBudget: 80_000,
   thresholdRatio: 0.85,
-  // Ten turns is the window the operator asked for: enough that the agent never
-  // loses the thread it is on, small enough that compaction still bites.
-  protectedTurns: 10,
+  // Four turns, not ten. The window is a CONTINUOUS RUN of the list: the last N
+  // user turns PLUS everything between and after them — every assistant message,
+  // reasoning block, tool call and tool output. An operator who writes little
+  // ends up protecting mostly the agent's own text, and MEASURED on a real
+  // session ten turns left only ~6.307t compressible out of ~184.000t: the safety
+  // window WAS the budget, and the extension could not say so. Four keeps the
+  // thread the agent is on and lets compaction bite.
+  protectedTurns: 4,
   gate: true,
   levels: {
     stripReasoning: true,
