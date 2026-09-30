@@ -1,5 +1,5 @@
 /**
- * THE INDEX INVARIANT — the first test of the plan (`PIANO-INDICE-RIASSUNTI.md`, sec. 3).
+ * THE INDEX INVARIANT — the first test of the plan (`PLAN-SUMMARY-INDEX.md`, sec. 3).
  *
  * The project is about to build an index of summaries (leaves -> node of 30 -> old
  * node) that must stay CONTIGUOUS and NON-OVERLAPPING: no hole (nothing lost) and

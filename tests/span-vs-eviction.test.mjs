@@ -15,7 +15,7 @@
  *   `RANGE none | 178 msgs, 133852t vs trigger 68000t, 3 span(s)`
  * on every turn, with ZERO `EVICTION` lines, ZERO `CONTEXT ...`, ZERO `no safe
  * candidate`, ZERO `FALLBACK reasoning-strip`, while `cwl_status` declared
- * `Episodi: 2 | attivi: 0 | con contenuto evictabile: 1`. That is: 133k tokens
+ * `Episodes: 2 | active: 0 | with evictable content: 1`. That is: 133k tokens
  * against a 68k trigger, one evictable episode, and the extension did
  * NOTHING — it neither evicted nor reduced, and it no longer even has an interval to ask
  * the agent for (`RANGE none`).
