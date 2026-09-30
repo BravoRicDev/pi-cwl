@@ -344,3 +344,34 @@ test('due messaggi con lo STESSO testo non collassano su un solo indirizzo', asy
       'il secondo "ok" sta OLTRE la finestra: con l\'indirizzo ambiguo lo span arrivava fin li\' e lo cancellava');
   } finally { home.restore(); sandbox.cleanup(); }
 });
+
+test('dopo la prima compressione l\'indirizzo si rinnova: si puo\' comprimere ancora', async () => {
+  // Il ramo degli span usciva con `return` PRIMA del punto che calcola il
+  // prossimo intervallo (~2290). Ma `cwl_compress_range` non lo ricalcola —
+  // non ha la lista dei messaggi, legge `st.rangeStartHash` — quindi finche'
+  // uno span risolveva, l'indirizzo non veniva MAI rinnovato e l'agente non
+  // poteva piu' comprimere, mentre la conversazione continuava a crescere.
+  const { sandbox, home, tools, hooks, ctx } = await boot(config());
+  try {
+    const turno = (i) => ([
+      { role: 'user', content: `turno ${i} contenuto ` + 'U'.repeat(200) },
+      { role: 'assistant', content: `risposta ${i} contenuto ` + 'A'.repeat(200) },
+    ]);
+    const lista = [];
+    for (let i = 1; i <= 6; i++) lista.push(...turno(i));
+
+    await hooks.get('context')({ messages: lista }, ctx);
+    const prima = await call(tools, ctx, 'sintesi della prima meta\'');
+    assert.equal(prima.details.ok, true,
+      `la prima compressione deve passare: ${JSON.stringify(prima.details)}`);
+
+    // La conversazione cresce: nuovi turni entrano nella zona comprimibile.
+    for (let i = 7; i <= 10; i++) lista.push(...turno(i));
+
+    await hooks.get('context')({ messages: lista }, ctx);
+    const seconda = await call(tools, ctx, 'sintesi della seconda meta\'');
+    assert.equal(seconda.details.ok, true,
+      'dopo la prima compressione l\'indirizzo deve rinnovarsi, o l\'agente non puo\' piu\' comprimere: '
+      + JSON.stringify(seconda.details));
+  } finally { home.restore(); sandbox.cleanup(); }
+});

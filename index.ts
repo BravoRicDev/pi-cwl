@@ -2267,6 +2267,22 @@ export default function (pi: ExtensionAPI) {
         if (applied.pairDropped > 0 || applied.pairStripped > 0) {
           debugLog(cf, `PAIR REPAIR: dropped ${applied.pairDropped} orphan tool result(s), stripped ${applied.pairStripped} orphan tool call(s) — the range had split a pair`);
         }
+        // Spans applied. This used to return here, and that made the rest of the
+        // hook unreachable — including the ONLY place that computes the NEXT
+        // compressible range (line ~2290). `finish` and `turn_end` both read
+        // `st.rangeStartHash` to decide whether there is anything to ask for,
+        // and `cwl_compress_range` REFUSES while it is null (it deliberately
+        // does not recompute: it has no message list). So as long as any span
+        // resolved, the address was never renewed and the agent could not
+        // compress a second time.
+        //
+        // Recomputed HERE, on the ORIGINAL list: the span endpoints must still
+        // resolve, or `covered` would be empty and the same region would be
+        // offered again.
+        const nextRange = compressibleRange(messages, st.spans, cf.protectedTurns);
+        st.rangeStartHash = nextRange?.startHash ?? null;
+        st.rangeEndHash = nextRange?.endHash ?? null;
+        st.rangeTokens = nextRange?.tokens ?? 0;
         return finish(applied.kept);
       }
     }
