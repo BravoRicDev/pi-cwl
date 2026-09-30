@@ -209,6 +209,8 @@ type CwlMessages = {
   oldSupersededPage: (id: string, chars: number, text: string) => string;
   /** The request to write the merge summary: it is the only trigger the agent sees. */
   indexDue: (young: number, need: number) => string;
+  /** The invitation to open a topic while the buffer's leaves can still be moved. */
+  topicDue: (id: string, leaves: number, microChars: number, needChars: number) => string;
   /** The leaves waiting for a micro: the request that starts the index. */
   leavesDue: (missing: number, ids: string) => string;
   /** A leaf that was pruned: its summary is lost, the original comes back from the transcript. */
@@ -340,6 +342,7 @@ const I18N: Record<Lang, CwlMessages> = {
     oldSupersededLine: (id, chars) => `- ${id}: ${chars} chars`,
     oldSupersededPage: (id, chars, text) => `[CWL superseded synthesis ${id} — ${chars} chars. This is a synthesis that the CURRENT one of the pit replaced; cwl_old overwrites instead of extending, so the archive keeps the text it would otherwise have erased. Nothing else refers to it.]\n\n${text}`,
     indexDue: (young, need) => `[CWL INDEX] ${young} node(s) of the index are due to merge (a merge starts at ${need}). Call cwl_old with the merge summary: your synthesis replaces the micros of the oldest nodes, and their leaves stay readable with cwl_open.`,
+    topicDue: (id, leaves, microChars, needChars) => `[CWL TOPIC] the buffer (${id}) holds ${leaves} leaf/leaves, and their micros are ${microChars} characters — enough for the ${needChars} a topic must free. Open a topic NOW with cwl_group: pass those leaves, a name, and a description that already covers their FUTURE use, and one description then stands for all of them. This is the last moment it is possible: a leaf that enters a node can never be moved again, and the window closes with it.`,
     leavesDue: (missing, ids) => `[CWL INDEX] ${missing} leaf/leaves still have their BODY in the context and wait for a micro: ${ids} — call cwl_micro with the id and a micro of ~1.200 characters (≈300 tokens, ~200 words). The body leaves the context, the micro stands for it, and only then can the leaf enter a node. And while you label them: leaves that belong together can be grouped into a TOPIC with cwl_group — one description then stands for all of them, their labels leave the context, and the topic counts as a node like any other. Do it NOW, while those leaves still have their BODY in the context: once a leaf is inside a node it cannot be moved any more, and the window closes. It is the cheapest saving you can make.`,
     openOriginal: (id, tokens, body) => `[CWL leaf ${id} — its SUMMARY was dropped when the state pruned it, so here is the ORIGINAL from the append-only transcript (~${tokens} tokens, in full).]\n\n${body}`,
     openOriginalLost: (id) => `Leaf "${id}" was dropped from the state, and its anchors found NOTHING in the transcript. The original cannot be recovered by id from here: use cwl_recall with keywords from that content.`,
@@ -516,6 +519,7 @@ const I18N: Record<Lang, CwlMessages> = {
     oldSupersededLine: (id, chars) => `- ${id}: ${chars} caratteri`,
     oldSupersededPage: (id, chars, text) => `[CWL sintesi sostituita ${id} — ${chars} caratteri. E' una sintesi che quella ATTUALE del pozzo ha sostituito; cwl_old sostituisce invece di estendere, quindi l'archivio tiene il testo che altrimenti avrebbe cancellato. Nient'altro la referenzia.]\n\n${text}`,
     indexDue: (young, need) => `[CWL INDICE] ${young} nodo/i dell'indice sono da accorpare (si accorpa da ${need} in su). Chiama cwl_old col riassuntone: la tua sintesi sostituisce i micro dei nodi piu' vecchi, e le loro foglie restano leggibili con cwl_open.`,
+    topicDue: (id, leaves, microChars, needChars) => `[CWL TOPIC] il buffer (${id}) tiene ${leaves} foglia/e, e i loro micro sono ${microChars} caratteri — abbastanza per i ${needChars} che un topic deve liberare. Apri un topic ADESSO con cwl_group: passa quelle foglie, un nome e una descrizione che copra gia' il loro uso FUTURO, e una descrizione sola sta per tutte. E' l'ultimo momento in cui si puo': una foglia che entra in un nodo non si sposta piu', e la finestra si chiude con lei.`,
     leavesDue: (missing, ids) => `[CWL INDICE] ${missing} foglia/e hanno ancora il CORPO nel contesto e aspettano un micro: ${ids} — chiama cwl_micro con l'id e un micro di ~1.200 caratteri (≈300 token, ~200 parole). Il corpo esce dal contesto, il micro lo rappresenta, e solo allora la foglia puo' entrare in un nodo. E mentre le etichetti: le foglie che vanno insieme si possono raggruppare in un TOPIC con cwl_group — una descrizione sola sta per tutte, le loro etichette escono dal contesto, e il topic conta come nodo come tutti gli altri. Fallo ADESSO, finche' quelle foglie hanno ancora il CORPO nel contesto: una volta entrata in un nodo, una foglia non si sposta piu' e la finestra si chiude. E' il risparmio piu' economico che hai.`,
     openOriginal: (id, tokens, body) => `[CWL foglia ${id} — il RIASSUNTO e' andato perso quando lo stato l'ha potato, quindi ecco l'ORIGINALE dal transcript append-only (~${tokens} token, per intero).]\n\n${body}`,
     openOriginalLost: (id) => `La foglia "${id}" era stata potato dallo stato, e le sue ancore nel transcript non hanno trovato niente. Da qui l'originale non e' piu' recuperabile per id: usa cwl_recall con parole chiave di quel contenuto.`,
@@ -636,6 +640,17 @@ interface CwlConfig {
   /** And the absolute floor, in characters: below this a merge is refused whatever the ratio says. */
   mergeMinChars: number;
   /**
+   * Past how many leaves of the BUFFER the agent is invited to open a topic.
+   *
+   * The buffer is the LAST node and the only one whose leaves can still be moved:
+   * a leaf that has entered a node can never be moved again, so a topic that is not
+   * born while its leaves are still in the buffer is lost for good. This is why the
+   * invitation exists at all — the index itself closes the window it depends on.
+   * It is a preference, like `nodeCapacity`: the number only decides WHEN the agent
+   * is told, and the size guard decides whether the group is worth a description.
+   */
+  topicInviteAt: number;
+  /**
    * Ask the AGENT to compact when the budget is not coming down on its own.
    *
    * The deterministic eviction is blind: it cuts by age, not by meaning. This is
@@ -688,6 +703,10 @@ const DEFAULT_CONFIG: CwlConfig = {
   mergeNodesAt: 3,
   mergeMinRatio: 3,
   mergeMinChars: 6_000,
+  // 18 of the 30 leaves a node holds. Early enough that the leaves are still in the
+  // buffer and can be moved, late enough that the group already passes the size guard
+  // with the micros it holds. Raising it trades the invitation for a fuller node.
+  topicInviteAt: 18,
   gate: true,
   levels: {
     stripReasoning: true,
@@ -758,6 +777,7 @@ function loadConfig(): CwlConfig {
         mergeNodesAt: validNumber(user.mergeNodesAt, 1, 10_000, DEFAULT_CONFIG.mergeNodesAt),
         mergeMinRatio: validNumber(user.mergeMinRatio, 0, 1_000, DEFAULT_CONFIG.mergeMinRatio),
         mergeMinChars: validNumber(user.mergeMinChars, 0, 10_000_000, DEFAULT_CONFIG.mergeMinChars),
+        topicInviteAt: validNumber(user.topicInviteAt, 0, 10_000, DEFAULT_CONFIG.topicInviteAt),
         gate: validBool(user.gate, DEFAULT_CONFIG.gate),
         levels: {
           stripReasoning: validBool(levels.stripReasoning, DEFAULT_CONFIG.levels.stripReasoning),
@@ -4243,6 +4263,28 @@ export default function (pi: ExtensionAPI) {
     // compression demand already goes: into the context.
     const young = st.nodes.filter((nd) => !new Set(st.oldNode?.nodes ?? []).has(nd.id)).length;
     const mergeRequest = plan.due > 0 ? t('indexDue')(young, cf.mergeNodesAt) : null;
+    // The topic invitation exists because the INDEX ITSELF closes the window it depends on:
+    // a leaf inside a node can never be moved again, so a topic that is not born while its
+    // leaves are still in the buffer is lost for good. Until now the agent learned the size
+    // guard by trying and being refused, one turn and one failed call at a time; here it is
+    // told BEFORE, with every number it needs to act.
+    const buffer = st.nodes[st.nodes.length - 1];
+    const microCharsById = new Map(st.spans.map((s) => [idOfSpan(s), (s.micro ?? '').length]));
+    const bufferMicroChars = buffer
+      ? buffer.leaves.reduce((n, id) => n + (microCharsById.get(id) ?? 0), 0)
+      : 0;
+    const topicNeedChars = Math.max(Math.round(cf.mergeMinRatio * MERGE_SYNTHESIS_CHARS), cf.mergeMinChars);
+    // The invitation fires ONLY when the guard would pass: `bufferMicroChars >= topicNeedChars`.
+    // One that cannot be acted on would teach the agent nothing and cost a demand per turn.
+    // `!buffer.name` only guards a state written by an older version — a topic can never be
+    // the first node, because it cannot act as a buffer.
+    const topicRequest =
+      buffer && !buffer.name && buffer.leaves.length > cf.topicInviteAt && bufferMicroChars >= topicNeedChars
+        ? t('topicDue')(buffer.id, buffer.leaves.length, bufferMicroChars, topicNeedChars)
+        : null;
+    if (topicRequest && buffer) {
+      debugLog(cf, `TOPIC due: the buffer ${buffer.id} holds ${buffer.leaves.length} leaf/leaves (${bufferMicroChars} chars of micros, need ${topicNeedChars}) — asked in the context`);
+    }
     // The index shape belongs in the TUI, NOT in the context: a widget is UI, it costs no
     // tokens and it cannot nudge the agent. `showWidget: false` turns it off, and the
     // option is finally read by somebody: it was declared, defaulted and validated, and
@@ -4274,7 +4316,7 @@ export default function (pi: ExtensionAPI) {
       debugLog(cf, `MICRO due: ${plan.waiting} leaf/leaves waiting for a micro — asked in the context (${Math.min(plan.waiting, MICRO_DEMAND_IDS)} id(s) named)`);
     }
     const demand =
-      [microRequest, mergeRequest].filter((d): d is string => d !== null).join('\n\n') || null;
+      [microRequest, mergeRequest, topicRequest].filter((d): d is string => d !== null).join('\n\n') || null;
 
     if (st.spans.length > 0) {
       const applied = applySpans(messages, st.spans, pitView(st), topicView(st), demand);
