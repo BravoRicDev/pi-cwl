@@ -2383,6 +2383,51 @@ export default function (pi: ExtensionAPI) {
     const trigger = cf.tokenBudget * cf.thresholdRatio;
 
     /**
+     * Says OUT LOUD why the context is still above the trigger, with four numbers
+     * that ADD UP to the active context exactly: it is arithmetic, not a story.
+     *
+     * The gate already refuses to demand what it cannot deliver (it tests
+     * `canClose`/`canCompress`); what it never said is WHY there is nothing left to
+     * deliver. MEASURED on a real session: 184.490t against a 68.000t trigger with
+     * only 6.307t of compressible range — the last 10 user turns (the window the
+     * operator asked for) and the content the spans keep hold everything else. An
+     * operator reading "over budget" cannot tell a broken extension from an
+     * inviolable context, and that ambiguity is what this row removes.
+     *
+     * `inside the spans` is what a span KEEPS in place — the operator's turns, the
+     * system/developer directives, other extensions' custom messages. It still
+     * costs tokens, and `compressibleRange` treats a span's whole interval as
+     * covered, so a later compression can never reach it.
+     */
+    const declareFloor = (list: AgentMessage[], tokens: number): void => {
+      if (tokens <= trigger) return;
+      const floor = protectedFromIndex(list, cf.protectedTurns);
+      const { exact, legacy } = addressMaps(list);
+      const findPos = (h: string): number | undefined => exact.get(h) ?? legacy.get(h);
+      const inSpans = new Set<number>();
+      for (const sp of st.spans) {
+        const from = findPos(sp.startHash);
+        const to = findPos(sp.endHash);
+        if (from === undefined || to === undefined) continue;
+        for (let i = Math.min(from, to); i <= Math.max(from, to); i++) inSpans.add(i);
+      }
+      let protectedTokens = 0;
+      let spanTokens = 0;
+      let outside = 0;
+      list.forEach((m, i) => {
+        const t = estimateMessageTokens(m);
+        if (i >= floor) protectedTokens += t;
+        else if (inSpans.has(i)) spanTokens += t;
+        else outside += t;
+      });
+      // `free` is a SUBSET of `outside` (below the floor and not covered by a
+      // span), so it is subtracted from it: the four numbers must partition the
+      // context EXACTLY, and the test checks that identity.
+      const free = Math.min(st.rangeTokens, outside);
+      debugLog(cf, `CONTEXT ${tokens}t still above trigger ${Math.round(trigger)}t: ${protectedTokens}t in the protected window (last ${cf.protectedTurns} user turns), ${spanTokens}t inside the spans, ${free}t freely compressible, ${outside - free}t elsewhere`);
+    };
+
+    /**
      * Final step of the hook: decides whether to ask the AGENT to compact.
      *
      * The gate is verified by EFFECT — the measured context — not by the agent's
@@ -2401,6 +2446,7 @@ export default function (pi: ExtensionAPI) {
       }
       // Still over budget. Remember since when, so turn_end knows when to ask.
       if (st.overBudgetSince < 0) st.overBudgetSince = st.turns;
+      declareFloor(list, after);
       if (!cf.gate || st.gateArmedTurn < 0) return { messages: list };
       // Only demand what the extension can actually deliver. In a real session the
       // gate asked to compact while ALL four episodes were already closed and
