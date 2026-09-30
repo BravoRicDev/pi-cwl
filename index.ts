@@ -60,6 +60,8 @@ interface RealMessage {
   toolCallId?: string;
   toolName?: string;
   timestamp?: number;
+  /** Set by extensions that inject their own messages (role: 'custom'). */
+  customType?: string;
 }
 
 // ---------------------------------------------------------------------------
@@ -152,6 +154,9 @@ type CwlMessages = {
   episodeRecallEmpty: (name: string) => string;
   episodeRecallTruncatedHint: string;
   episodeRecallFound: (name: string, tokens: number, body: string) => string;
+  /** Budget gate: the agent-driving channel. */
+  gateDemand: (current: string, budget: string, turns: number) => string;
+  gateGiveUp: (attempts: number) => string;
   /** Texts that end up in the LLM context. */
   snippets: { delimiter: string; status: string; compress: string; recall: string; recallEpisode: string };
   /** Texts of the autonomous tools. */
@@ -216,6 +221,15 @@ const I18N: Record<Lang, CwlMessages> = {
     episodeRecallEmpty: (name) => `Episode "${name}" resolved to no readable text.`,
     episodeRecallTruncatedHint: '\n\n… (truncated; pass full=true for the whole episode)',
     episodeRecallFound: (name, tokens, body) => `Original content of episode "${name}" (~${tokens} tokens):\n\n${body}`,
+    gateDemand: (current, budget, turns) =>
+      `[CWL \u00b7 CONTEXT OVER BUDGET] The active context is ~${current} tokens against a budget of ${budget}, ` +
+      `and the deterministic eviction has nothing left to take. Do ONE of these NOW, in this turn:\n` +
+      `  1. close the episodes you no longer need: ` +
+      `delimiter(action="end", name="<episode>", description="<what you learned>")\n` +
+      `  2. compress a range you have already worked through: ` +
+      `cwl_compress(startHash="...", endHash="...", summary="<whole pieces, not a digest>")\n` +
+      `The last ${turns} turns are protected and will NOT be touched: compact something older.`,
+    gateGiveUp: (attempts) => `CWL: the compaction demand went unanswered for ${attempts} turns; dropping it for a cooldown.`,
     snippets: {
       delimiter: 'delimiter: marks the boundaries of a CWL episode (expl/act)',
       status: 'cwl_status: CWL context lifecycle status',
@@ -293,6 +307,15 @@ const I18N: Record<Lang, CwlMessages> = {
     episodeRecallEmpty: (name) => `L'episodio "${name}" non ha prodotto testo leggibile.`,
     episodeRecallTruncatedHint: '\n\n… (troncato; passa full=true per l\'episodio intero)',
     episodeRecallFound: (name, tokens, body) => `Contenuto originale dell'episodio "${name}" (~${tokens} token):\n\n${body}`,
+    gateDemand: (current, budget, turns) =>
+      `[CWL \u00b7 CONTESTO OLTRE IL BUDGET] Il contesto attivo e' ~${current} token contro un budget di ${budget}, ` +
+      `e l'eviction deterministica non ha piu' niente da prendere. Fai UNA di queste cose ORA, in questo turno:\n` +
+      `  1. chiudi gli episodi che non ti servono piu': ` +
+      `delimiter(action="end", name="<episodio>", description="<cosa hai imparato>")\n` +
+      `  2. comprimi un intervallo che hai gia' consumato: ` +
+      `cwl_compress(startHash="...", endHash="...", summary="<pezzi interi, non un sommario>")\n` +
+      `Gli ultimi ${turns} turni sono protetti e NON verranno toccati: compatta qualcosa di piu' vecchio.`,
+    gateGiveUp: (attempts) => `CWL: la richiesta di compattazione e' rimasta senza risposta per ${attempts} turni; la tolgo per un cooldown.`,
     snippets: {
       delimiter: 'delimiter: segna i confini di un episodio CWL (expl/act)',
       status: 'cwl_status: stato del context lifecycle CWL',
@@ -347,6 +370,15 @@ interface CwlConfig {
    * definition available here.
    */
   protectedTurns: number;
+  /**
+   * Ask the AGENT to compact when the budget is not coming down on its own.
+   *
+   * The deterministic eviction is blind: it cuts by age, not by meaning. This is
+   * the only channel that can get a semantic decision out of the model — but it
+   * is an instruction, so it is a PREFERENCE, never a guarantee: `protectedTurns`
+   * and the safety net are what actually bound the context.
+   */
+  gate: boolean;
   /** Enabled aggressiveness levels. */
   levels: {
     stripReasoning: boolean;
@@ -368,6 +400,7 @@ const DEFAULT_CONFIG: CwlConfig = {
   // Ten turns is the window the operator asked for: enough that the agent never
   // loses the thread it is on, small enough that compaction still bites.
   protectedTurns: 10,
+  gate: true,
   levels: {
     stripReasoning: true,
     stripBulkOutput: true,
@@ -426,6 +459,7 @@ function loadConfig(): CwlConfig {
         tokenBudget: validNumber(user.tokenBudget, 1, Number.MAX_SAFE_INTEGER, DEFAULT_CONFIG.tokenBudget),
         thresholdRatio: validNumber(user.thresholdRatio, 0, 1, DEFAULT_CONFIG.thresholdRatio),
         protectedTurns: validNumber(user.protectedTurns, 0, 10_000, DEFAULT_CONFIG.protectedTurns),
+        gate: validBool(user.gate, DEFAULT_CONFIG.gate),
         levels: {
           stripReasoning: validBool(levels.stripReasoning, DEFAULT_CONFIG.levels.stripReasoning),
           stripBulkOutput: validBool(levels.stripBulkOutput, DEFAULT_CONFIG.levels.stripBulkOutput),
@@ -625,6 +659,16 @@ interface CwlState {
   knownHashes: Set<string>;
   /** BM25 index of the transcript, built lazily on the first search. */
   recallIndex: Recall.Bm25Index | null;
+  /** Turn counter, incremented in turn_end. */
+  turns: number;
+  /** Turn the context first went over budget without relief; -1 when under. */
+  overBudgetSince: number;
+  /** Turn the gate was armed, -1 when inactive. */
+  gateArmedTurn: number;
+  /** Failed attempts of the active gate. */
+  gateAttempts: number;
+  /** Turn of the last failed gate, used for the cooldown. */
+  lastGateViolationTurn: number;
 }
 
 function newState(): CwlState {
@@ -639,6 +683,11 @@ function newState(): CwlState {
     spans: [],
     knownHashes: new Set(),
     recallIndex: null,
+    turns: 0,
+    overBudgetSince: -1,
+    gateArmedTurn: -1,
+    gateAttempts: 0,
+    lastGateViolationTurn: -1,
   };
 }
 
@@ -716,6 +765,12 @@ interface PersistedState {
   lastEvictionTurn: number;
   lastMeasuredTokens: number;
   knownHashes: string[];
+  /** Gate bookkeeping. Optional on load: an older state file simply has none. */
+  turns?: number;
+  overBudgetSince?: number;
+  gateArmedTurn?: number;
+  gateAttempts?: number;
+  lastGateViolationTurn?: number;
 }
 
 const STATE_VERSION = 1;
@@ -743,6 +798,11 @@ function saveState(key: string, st: CwlState): void {
       lastEvictionTurn: st.lastEvictionTurn,
       lastMeasuredTokens: st.lastMeasuredTokens,
       knownHashes: [...st.knownHashes].slice(-MAX_PERSISTED_HASHES),
+      turns: st.turns,
+      overBudgetSince: st.overBudgetSince,
+      gateArmedTurn: st.gateArmedTurn,
+      gateAttempts: st.gateAttempts,
+      lastGateViolationTurn: st.lastGateViolationTurn,
     };
     // Atomic write: a crash mid-write must not leave a truncated file that then
     // fails to parse on resume and silently loses the whole state.
@@ -766,6 +826,11 @@ function loadPersistedState(key: string): CwlState | null {
     st.totalEvictedTokens = typeof data.totalEvictedTokens === 'number' ? data.totalEvictedTokens : 0;
     st.lastEvictionTurn = typeof data.lastEvictionTurn === 'number' ? data.lastEvictionTurn : -1;
     st.lastMeasuredTokens = typeof data.lastMeasuredTokens === 'number' ? data.lastMeasuredTokens : 0;
+    st.turns = typeof data.turns === 'number' ? data.turns : 0;
+    st.overBudgetSince = typeof data.overBudgetSince === 'number' ? data.overBudgetSince : -1;
+    st.gateArmedTurn = typeof data.gateArmedTurn === 'number' ? data.gateArmedTurn : -1;
+    st.gateAttempts = typeof data.gateAttempts === 'number' ? data.gateAttempts : 0;
+    st.lastGateViolationTurn = typeof data.lastGateViolationTurn === 'number' ? data.lastGateViolationTurn : -1;
     if (Array.isArray(data.knownHashes)) {
       st.knownHashes = new Set(data.knownHashes.filter((h): h is string => typeof h === 'string'));
     }
@@ -824,6 +889,25 @@ const STRIP_BLOCK_CHARS = 2000;
  * agent, and the default must not be able to blow the context it just freed.
  */
 const EPISODE_PREVIEW_CHARS = 4000;
+
+// ---------------------------------------------------------------------------
+// Budget gate (the agent-driving channel)
+// ---------------------------------------------------------------------------
+
+/** customType of the injected demand, so it can be replaced instead of stacked. */
+const GATE_CUSTOM_TYPE = 'cwl-budget-gate';
+
+/** True when the message is the budget demand this extension injected. */
+function isGateMessage(m: AgentMessage): boolean {
+  // SAFETY: read-only field probe (customType); the AgentMessage union does not declare it.
+  return (m as unknown as RealMessage).customType === GATE_CUSTOM_TYPE;
+}
+/** Turns over budget before the agent is asked to act on its own. */
+const GATE_AFTER_TURNS = 2;
+/** How many turns the agent gets before the demand is dropped. */
+const GATE_MAX_ATTEMPTS = 3;
+/** Turns of silence after a failed demand, so it does not nag forever. */
+const GATE_COOLDOWN_TURNS = 5;
 
 /**
  * Reduces a message according to the requested stripping level.
@@ -1666,8 +1750,15 @@ export default function (pi: ExtensionAPI) {
     const st = getState(key);
     const cf = getConfig(key);
 
-    const messages: AgentMessage[] = event.messages;
-    if (!messages || messages.length === 0) return;
+    const eventMessages: AgentMessage[] = event.messages;
+    if (!eventMessages || eventMessages.length === 0) return;
+
+    // Drop the demand injected on the PREVIOUS call before anything else: it is
+    // re-added only while the gate is armed, so it can never pile up turn after
+    // turn. Measuring AFTER this also keeps the demand from inflating the very
+    // number it is about.
+    const messages: AgentMessage[] = eventMessages.filter((m) => !isGateMessage(m));
+    const droppedGate = messages.length !== eventMessages.length;
 
     // Update the cursor with the REAL message count (not turns).
     // Tool results are appended during the turn, so the message count is
@@ -1692,6 +1783,45 @@ export default function (pi: ExtensionAPI) {
     }
     st.lastMeasuredTokens = currentTokens;
 
+    const trigger = cf.tokenBudget * cf.thresholdRatio;
+
+    /**
+     * Final step of the hook: decides whether to ask the AGENT to compact.
+     *
+     * The gate is verified by EFFECT — the measured context — not by the agent's
+     * word. anti-amnesia asks for a `[CARD OK]` token to be echoed back; here the
+     * thing we want (fewer tokens) is directly measurable, so it is measured, and
+     * a hallucinated confirmation earns nothing.
+     */
+    const finish = (list: AgentMessage[]): { messages: AgentMessage[] } => {
+      const after = list.reduce((s: number, m: AgentMessage) => s + estimateMessageTokens(m), 0);
+      st.lastMeasuredTokens = after;
+      if (after <= trigger) {
+        // Effect achieved: the gate has nothing left to ask for.
+        st.overBudgetSince = -1;
+        st.gateArmedTurn = -1;
+        return { messages: list };
+      }
+      // Still over budget. Remember since when, so turn_end knows when to ask.
+      if (st.overBudgetSince < 0) st.overBudgetSince = st.turns;
+      if (!cf.gate || st.gateArmedTurn < 0) return { messages: list };
+      // SAFETY: Pi accepts the custom role in the context hook although the
+      // AgentMessage union does not declare it; the extra keys are its contract.
+      return {
+        messages: [...list, {
+          role: 'custom',
+          customType: GATE_CUSTOM_TYPE,
+          content: t('gateDemand')(
+            after.toLocaleString(),
+            Math.round(trigger).toLocaleString(),
+            cf.protectedTurns,
+          ),
+          display: false,
+          timestamp: Date.now(),
+        } as unknown as AgentMessage],
+      };
+    };
+
     // The spans compressed by the LLM are ALWAYS applied, not only above the
     // threshold: the agent decides when to compress, not the extension estimate.
     if (st.spans.length > 0) {
@@ -1700,14 +1830,18 @@ export default function (pi: ExtensionAPI) {
         st.totalEvictions += applied.applied;
         st.totalEvictedTokens += applied.saved;
         debugLog(cf, `SPANS applied: ${applied.applied}, saved ${applied.saved}t`);
-        return { messages: applied.kept };
+        return finish(applied.kept);
       }
     }
 
-    const trigger = cf.tokenBudget * cf.thresholdRatio;
     if (currentTokens <= trigger) {
+      // Under budget: nothing to compact and nothing to ask for. This is also the
+      // ONLY way the gate closes — by effect, never by a confirmation token.
+      st.overBudgetSince = -1;
+      st.gateArmedTurn = -1;
       debugLog(cf, `CONTEXT ${currentTokens}t under threshold ${Math.round(trigger)}t: no eviction`);
-      return;
+      // The demand from the previous call must still be removed even here.
+      return droppedGate ? { messages } : undefined;
     }
 
     // The last `protectedTurns` user turns are inviolable: compaction must never
@@ -1727,6 +1861,12 @@ export default function (pi: ExtensionAPI) {
      * were removed when no episode existed.
      */
     const reasoningFallback = (list: AgentMessage[]): AgentMessage[] | null => {
+      // Honour the level switch. The old fallback called the strip unguarded, so
+      // `stripReasoning: false` did not actually turn it off; that mattered little
+      // when the fallback only ran in a graph with no episodes, and matters a lot
+      // now that it is the main path. With the level off, the safety net is off:
+      // the operator's switch has to mean something.
+      if (!levelEnabled(cf, 'reasoning')) return null;
       const floor = protectedFromIndex(list, cf.protectedTurns);
       const out = globalReasoningStrip(list, floor);
       if (!out) return null;
@@ -1745,9 +1885,9 @@ export default function (pi: ExtensionAPI) {
     // the only one left.
     if (g.isEmpty) {
       const stripped = reasoningFallback(messages);
-      if (stripped) return { messages: stripped };
+      if (stripped) return finish(stripped);
       debugLog(cf, 'CONTEXT above threshold but no episode AND no reasoning strip possible');
-      return;
+      return finish(messages);
     }
 
     // 2. Deterministic policy: compute what to evict and at which level
@@ -1755,9 +1895,9 @@ export default function (pi: ExtensionAPI) {
     if (actions.length === 0) {
       // No episode is safe to touch: the safety net still is.
       const stripped = reasoningFallback(messages);
-      if (stripped) return { messages: stripped };
+      if (stripped) return finish(stripped);
       debugLog(cf, `CONTEXT ${currentTokens}t above threshold but no safe candidate: context untouched`);
-      return;
+      return finish(messages);
     }
 
     // 3. Actually APPLY: rebuild the message list evicting the segments
@@ -1912,9 +2052,9 @@ export default function (pi: ExtensionAPI) {
     if (dropped === 0 && truncated === 0) {
       // Nothing in the episodes was reducible: the safety net is still there.
       const stripped = reasoningFallback(messages);
-      if (stripped) return { messages: stripped };
+      if (stripped) return finish(stripped);
       debugLog(cf, 'EVICTION: no message actually reducible, context left untouched');
-      return;
+      return finish(messages);
     }
 
     // H1: strip the toolCall blocks whose tool result was just dropped. The
@@ -1968,22 +2108,52 @@ export default function (pi: ExtensionAPI) {
     // the SAME turn instead of waiting for the episode pass to run dry.
     if (afterTokens > trigger) {
       const stripped = reasoningFallback(kept);
-      if (stripped) return { messages: stripped };
+      if (stripped) return finish(stripped);
     }
 
-    return { messages: kept };
+    return finish(kept);
   });
 
   pi.on('turn_end', async (_event, ctx) => {
     // Observer: the message cursor is updated in the context hook,
     // which is the only point with access to the real message array.
     const key = sessionKey(ctx);
+    const st = states.get(key);
+    if (!st) return;
+    const cf = getConfig(key);
+
+    st.turns += 1;
+
+    // The gate is ARMED here, not in the context hook: arming is a decision about
+    // elapsed turns, and the hook must only render the demand for the state it
+    // finds. The demand is dropped — with a cooldown — after a few unanswered
+    // turns, so a model that ignores it is not nagged forever: the safety net in
+    // the context hook is what actually bounds the context.
+    if (cf.gate && st.overBudgetSince >= 0 && (st.turns - st.overBudgetSince) >= GATE_AFTER_TURNS) {
+      const inCooldown = st.lastGateViolationTurn >= 0 &&
+        (st.turns - st.lastGateViolationTurn) < GATE_COOLDOWN_TURNS;
+      if (!inCooldown) {
+        if (st.gateArmedTurn < 0) {
+          st.gateArmedTurn = st.turns;
+          st.gateAttempts = 0;
+          debugLog(cf, `GATE armed at turn ${st.turns} (over budget since turn ${st.overBudgetSince})`);
+        } else if (st.gateArmedTurn < st.turns) {
+          st.gateAttempts += 1;
+          if (st.gateAttempts >= GATE_MAX_ATTEMPTS) {
+            st.lastGateViolationTurn = st.turns;
+            st.gateArmedTurn = -1;
+            debugLog(cf, `GATE dropped after ${GATE_MAX_ATTEMPTS} attempts; cooldown ${GATE_COOLDOWN_TURNS} turns`);
+            if (ctx?.hasUI) ctx.ui.notify(t('gateGiveUp')(GATE_MAX_ATTEMPTS), 'warning');
+          }
+        }
+      }
+    }
+
     // Persist the DECISIONS (episode graph + traced compressions) at the end of
     // every turn. They cannot be recomputed from the transcript, so a crash or
     // a restart must not throw them away. Sessions that never used CWL write
     // nothing.
-    const st = states.get(key);
-    if (st && (!st.graph.isEmpty || st.spans.length > 0)) saveState(key, st);
+    if (!st.graph.isEmpty || st.spans.length > 0) saveState(key, st);
   });
 
   pi.on('session_shutdown', async (_event, ctx) => {
