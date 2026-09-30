@@ -142,3 +142,47 @@ test('uno span contenuto in un altro non puo\' sparire senza essere dichiarato',
     home.restore();
   }
 });
+
+test('due span che si sovrappongono senza contenersi vengono DICHIARATI', async () => {
+  const { sandbox, home, tools, hooks, ctx } = await boot();
+  try {
+    await hook(hooks, ctx, conversazione(1, 6));
+    const a = await compressRange(tools, ctx, 'SINTESI-A');
+    assert.equal(a.details.ok, true, `span A non creato: ${JSON.stringify(a.details)}`);
+    await hook(hooks, ctx, conversazione(1, 6));
+
+    await hook(hooks, ctx, conversazione(1, 9));
+    const b = await compressRange(tools, ctx, 'SINTESI-B');
+    assert.equal(b.details.ok, true, `span B non creato: ${JSON.stringify(b.details)}`);
+    const [spanA, spanB] = statoDi(sandbox).spans;
+    assert.ok(spanA && spanB, 'servono DUE span distinti per costruire la sovrapposizione');
+
+    // OVER parte dalla FINE di A: condivide con A l'ultimo indirizzo (un turno
+    // utente, che sopravvive) e contiene B. Il filtro del contenimento non ha
+    // niente da dire: A e OVER non si contengono a vicenda.
+    const over = await compress(tools, ctx, spanA.endHash, spanB.endHash, 'SINTESI-OVER');
+    assert.equal(over.details.ok, true, `span OVER non creato: ${JSON.stringify(over.details)}`);
+    assert.equal(statoDi(sandbox).spans.length, 3, 'il terzo span non e\' finito nello stato');
+
+    const primaDelTurno = logDi(sandbox).length;
+    await hook(hooks, ctx, conversazione(1, 9));
+    const log = logDi(sandbox).slice(primaDelTurno);
+
+    // Niente si perde: A e OVER restano applicati (buttare A riporterebbe nel
+    // contesto i messaggi che solo A copre), B e' contenuto in OVER e viene potatto.
+    const applicati = Number((/SPANS applied: (\d+)/.exec(log) || [0, 0])[1]);
+    const potati = Number((/SPANS pruned: (\d+)/.exec(log) || [0, 0])[1]);
+    assert.equal(applicati + potati, 3, `niente puo' sparire: applicati ${applicati} + potati ${potati} invece di 3`);
+
+    // Ma la regione condivisa e' descritta da DUE riassunti: va detto, non subito.
+    const sovrapposti = /SPANS overlap: (\d+)/.exec(log);
+    assert.ok(
+      sovrapposti && Number(sovrapposti[1]) === 1,
+      `una coppia di span condivide una regione e nessuna riga lo dichiara: A=[0..A.end] e OVER=[A.end..B.end] ` +
+        'si toccano su un indice, quindi quel messaggio e\' dentro due riassunti. Oggi `locateSpans` non ha alcun ' +
+        `controllo sulle sovrapposizioni parziali e nessun conto le vede. Log del turno: ${log.trim().split('\n').slice(-4).join(' | ')}`,
+    );
+  } finally {
+    home.restore();
+  }
+});

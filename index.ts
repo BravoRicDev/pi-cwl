@@ -1789,7 +1789,7 @@ function extractEpisodeText(
 function locateSpans(
   messages: AgentMessage[],
   spans: CompressedSpan[],
-): { resolved: { sp: CompressedSpan; from: number; to: number }[]; dead: CompressedSpan[] } {
+): { resolved: { sp: CompressedSpan; from: number; to: number }[]; dead: CompressedSpan[]; overlapped: number } {
   // address -> position index, computed once.
   const { exact, legacy } = addressMaps(messages);
   const findPos = (h: string): number | undefined => exact.get(h) ?? legacy.get(h);
@@ -1850,7 +1850,21 @@ function locateSpans(
     survivors.push(x);
     widestTo = x.to;
   }
-  return { resolved: survivors, dead };
+
+  // A PARTIAL overlap — two survivors sharing at least one message — cannot be
+  // fixed from here: dropping either one would bring back the messages that only
+  // IT covers, undoing the compression for that region. What it is, then, is a
+  // redundancy: the shared messages are described by two summaries. And it has to
+  // be SAID, because nothing else in the pipeline can see it — `covered` is a
+  // set, and `declareFloor`'s four numbers add up by construction (`outside` is
+  // the residual), so a double count leaves no trace there either.
+  // Survivors are sorted by start and none contains another, so a shared region
+  // always shows up between two ADJACENT intervals: one pass, no nested scan.
+  let overlapped = 0;
+  for (let i = 1; i < survivors.length; i++) {
+    if (survivors[i].from <= survivors[i - 1].to) overlapped++;
+  }
+  return { resolved: survivors, dead, overlapped };
 }
 
 /**
@@ -1888,12 +1902,14 @@ function applySpans(
   insideOut: number[];
   /** Spans whose endpoints are no longer in the list: they can never apply. */
   dead: CompressedSpan[];
+  /** Pairs of spans that share at least one message (a partial overlap). */
+  overlapped: number;
 } {
-  if (spans.length === 0) return { kept: messages, applied: 0, saved: 0, newApplied: 0, newSaved: 0, pairDropped: 0, pairStripped: 0, insideOut: [], dead: [] };
+  if (spans.length === 0) return { kept: messages, applied: 0, saved: 0, newApplied: 0, newSaved: 0, pairDropped: 0, pairStripped: 0, insideOut: [], dead: [], overlapped: 0 };
 
-  const { resolved, dead } = locateSpans(messages, spans);
+  const { resolved, dead, overlapped } = locateSpans(messages, spans);
 
-  if (resolved.length === 0) return { kept: messages, applied: 0, saved: 0, newApplied: 0, newSaved: 0, pairDropped: 0, pairStripped: 0, insideOut: [], dead };
+  if (resolved.length === 0) return { kept: messages, applied: 0, saved: 0, newApplied: 0, newSaved: 0, pairDropped: 0, pairStripped: 0, insideOut: [], dead, overlapped: 0 };
 
   const replaced = new Set<number>();
   const injected: AgentMessage[] = [];
@@ -1991,6 +2007,7 @@ function applySpans(
     pairStripped: repaired.stripped,
     insideOut: repaired.dropped === 0 ? insideOut : [],
     dead,
+    overlapped,
   };
 }
 
@@ -2631,6 +2648,12 @@ export default function (pi: ExtensionAPI) {
       if (applied.dead.length > 0) {
         st.spans = st.spans.filter((s) => !applied.dead.includes(s));
         debugLog(cf, `SPANS pruned: ${applied.dead.length} span(s) that can never apply again — endpoints gone, or contained in another span (${st.spans.length} left)`);
+      }
+      // A partial overlap leaves both spans applied on purpose (dropping one would
+      // bring back what only it covers), but the shared messages are then inside
+      // two summaries. Nothing else in the pipeline can see that, so it is said here.
+      if (applied.overlapped > 0) {
+        debugLog(cf, `SPANS overlap: ${applied.overlapped} pair(s) of spans share a message — both stay applied, but that message is described by two summaries`);
       }
       if (applied.applied > 0) {
         // Only spans counted for the FIRST time move the totals. The others are
