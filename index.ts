@@ -152,7 +152,7 @@ type CwlMessages = {
   /** A merge that would free less than it costs: refused, with the numbers said. */
   oldTooSmall: (leaves: number, microChars: number, needChars: number) => string;
   /** The index shape in one line: the TUI widget and `cwl_status` show the same one. */
-  indexLine: (pitNodes: number, pitLeaves: number, youngNodes: number, youngLeaves: number, loose: number, waiting: number, headTokens: string, evictions: number, savedTokens: string) => string;
+  indexLine: (pitNodes: number, pitLeaves: number, youngNodes: number, youngLeaves: number, topics: number, loose: number, waiting: number, headTokens: string, evictions: number, savedTokens: string) => string;
   /** Grouping leaves into a topic node, and the four reasons to refuse it. */
   groupRefused: (why: string, detail: string) => string;
   groupTooSmall: (leaves: number, microChars: number, needChars: number) => string;
@@ -276,8 +276,8 @@ const I18N: Record<Lang, CwlMessages> = {
     statusSpans: (n) => `Compressed spans held: ${n}`,
     oldTooSmall: (leaves, microChars, needChars) =>
       `\n\nNothing was recorded: the ${leaves} leaf/leaves that would leave the context hold ${microChars} characters, and a merge must free at least ${needChars}. A merge COSTS a synthesis: the pit's summary is rewritten, so what leaves has to be worth more than what replaces it. Compress more first, or merge when the nodes are full.`,
-    indexLine: (pitNodes, pitLeaves, youngNodes, youngLeaves, loose, waiting, headTokens, evictions, savedTokens) =>
-      `pit ${pitNodes}n/${pitLeaves}l │ young ${youngNodes}n/${youngLeaves}l │ loose ${loose} │ waiting micro ${waiting} │ head ~${headTokens}t │ ${evictions} evict │ ${savedTokens} saved`,
+    indexLine: (pitNodes, pitLeaves, youngNodes, youngLeaves, topics, loose, waiting, headTokens, evictions, savedTokens) =>
+      `pit ${pitNodes}n/${pitLeaves}l │ young ${youngNodes}n/${youngLeaves}l │ topics ${topics} │ loose ${loose} │ waiting micro ${waiting} │ head ~${headTokens}t │ ${evictions} evict │ ${savedTokens} saved`,
     groupRefused: (why, detail) =>
       `\n\nGrouping refused (${why}${detail ? `: ${detail}` : ''}). Nothing was recorded. Only the leaves of the BUFFER — the last node, the one attached to the leaves still open — can be grouped or moved: older material stays where it is. A leaf already inside the old node cannot come back (the pit's synthesis stands for it), and a leaf without a micro would not appear in any head: write the micro first. A description is IMMUTABLE while its topic is OUTSIDE the old node, because there it IS the index; inside the old node it can be rewritten, and there it moves nothing.`,
     groupTooSmall: (leaves, microChars, needChars) =>
@@ -439,8 +439,8 @@ const I18N: Record<Lang, CwlMessages> = {
     statusSpans: (n) => `Span di compressione tenuti: ${n}`,
     oldTooSmall: (leaves, microChars, needChars) =>
       `\n\nNon e\' stato registrato niente: le ${leaves} foglia/e che uscirebbero dal contesto tengono ${microChars} caratteri, e un accorpamento deve liberarne almeno ${needChars}. Un accorpamento COSTA una sintesi: la sintesi del pozzo viene riscritta, quindi cio\' che esce deve valere piu\' di cio\' che lo sostituisce. Comprimi altro prima, o accorpa quando i nodi sono pieni.`,
-    indexLine: (pitNodes, pitLeaves, youngNodes, youngLeaves, loose, waiting, headTokens, evictions, savedTokens) =>
-      `pozzo ${pitNodes}n/${pitLeaves}f │ giovani ${youngNodes}n/${youngLeaves}f │ sciolte ${loose} │ aspettano micro ${waiting} │ testa ~${headTokens}t │ ${evictions} eviction │ ${savedTokens} risparmiati`,
+    indexLine: (pitNodes, pitLeaves, youngNodes, youngLeaves, topics, loose, waiting, headTokens, evictions, savedTokens) =>
+      `pozzo ${pitNodes}n/${pitLeaves}f │ giovani ${youngNodes}n/${youngLeaves}f │ topic ${topics} │ sciolte ${loose} │ aspettano micro ${waiting} │ testa ~${headTokens}t │ ${evictions} eviction │ ${savedTokens} risparmiati`,
     groupRefused: (why, detail) =>
       `\n\nRaggruppamento rifiutato (${why}${detail ? `: ${detail}` : ''}). Non e' stato registrato niente. Si possono raggruppare o spostare SOLO le foglie del BUFFER — l'ultimo nodo, quello attaccato alle foglie ancora aperte: il materiale piu' vecchio resta dove sta. Una foglia gia' dentro il nodo vecchio non puo' tornare indietro (la sintesi del pozzo sta per lei), e una foglia senza micro non comparirebbe in nessuna testa: scrivi prima il micro. Una descrizione e' IMMUTABILE finche' il suo topic e' FUORI dal nodo vecchio, perche' li' e' l'indice; dentro il nodo vecchio si puo' riscrivere, e li' non muove niente.`,
     groupTooSmall: (leaves, microChars, needChars) =>
@@ -1811,10 +1811,14 @@ const widgetLines = new Map<string, string>();
 function indexShape(
   st: CwlState,
   cf: typeof DEFAULT_CONFIG,
-): [number, number, number, number, number, number, string, number, string] {
+): [number, number, number, number, number, number, number, string, number, string] {
   const inPit = new Set(st.oldNode?.nodes ?? []);
   const pit = st.nodes.filter((nd) => inPit.has(nd.id));
   const young = st.nodes.filter((nd) => !inPit.has(nd.id));
+  // A topic is a node with a description: born collapsed, immutable while it is outside the
+  // pit. The count says how much of the index is CATALOGUED, which until now was invisible
+  // without opening every node to see which ones were topics.
+  const topics = st.nodes.filter((nd) => Boolean(nd.description)).length;
   const owned = new Set(st.nodes.flatMap((nd) => nd.leaves));
   const looseIds = new Set(st.spans.slice(-cf.looseLeaves).map((s) => idOfSpan(s)));
   // The head is what the context PAYS for the index: a topic node costs its ONE
@@ -1837,6 +1841,7 @@ function indexShape(
     pit.reduce((n, nd) => n + nd.leaves.length, 0),
     young.length,
     young.reduce((n, nd) => n + nd.leaves.length, 0),
+    topics,
     looseIds.size,
     waiting,
     Math.round(headChars / 4).toLocaleString(),

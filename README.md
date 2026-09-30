@@ -143,7 +143,7 @@ Optional, at `~/.pi/cwl/config.json`:
 - `mergeNodesAt` — how many young nodes trigger a merge into the old node (default `3`).
 - `mergeMinRatio` — how many times the synthesis a merge frees must outweigh the one it writes (default `3`).
 - `mergeMinChars` — the absolute floor, in characters: below it a merge is refused whatever the ratio says (default `6000`).
-- `showWidget` — draws the index shape (pit / young / loose / waiting / head) in one TUI line below the editor. A widget is UI: it never enters the context and costs no tokens (default `true`).
+- `showWidget` — draws the index shape (pit / young / topics / loose / waiting / head) in one TUI line below the editor. A widget is UI: it never enters the context and costs no tokens (default `true`).
 
 Missing keys fall back to defaults, so a partial file is valid.
 
@@ -299,7 +299,7 @@ Opzionale, in `~/.pi/cwl/config.json`:
 - `mergeNodesAt` — quanti nodi giovani fanno scattare l'accorpamento nel nodo vecchio (default `3`).
 - `mergeMinRatio` — quante volte la sintesi liberata da un accorpamento deve valere piu' di quella che scrive (default `3`).
 - `mergeMinChars` — il minimo assoluto, in caratteri: sotto quella soglia un accorpamento viene rifiutato comunque (default `6000`).
-- `showWidget` — disegna la forma dell'indice (pozzo / giovani / sciolte / in attesa / testa) in una riga della TUI sotto l'editor. Una widget e' UI: non entra mai nel contesto e non costa un token (default `true`).
+- `showWidget` — disegna la forma dell'indice (pozzo / giovani / topic / sciolte / in attesa / testa) in una riga della TUI sotto l'editor. Una widget e' UI: non entra mai nel contesto e non costa un token (default `true`).
 
 Le chiavi mancanti ricadono sui valori di default, quindi un file parziale è valido.
 

@@ -334,3 +334,18 @@ test('a description outside the old node cannot be rewritten', async () => {
     home.restore();
   }
 });
+
+test('the index line counts the topics', async () => {
+  const { sandbox, home, tools, hooks, ctx } = await boot();
+  try {
+    const st = await leavesWithMicros(sandbox, hooks, ctx, tools, 10);
+    assert.match(await statusText(tools, ctx), /topics 0/, 'a fresh index should count no topics');
+    const born = await group(tools, ctx, { leaves: st.spans.slice(0, 9).map((s) => s.id), name: 'login-otp', description: DESCRIPTION });
+    assert.equal(born.details.ok, true, `the topic was not born: ${JSON.stringify(born.details)}`);
+    const line = await statusText(tools, ctx);
+    assert.match(line, /topics 1/, `the topic is not counted in the index line: ${line}`);
+    assert.match(line, /young 2n/, 'the buffer behind the topic disappeared from the line');
+  } finally {
+    home.restore();
+  }
+});
