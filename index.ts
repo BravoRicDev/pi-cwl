@@ -1077,19 +1077,74 @@ const LEVEL_CONFIG_KEY: Record<StripLevel, keyof CwlConfig['levels'] | null> = {
   removed: 'removeEpisode',
 };
 
-/** Estimated saving as a fraction of the episode tokens, per level. */
-const LEVEL_SAVINGS: Record<StripLevel, number> = {
-  none: 0,
-  reasoning: 0.2,
-  bulk: 0.5,
-  intermediate: 0.35,
-  // `removed` drops every message of the episode and keeps only a one-line
-  // marker, so the real saving is ~1.0 — measured on a 211-token episode: 205
-  // tokens gone, 6 left. The old 0.7 under-stated it, so `projected` moved
-  // more slowly than reality and the pass evicted MORE episodes than needed to
-  // reach the threshold.
-  removed: 1.0,
-};
+/**
+ * The index range each closed episode REALLY occupies in this list, anchored by
+ * toolCallId.
+ *
+ * The eviction pass deliberately does not trust `ep.startIdx`: it is a cursor
+ * into a list that keeps changing, and a stale cursor made eviction impossible
+ * whenever the context got shorter. `delimiter` results are real messages, so
+ * their position is exact. The PLAN must measure on the same range the eviction
+ * will touch, or its numbers describe a stretch of conversation nobody will
+ * evict.
+ *
+ * An anchor that cannot be found means the episode cannot be located, so the
+ * eviction skips it (falling back to `messages.length` used to stretch the span
+ * to the end of the context and evict messages belonging to no episode at all —
+ * including the agent's own memory card). The plan skips it too, instead of
+ * inventing a range for it.
+ */
+function episodeRanges(
+  messages: AgentMessage[],
+  episodes: Episode[],
+): Map<string, { from: number; to: number }> {
+  const posByToolCallId = new Map<string, number>();
+  messages.forEach((m, i) => {
+    // SAFETY: toolCallId exists on the real tool-result messages; the public
+    // AgentMessage union does not declare it.
+    const id = (m as unknown as RealMessage).toolCallId;
+    if (typeof id === 'string') posByToolCallId.set(id, i);
+  });
+  const out = new Map<string, { from: number; to: number }>();
+  for (const ep of episodes) {
+    const from = posByToolCallId.get(ep.startToolCallId);
+    const to = ep.endToolCallId !== null ? posByToolCallId.get(ep.endToolCallId) : undefined;
+    if (from === undefined || to === undefined || to <= from) continue;
+    out.set(ep.name, { from, to: Math.min(to, messages.length - 1) });
+  }
+  return out;
+}
+
+/** Tokens the messages in [from..to] occupy right now. */
+function rangeTokens(messages: AgentMessage[], from: number, to: number): number {
+  let total = 0;
+  for (let i = from; i <= to; i++) total += estimateMessageTokens(messages[i]);
+  return total;
+}
+
+/**
+ * Tokens a level would ACTUALLY free on this range, measured with the SAME
+ * primitive the eviction uses (`stripToolResult`).
+ *
+ * The table of fractions this replaces (reasoning 0.2, bulk 0.5, intermediate
+ * 0.35) was invented, and two of its numbers contradicted the code: the eviction
+ * applies `bulk` and `intermediate` as ONE transformation — it groups them in a
+ * single set and calls `stripToolResult(msg, 'bulk')` for both — so giving them
+ * different estimates was fiction. Only `removed` had a measured justification
+ * (211-token episode: 205 gone, 6 left), and here even that is measured.
+ */
+function levelSavingTokens(messages: AgentMessage[], from: number, to: number, level: StripLevel): number {
+  if (level === 'removed') return rangeTokens(messages, from, to);
+  // `intermediate` is not a separate transformation in the eviction pass.
+  const prim: StripLevel = level === 'intermediate' ? 'bulk' : level;
+  let freed = 0;
+  for (let i = from; i <= to; i++) {
+    const before = estimateMessageTokens(messages[i]);
+    const after = estimateMessageTokens(stripToolResult(messages[i], prim));
+    freed += Math.max(0, before - after);
+  }
+  return freed;
+}
 
 function levelEnabled(cfg: CwlConfig, level: StripLevel): boolean {
   const key = LEVEL_CONFIG_KEY[level];
@@ -1139,10 +1194,19 @@ function runEvictionPass(
     ...explCandidates.sort((a, b) => a.openedAt - b.openedAt),
   ];
 
+  // Measured on the SAME ranges the eviction will touch (episodeRanges), not on
+  // `ep.startIdx`.
+  const ranges = episodeRanges(messages, graph.closed());
   let projected = currentTokens;
 
   for (const target of ordered) {
     if (projected <= targetTokens) break;
+
+    const range = ranges.get(target.name);
+    // No range: the eviction will skip this episode too. Counting a saving here
+    // would lower `projected` for something that will never be freed, and the
+    // pass would stop before reaching the target.
+    if (!range) continue;
 
     // Find the minimum level that brings us back under budget
     for (const level of ['reasoning', 'bulk', 'intermediate', 'removed'] as StripLevel[]) {
@@ -1150,12 +1214,13 @@ function runEvictionPass(
 
       const action = computeStripActionWith(cfg, target, level);
       if (action) {
+        const saved = levelSavingTokens(messages, range.from, range.to, level);
+        // A level that frees NOTHING is not a plan: escalate to the next one
+        // instead of stopping here with an action that cannot help.
+        if (saved <= 0 && level !== 'removed') continue;
         target.level = level;
-        // Estimate the episode tokens to compute the real saving
-        const epTokens = estimateEpisodeTokens(target, messages);
-        const saved = Math.floor(epTokens * LEVEL_SAVINGS[level]);
         projected = Math.max(0, projected - saved);
-        actions.push({ ...action, estimatedTokens: epTokens });
+        actions.push({ ...action, estimatedTokens: rangeTokens(messages, range.from, range.to) });
         break;
       }
     }
@@ -1182,26 +1247,6 @@ function computeStripActionWith(cfg: CwlConfig, ep: Episode, level: StripLevel) 
     default:
       return null;
   }
-}
-
-/**
- * Tokens actually occupied by an episode, summing the real messages in its index
- * range.
- *
- * The previous version returned `currentTokens * (span / currentTokens)`, i.e.
- * `span` — an INDEX DELTA (a message count), not a token count. Multiplied by
- * LEVEL_SAVINGS it produced a tiny "saving", so `projected` barely moved, the
- * budget was never satisfied, and the loop kept escalating levels without
- * converging.
- */
-function estimateEpisodeTokens(ep: Episode, messages: AgentMessage[]): number {
-  const last = ep.endIdx === null ? messages.length - 1 : Math.min(ep.endIdx, messages.length - 1);
-  const first = Math.max(0, Math.min(ep.startIdx, last));
-  let total = 0;
-  for (let i = first; i <= last; i++) {
-    total += estimateMessageTokens(messages[i]);
-  }
-  return Math.max(1, total);
 }
 
 // ---------------------------------------------------------------------------
@@ -2395,36 +2440,20 @@ export default function (pi: ExtensionAPI) {
     ]);
     const stripReasoning = byLevel.get('reasoning') ?? new Set<string>();
 
-    // Map message index -> episode. Uses g.closed() (all closed episodes,
-    // including those at level='removed'): with recoverable() the episodes
-    // already marked 'removed' would NEVER be mapped and the full eviction
-    // would never fire.
-    // Anchoring by toolCallId, not by index: `delimiter` results are real
-    // messages in the transcript, so their position is always exact.
-    // The cursor index is not (cf. startIdx) and made eviction
-    // impossible whenever the context got shorter.
-    const posByToolCallId = new Map<string, number>();
-    messages.forEach((m, i) => {
-      // SAFETY: toolCallId exists on the real tool-result messages, but the
-      // public AgentMessage union does not declare it.
-      const id = (m as unknown as RealMessage).toolCallId;
-      if (typeof id === 'string') posByToolCallId.set(id, i);
-    });
-
+    // Map message index -> episode, through the ONE helper that knows how to
+    // locate an episode in this list (episodeRanges, by toolCallId anchors).
+    // The plan measures on the same ranges: two different notions of "where the
+    // episode is" is how a plan describes a stretch of conversation the
+    // eviction never touches.
+    // Uses g.closed() (all closed episodes, including those at level='removed'):
+    // with recoverable() the episodes already marked 'removed' would NEVER be
+    // mapped and the full eviction would never fire.
     const episodeAt = new Map<number, Episode>();
-    for (const ep of g.closed()) {
-      const from = posByToolCallId.get(ep.startToolCallId);
-      const to = ep.endToolCallId !== null ? posByToolCallId.get(ep.endToolCallId) : undefined;
-      if (from === undefined) continue; // anchor lost: better not to evict
-      // A closed episode always carries endToolCallId, so a missing position for
-      // it means the closing tool result is no longer in the list (compressed
-      // away, or trimmed). Falling back to messages.length used to stretch the
-      // span to the end of the context and evict messages that belong to no
-      // episode at all — including the agent's own memory card. Skip instead.
-      if (to === undefined) continue;
-      const end = to;
-      if (end <= from) continue;
-      for (let i = from; i <= Math.min(end, messages.length - 1); i++) episodeAt.set(i, ep);
+    const episodesByName = new Map(g.closed().map((ep) => [ep.name, ep]));
+    for (const [name, range] of episodeRanges(messages, g.closed())) {
+      const ep = episodesByName.get(name);
+      if (!ep) continue;
+      for (let i = range.from; i <= range.to; i++) episodeAt.set(i, ep);
     }
 
     const kept: AgentMessage[] = [];
