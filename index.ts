@@ -459,6 +459,8 @@ const _EXT_DIR = path.dirname(fileURLToPath(import.meta.url));
 const CONFIG_PATH = path.join(os.homedir(), '.pi', 'cwl', 'config.json');
 const BUNDLED_CONFIG_PATH = path.join(_EXT_DIR, 'config.json');
 const LOG_PATH = path.join(os.homedir(), '.pi', 'cwl', 'cwl.log');
+/** See debugLog: the debug log rotates once instead of growing without bound. */
+const MAX_LOG_BYTES = 2_000_000;
 // Traced compaction and episode graph of each session, resumed on restart.
 const STATE_DIR = path.join(os.homedir(), '.pi', 'cwl', 'state');
 
@@ -521,6 +523,14 @@ function debugLog(cfg: CwlConfig, msg: string) {
   if (!cfg.debug) return;
   try {
     fs.mkdirSync(path.dirname(LOG_PATH), { recursive: true });
+    // `appendFileSync` has no cap of its own, and this log is meant to be LEFT
+    // ON while chasing a bug in a long session — which is exactly when it grows
+    // fastest. The state files already have a prune (pruneStateFiles); the log
+    // had nothing at all. One generation is kept, so the file is bounded at 2x
+    // MAX_LOG_BYTES and the previous run is still readable.
+    try {
+      if (fs.statSync(LOG_PATH).size > MAX_LOG_BYTES) fs.renameSync(LOG_PATH, `${LOG_PATH}.1`);
+    } catch { /* no log yet, or not readable: nothing to rotate */ }
     fs.appendFileSync(LOG_PATH, `[${new Date().toISOString()}] ${msg}\n`);
   } catch { /* not critical */ }
 }

@@ -225,3 +225,50 @@ test('uno stato corrotto non impedisce l\'avvio', async () => {
     sandbox.cleanup();
   }
 });
+
+/**
+ * Regressione: il log di debug non cresce senza limite.
+ *
+ * Perche' esiste. `debugLog` faceva `fs.mkdirSync` + `fs.appendFileSync` senza
+ * alcun tetto. Gli state file hanno `pruneStateFiles()` (14 giorni), il log non
+ * aveva niente. E il log si accende PROPRIO quando si insegue un bug in una
+ * sessione lunga: e' la situazione in cui cresce piu' in fretta, e nessuno se
+ * ne accorge finche' il disco non si riempie.
+ *
+ * La rotazione tiene UNA generazione (`MAX_LOG_BYTES = 2_000_000`, poi rename a
+ * `.1`): il file resta limitato a due volte il tetto e la sessione precedente
+ * resta leggibile invece di essere buttata.
+ *
+ * `LOG_PATH` e' calcolato all'IMPORT del modulo: se `withHome` arrivasse dopo
+ * `bootExtension`, il test scriverebbe nella home vera dell'operatore.
+ */
+test('il log di debug ruota invece di crescere senza limite', async () => {
+  const sandbox = makeSandbox({ name: 'debug-log', config: { debug: true } });
+  const home = withHome(sandbox.dir);
+  try {
+    const session = sessionCtx(path.join(sandbox.dir, 'sessione.jsonl'));
+    const logPath = path.join(sandbox.dir, '.pi', 'cwl', 'cwl.log');
+    fs.mkdirSync(path.dirname(logPath), { recursive: true });
+
+    // Un log gia' oltre il tetto, con contenuto riconoscibile: cosi' si vede
+    // se la generazione vecchia viene conservata o persa.
+    const vecchio = 'VECCHIO\n'.repeat(300000); // ~2.4 MB
+    fs.writeFileSync(logPath, vecchio);
+    assert.ok(fs.statSync(logPath).size > 2_000_000, 'il log di partenza deve superare il tetto');
+
+    const { hooks } = await bootExtension(sandbox);
+    await hooks.get('session_start')({}, session);
+
+    const ruotato = `${logPath}.1`;
+    assert.ok(fs.existsSync(ruotato), 'il log oltre il tetto deve essere ruotato in .1');
+    assert.equal(fs.readFileSync(ruotato, 'utf8'), vecchio,
+      'la generazione precedente deve restare intatta, non essere buttata');
+    const nuovo = fs.readFileSync(logPath, 'utf8');
+    assert.ok(nuovo.includes('SESSION START'),
+      `il log nuovo deve contenere la riga di avvio, trovato: ${nuovo.slice(0, 200)}`);
+    assert.ok(fs.statSync(logPath).size < 2_000_000, 'il log nuovo deve ripartire piccolo');
+  } finally {
+    home.restore();
+    sandbox.cleanup();
+  }
+});
