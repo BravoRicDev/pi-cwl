@@ -141,6 +141,12 @@ type CwlMessages = {
   compressRevoked: (start: string, end: string) => string;
   compressUnknownHash: (from: boolean, to: boolean) => string;
   compressApplied: (start: string, end: string) => string;
+  /** cwl_compress_range: the extension picks the range, the model writes the text. */
+  compressRangeApplied: (start: string, end: string, tokens: number) => string;
+  compressRangeNothing: string;
+  compressRangeNoSummary: string;
+  /** Status line for the currently compressible range. */
+  statusRange: (tokens: number, start: string, end: string) => string;
   /** Strings of the cwl_recall tool. */
   recallNotLoaded: string;
   recallNoTranscript: string;
@@ -158,12 +164,13 @@ type CwlMessages = {
   gateDemand: (current: string, budget: string, turns: number) => string;
   gateGiveUp: (attempts: number) => string;
   /** Texts that end up in the LLM context. */
-  snippets: { delimiter: string; status: string; compress: string; recall: string; recallEpisode: string };
+  snippets: { delimiter: string; status: string; compress: string; recall: string; recallEpisode: string; compressRange: string };
   /** Texts of the autonomous tools. */
   tools: {
     compressDesc: string; compressStart: string; compressEnd: string; compressSummary: string;
     recallDesc: string; recallQuery: string; recallLimit: string;
     recallEpisodeDesc: string; recallEpisodeName: string; recallEpisodeFull: string;
+    compressRangeDesc: string; compressRangeSummary: string;
   };
   /** Parameter descriptions: read by the LLM on every invocation. */
   params: {
@@ -194,7 +201,7 @@ const I18N: Record<Lang, CwlMessages> = {
     unknownAction: 'Unrecognised action.',
     emptyDescriptionWarning: ' WARNING: empty description — this episode has no fallback content.',
     statusHeader: (budget, threshold) => `CWL — token budget: ${budget} (threshold: ${threshold}%)`,
-    statusEpisodes: (total, active, closed, stripped) => `Episodes total: ${total} | active: ${active} | closed: ${closed} | stripped: ${stripped}`,
+    statusEpisodes: (total, active, closed, stripped) => `Episodes total: ${total} | active: ${active} | with evictable content: ${closed} | already stripped: ${stripped}`,
     statusEvictions: (count, tokens) => `Evictions total: ${count} | tokens saved: ${tokens}`,
     compressedNotice: (from, to, saved) => `[CWL · RECALL] The messages from ${from} to ${to} were compressed into ` +
       `this summary (~${saved} tokens saved).\n` +
@@ -210,6 +217,10 @@ const I18N: Record<Lang, CwlMessages> = {
     compressRevoked: (start, end) => `Span ${start}..${end} restored to full text.`,
     compressUnknownHash: (from, to) => `Unknown hash. startHash found: ${from}, endHash found: ${to}. Copy them verbatim from the context.`,
     compressApplied: (start, end) => `Compressed ${start}..${end} into your summary. The original stays on disk: recover it with cwl_recall.`,
+    compressRangeApplied: (start, end, tokens) => `Compressed ${start}..${end} (~${tokens} tokens) into your summary. The original stays in the transcript: recover it with cwl_recall_episode or cwl_recall.`,
+    compressRangeNothing: 'Nothing left to compress: everything remaining is either inside the protected window or already compressed.',
+    compressRangeNoSummary: 'The summary is required: it is the ONLY part of this call you have to write yourself.',
+    statusRange: (tokens, start, end) => `Compressible range: ~${tokens} tokens (${start}..${end})`,
     recallNotLoaded: 'The recall index is not loaded; /reload the extension.',
     recallNoTranscript: 'Transcript not found for this session.',
     recallUnreadable: 'Transcript unreadable.',
@@ -227,7 +238,8 @@ const I18N: Record<Lang, CwlMessages> = {
       `  1. close the episodes you no longer need: ` +
       `delimiter(action="end", name="<episode>", description="<what you learned>")\n` +
       `  2. compress a range you have already worked through: ` +
-      `cwl_compress(startHash="...", endHash="...", summary="<whole pieces, not a digest>")\n` +
+      `cwl_compress_range(summary="<whole pieces, not a digest>") ` +
+      `— you do NOT need any hash, the extension already picked the range\n` +
       `The last ${turns} turns are protected and will NOT be touched: compact something older.`,
     gateGiveUp: (attempts) => `CWL: the compaction demand went unanswered for ${attempts} turns; dropping it for a cooldown.`,
     snippets: {
@@ -236,6 +248,7 @@ const I18N: Record<Lang, CwlMessages> = {
       compress: 'cwl_compress: compress a range of messages in the active context',
       recall: 'cwl_recall: retrieve a conversation excerpt by BM25 query',
       recallEpisode: 'cwl_recall_episode: recover the original text of an evicted episode by name',
+      compressRange: 'cwl_compress_range: compress the oldest usable range into your summary (no hashes needed)',
     },
     tools: {
       compressDesc: 'Replaces, in the active context, the messages between two hashes with your summary, leaving the original intact in the transcript. Use it only when the extension asks you to.',
@@ -248,6 +261,8 @@ const I18N: Record<Lang, CwlMessages> = {
       recallEpisodeDesc: 'Recovers the ORIGINAL text of an episode that was evicted from the context, by its name. The episode content still lives in the append-only transcript: eviction moves it out of the CONTEXT, it does not delete it. Use it when a marker says an episode was evicted and you need its detail.',
       recallEpisodeName: 'Name of the evicted episode, as it appears in the eviction marker.',
       recallEpisodeFull: 'false (default) returns a truncated preview; true returns the whole episode.',
+      compressRangeDesc: 'Compresses the OLDEST usable range of the conversation into your summary. YOU DO NOT pick the range and you do not need any hash: the extension already computed the address and holds it. Call it when an eviction marker or the budget demand tells you to compact, and write a summary good enough to keep working without re-reading the originals. Nothing inside the protected window is touched.',
+      compressRangeSummary: 'The summary that REPLACES the compressed range. Write WHOLE PIECES, not a digest: it must be enough to keep working without re-reading them. Include paths, file names, function names, numeric values, and what you decided and why.',
     },
     params: {
       delimiterDesc: 'Marks the boundaries of a CWL episode. Types: "expl" (exploration: searches, reads, orientation — the content is not needed after the inference) and "act" (action: writes, edits, executions — persistent effects, first candidate for eviction). When you open an "act", declare the explorations it depends on. When you close an "expl", give the description of what you learned: it is the only content that survives eviction.',
@@ -280,7 +295,7 @@ const I18N: Record<Lang, CwlMessages> = {
     unknownAction: 'Azione non riconosciuta.',
     emptyDescriptionWarning: ' ATTENZIONE: descrizione vuota — questo episodio non ha contenuto di fallback.',
     statusHeader: (budget, threshold) => `CWL — token budget: ${budget} (threshold: ${threshold}%)`,
-    statusEpisodes: (total, active, closed, stripped) => `Episodi totali: ${total} | attivi: ${active} | chiusi: ${closed} | gia' stripped: ${stripped}`,
+    statusEpisodes: (total, active, closed, stripped) => `Episodi totali: ${total} | attivi: ${active} | con contenuto evictabile: ${closed} | gia' stripped: ${stripped}`,
     statusEvictions: (count, tokens) => `Eviction totali: ${count} | token risparmiati: ${tokens}`,
     compressedNotice: (from, to, saved) => `[CWL · RICHIAMO] I messaggi da ${from} a ${to} sono stati compressi in ` +
       `questo riepilogo (~${saved} token risparmiati).\n` +
@@ -296,6 +311,10 @@ const I18N: Record<Lang, CwlMessages> = {
     compressRevoked: (start, end) => `Span ${start}..${end} ripristinato al testo integrale.`,
     compressUnknownHash: (from, to) => `Hash sconosciuto. startHash trovato: ${from}, endHash trovato: ${to}. Copiali verbatim dal contesto.`,
     compressApplied: (start, end) => `Compresso ${start}..${end} nel tuo riepilogo. L'originale resta su disco: recuperalo con cwl_recall.`,
+    compressRangeApplied: (start, end, tokens) => `Compresso ${start}..${end} (~${tokens} token) nel tuo riepilogo. L'originale resta nel transcript: recuperalo con cwl_recall_episode o cwl_recall.`,
+    compressRangeNothing: "Non resta niente da comprimere: cio' che rimane e' dentro la finestra protetta oppure gia' compresso.",
+    compressRangeNoSummary: "Il riassunto e' obbligatorio: e' l'UNICA parte di questa chiamata che devi scrivere tu.",
+    statusRange: (tokens, start, end) => `Intervallo comprimibile: ~${tokens} token (${start}..${end})`,
     recallNotLoaded: "L'indice di recall non e' caricato; fai /reload dell'estensione.",
     recallNoTranscript: 'Transcript non trovato per questa sessione.',
     recallUnreadable: 'Transcript illeggibile.',
@@ -313,7 +332,8 @@ const I18N: Record<Lang, CwlMessages> = {
       `  1. chiudi gli episodi che non ti servono piu': ` +
       `delimiter(action="end", name="<episodio>", description="<cosa hai imparato>")\n` +
       `  2. comprimi un intervallo che hai gia' consumato: ` +
-      `cwl_compress(startHash="...", endHash="...", summary="<pezzi interi, non un sommario>")\n` +
+      `cwl_compress_range(summary="<pezzi interi, non un sommario>") ` +
+      `— non ti serve nessun hash, l'intervallo l'ha gia' scelto l'estensione\n` +
       `Gli ultimi ${turns} turni sono protetti e NON verranno toccati: compatta qualcosa di piu' vecchio.`,
     gateGiveUp: (attempts) => `CWL: la richiesta di compattazione e' rimasta senza risposta per ${attempts} turni; la tolgo per un cooldown.`,
     snippets: {
@@ -322,6 +342,7 @@ const I18N: Record<Lang, CwlMessages> = {
       compress: 'cwl_compress: comprimi un intervallo di messaggi nel contesto attivo',
       recall: 'cwl_recall: recupera un pezzo di conversazione per query BM25',
       recallEpisode: 'cwl_recall_episode: recupera il testo originale di un episodio evictato, per nome',
+      compressRange: 'cwl_compress_range: comprimi nel tuo riassunto l\'intervallo piu\' vecchio utilizzabile (senza hash)',
     },
     tools: {
       compressDesc: "Sostituisce nel contesto attivo i messaggi fra due hash con il tuo riassunto, lasciando l'originale intatto nel transcript. Usalo solo se l'estensione te lo chiede.",
@@ -334,6 +355,8 @@ const I18N: Record<Lang, CwlMessages> = {
       recallEpisodeDesc: "Recupera il testo ORIGINALE di un episodio evictato dal contesto, per nome. Il contenuto dell'episodio vive ancora nel transcript append-only: l'eviction lo sposta fuori dal CONTESTO, non lo cancella. Usalo quando un marker ti dice che un episodio e' stato evictato e te ne serve il dettaglio.",
       recallEpisodeName: "Nome dell'episodio evictato, come appare nel marker di eviction.",
       recallEpisodeFull: 'false (default) restituisce un estratto troncato; true restituisce l\'episodio intero.',
+      compressRangeDesc: "Comprime nel tuo riassunto l'intervallo PIU' VECCHIO utilizzabile della conversazione. NON scegli tu l'intervallo e non ti serve nessun hash: l'estensione ha gia' calcolato e tiene l'indirizzo. Chiamalo quando un marker di eviction o la richiesta di budget ti dicono di compattare, e scrivi un riassunto che basti a lavorare senza rileggere gli originali. Nulla dentro la finestra protetta viene toccato.",
+      compressRangeSummary: "Il riassunto che SOSTITUISCE l'intervallo compresso. Scrivi PEZZI INTERI, non un sommario: deve bastare a lavorare senza rileggere. Includi path, nomi di file, nomi di funzione, valori numerici e cosa hai scelto e perche'.",
     },
     params: {
       delimiterDesc: 'Segna i confini di un episodio CWL. Tipi: "expl" (esplorazione: ricerca, letture, orientamento — il contenuto non serve dopo l\'inferenza) e "act" (azione: scritture, edit, esecuzioni — effetti persistenti, primo candidato all\'eviction). Quando apri un "act", dichiara le esplorazioni da cui dipende. Quando chiudi un "expl", fornisci la descrizione di cosa hai imparato: e\' l\'unico contenuto che sopravvive all\'eviction.',
@@ -669,6 +692,16 @@ interface CwlState {
   gateAttempts: number;
   /** Turn of the last failed gate, used for the cooldown. */
   lastGateViolationTurn: number;
+  /**
+   * Endpoints of the largest range `cwl_compress_range` may compress right now,
+   * recomputed on every context hook. Deliberately NOT persisted: they describe
+   * the CURRENT message list, and a stale pair reloaded in another process would
+   * point at addresses that no longer exist.
+   */
+  rangeStartHash: string | null;
+  rangeEndHash: string | null;
+  /** Tokens held by that range: shown in the status and in the demand. */
+  rangeTokens: number;
 }
 
 function newState(): CwlState {
@@ -688,6 +721,9 @@ function newState(): CwlState {
     gateArmedTurn: -1,
     gateAttempts: 0,
     lastGateViolationTurn: -1,
+    rangeStartHash: null,
+    rangeEndHash: null,
+    rangeTokens: 0,
   };
 }
 
@@ -1160,6 +1196,65 @@ function protectedFromIndex(messages: AgentMessage[], turns: number): number {
   return 0;
 }
 
+/**
+ * Endpoints of the largest range `cwl_compress_range` may compress right now:
+ * the user/assistant messages BEFORE the safety window that no existing span
+ * already covers.
+ *
+ * The extension computes the ADDRESS because the agent cannot. Leaving it to the
+ * model did not work: measured in a real session, the budget gate asked for
+ * `startHash`/`endHash` three times and got nothing back, because an opaque hash
+ * cannot be mapped back to a message by the very agent that is supposed to pick
+ * it. The division that does work: the extension picks the addresses, the model
+ * writes the summary — the only part only the model can do.
+ */
+function compressibleRange(
+  messages: AgentMessage[],
+  spans: CompressedSpan[],
+  protectedTurns: number,
+): { startHash: string; endHash: string; tokens: number } | null {
+  const floor = protectedFromIndex(messages, protectedTurns);
+
+  // Same resolution applySpans performs: a span is delimited by the hashes of
+  // two user/assistant messages.
+  const posByHash = new Map<string, number>();
+  messages.forEach((m, i) => {
+    // SAFETY: read-only field probe (role); the union does not expose it.
+    const role = (m as unknown as RealMessage).role;
+    if (role !== 'user' && role !== 'assistant') return;
+    posByHash.set(hashText(textOf(m)), i);
+  });
+  const covered = new Set<number>();
+  for (const sp of spans) {
+    const from = posByHash.get(sp.startHash);
+    const to = posByHash.get(sp.endHash);
+    if (from === undefined || to === undefined) continue;
+    for (let i = Math.min(from, to); i <= Math.max(from, to); i++) covered.add(i);
+  }
+
+  let first = -1;
+  let last = -1;
+  let tokens = 0;
+  for (let i = 0; i < Math.min(floor, messages.length); i++) {
+    // SAFETY: read-only field probe (role); the union does not expose it.
+    const role = (messages[i] as unknown as RealMessage).role;
+    if (role !== 'user' && role !== 'assistant') continue;
+    if (covered.has(i)) continue;
+    // An empty body hashes to sha256(""), so every empty message would share one
+    // address. They are not valid endpoints.
+    if (!textOf(messages[i]).trim()) continue;
+    if (first < 0) first = i;
+    last = i;
+    tokens += estimateMessageTokens(messages[i]);
+  }
+  if (first < 0 || last <= first) return null;
+  return {
+    startHash: hashText(textOf(messages[first])),
+    endHash: hashText(textOf(messages[last])),
+    tokens,
+  };
+}
+
 function globalReasoningStrip(
   messages: AgentMessage[],
   floor: number = messages.length,
@@ -1532,6 +1627,11 @@ export default function (pi: ExtensionAPI) {
         t('statusEpisodes')(g.count, active.length, closed.length, stripped.length),
         t('statusEvictions')(st.totalEvictions, st.totalEvictedTokens.toLocaleString()),
       ];
+      // The range cwl_compress_range would take right now: shown so the operator
+      // can see WHAT the extension would compress before it is gone.
+      if (st.rangeStartHash && st.rangeEndHash) {
+        lines.push(t('statusRange')(st.rangeTokens, st.rangeStartHash, st.rangeEndHash));
+      }
       if (active.length > 0) {
         lines.push(t('statusActive')(active.map(e => `${e.name}(${e.type})`).join(', ')));
       }
@@ -1613,6 +1713,48 @@ export default function (pi: ExtensionAPI) {
       return {
         content: [{ type: 'text', text: t('compressApplied')(params.startHash, params.endHash) }],
         details: { ok: true, spans: st.spans.length },
+      };
+    },
+  });
+
+  pi.registerTool({
+    name: 'cwl_compress_range',
+    label: 'CWL Compress Range',
+    description:
+      t('tools').compressRangeDesc,
+    promptSnippet: t('snippets').compressRange,
+    parameters: Type.Object({
+      summary: Type.String({ description: t('tools').compressRangeSummary }),
+    }),
+    async execute(_toolCallId, params, _signal, _onUpdate, ctx) {
+      const key = sessionKey(ctx);
+      const st = getState(key);
+      const cf = getConfig(key);
+
+      if (!params.summary || !params.summary.trim()) {
+        return { content: [{ type: 'text', text: t('compressRangeNoSummary') }], details: { ok: false, error: 'missing-summary' } };
+      }
+      // The address comes from the LAST context hook, which is the state the
+      // agent was looking at when it decided to call this. Deliberately not
+      // recomputed here: this tool has no access to the message list, and an
+      // address guessed from stale data is exactly the failure it replaces.
+      if (!st.rangeStartHash || !st.rangeEndHash) {
+        return { content: [{ type: 'text', text: t('compressRangeNothing') }], details: { ok: false, error: 'nothing-to-compress' } };
+      }
+      const startHash = st.rangeStartHash;
+      const endHash = st.rangeEndHash;
+      const tokens = st.rangeTokens;
+      st.spans.push({ startHash, endHash, summary: params.summary, at: Date.now() });
+      // Spend the address: the next hook recomputes it on the smaller list, so a
+      // second call cannot compress the same range twice.
+      st.rangeStartHash = null;
+      st.rangeEndHash = null;
+      st.rangeTokens = 0;
+      saveState(key, st);
+      debugLog(cf, `COMPRESS-RANGE applied ${startHash}..${endHash} (~${tokens}t)`);
+      return {
+        content: [{ type: 'text', text: t('compressRangeApplied')(startHash, endHash, tokens) }],
+        details: { ok: true, spans: st.spans.length, tokens },
       };
     },
   });
@@ -1847,6 +1989,13 @@ export default function (pi: ExtensionAPI) {
     // The last `protectedTurns` user turns are inviolable: compaction must never
     // destroy the context the agent is working on.
     const safetyFloor = protectedFromIndex(messages, cf.protectedTurns);
+
+    // Addresses of the largest range the agent may ask to compress. Recomputed
+    // here because this hook is the only place that sees the real message list.
+    const range = compressibleRange(messages, st.spans, cf.protectedTurns);
+    st.rangeStartHash = range?.startHash ?? null;
+    st.rangeEndHash = range?.endHash ?? null;
+    st.rangeTokens = range?.tokens ?? 0;
 
     /**
      * Level A — the safety net: strip reasoning blocks, ahead of the safety
