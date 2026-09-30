@@ -174,6 +174,8 @@ type CwlMessages = {
   oldHead: (id: string, nodes: number, tokens: number) => string;
   /** La pagina del nodo vecchio: il riassuntone e la forma di cio' che tiene dentro. */
   oldPage: (id: string, nodes: number, tokens: number, body: string) => string;
+  /** L'intestazione della sezione "foglie consultate" dentro la pagina del pozzo. */
+  oldHot: (listed: number, total: number) => string;
   /** cwl_micro: the body leaves the context, the micro takes its place. */
   microSet: (id: string, microChars: number, bodyChars: number, shorter: boolean) => string;
   /** Budget gate: the agent-driving channel. */
@@ -266,6 +268,7 @@ const I18N: Record<Lang, CwlMessages> = {
     oldNotDue: (young, need) => `No merge: ${young} young node(s), the merge starts at ${need}. Nothing was recorded.`,
     oldHead: (id, nodes, tokens) => `[CWL OLD NODE ${id} — ${nodes} older node(s) merged behind this synthesis (~${tokens} tokens). Their micros left the context; cwl_open("${id}") pages through them, leaf by leaf.]\n\n`,
     oldPage: (id, nodes, tokens, body) => `[CWL old node ${id} — ${nodes} node(s) inside, ~${tokens} tokens. The synthesis first, then one line per node with its SHAPE; cwl_open("<node id>") opens one, and its leaves open in full.]\n\n${body}`,
+    oldHot: (listed, total) => `--- Most consulted leaves (${listed} of ${total} in the old node; nothing was deleted, this is only the reading order) ---`,
     microSet: (id, microChars, bodyChars, shorter) => microChars === 0
       ? `Leaf ${id}: micro removed — the WHOLE body is back in the context.`
       : `Leaf ${id}: a micro of ${microChars} chars now stands in the context in place of ${bodyChars} chars. ` +
@@ -395,6 +398,7 @@ const I18N: Record<Lang, CwlMessages> = {
     oldNotDue: (young, need) => `Nessun accorpamento: ${young} nodo/i giovane/i, si accorpa da ${need} in su. Non e' stato registrato niente.`,
     oldHead: (id, nodes, tokens) => `[CWL NODO VECCHIO ${id} — ${nodes} nodo/i piu' vecchi accorpati dietro questa sintesi (~${tokens} token). I loro micro sono usciti dal contesto; cwl_open("${id}") li pagina, foglia per foglia.]\n\n`,
     oldPage: (id, nodes, tokens, body) => `[CWL nodo vecchio ${id} — ${nodes} nodo/i dentro, ~${tokens} token. Prima la sintesi, poi una riga per nodo con la sua FORMA; cwl_open("<id nodo>") ne apre uno, e le sue foglie si aprono intere.]\n\n${body}`,
+    oldHot: (listed, total) => `--- Foglie piu' consultate (${listed} di ${total} nel nodo vecchio; niente e' stato cancellato, questo e' solo l'ordine di lettura) ---`,
     microSet: (id, microChars, bodyChars, shorter) => microChars === 0
       ? `Foglia ${id}: micro rimosso — nel contesto e' tornato il corpo INTERO.`
       : `Foglia ${id}: un micro di ${microChars} caratteri sta ora nel contesto al posto di ${bodyChars}. ` +
@@ -1639,6 +1643,9 @@ interface OldNode {
   at: number;
 }
 
+/** How many leaves a page lists (a node's micros, or a pit's hot leaves). */
+const NODE_PAGE_MAX = 30;
+
 /**
  * What `applySpans` needs to know about the pit: its header, and the leaves whose
  * micros must STOP being injected.
@@ -1735,6 +1742,18 @@ interface CompressedSpan {
    * nothing is lost, and `cwl_open` reads the body back in full.
    */
   micro?: string | null;
+  /**
+   * How many times this leaf was OPENED, and when was the last time.
+   *
+   * USAGE, not a decision — and not derivable, so it lives with the span in the state
+   * and survives a reload. It only ever ORDERS a page: no counter deletes anything,
+   * because "never opened" is not "useless". A leaf used while it was FRESH left no
+   * trace, and that is correct: its body was in the context already and needed no help.
+   * What the counter records is exactly the other case, the one that matters here — the
+   * leaves reopened AFTER they aged, the ones that look stale but are still in use.
+   */
+  opens?: number;
+  lastOpen?: number;
   at: number;
   /**
    * Whether this span's saving has already been added to `totalEvictedTokens`.
@@ -2701,12 +2720,29 @@ export default function (pi: ExtensionAPI) {
           .filter((nd) => inPit.has(nd.id))
           .map((nd) => `- ${nd.id}: ${nd.leaves.length} leaf/leaves (${nd.leaves[0]} .. ${nd.leaves[nd.leaves.length - 1]})`)
           .join('\n');
-        const body = `${st.oldNode.summary}\n\n${righe}`;
+        // The page's second half: the leaves CONSULTED, most opened first. The rule the
+        // operator asked for — not "the most recent", which are still in the young nodes
+        // and in the loose leaves anyway (their reasoning trail is already in the
+        // context), but the ones that LOOK stale and are still being reached for.
+        // With an empty history the order degrades to the most recently absorbed, which
+        // is a sane default rather than a criterion. Every one is cap 30, like a node.
+        const pitLeaves = st.nodes
+          .filter((nd) => inPit.has(nd.id))
+          .flatMap((nd) => nd.leaves)
+          .map((id) => st.spans.find((s) => idOfSpan(s) === id))
+          .filter((s): s is CompressedSpan => Boolean(s));
+        const hot = [...pitLeaves]
+          .sort((a, b) => (b.opens ?? 0) - (a.opens ?? 0) || (b.lastOpen ?? 0) - (a.lastOpen ?? 0) || b.at - a.at)
+          .slice(0, NODE_PAGE_MAX);
+        const hotLines = hot
+          .map((s) => `- ${idOfSpan(s)} (opened ${s.opens ?? 0}x): ${s.micro ?? '(no micro yet)'}`)
+          .join('\n');
+        const body = `${st.oldNode.summary}\n\n${righe}\n\n${t('oldHot')(hot.length, pitLeaves.length)}\n${hotLines}`;
         const tokens = estimateTokens(body);
-        debugLog(cf, `OPEN ${st.oldNode.id}: riassuntone + ${st.oldNode.nodes.length} node(s), ${tokens}t`);
+        debugLog(cf, `OPEN ${st.oldNode.id}: riassuntone + ${st.oldNode.nodes.length} node(s), ${pitLeaves.length} leaf/leaves inside, most opened ${hot[0]?.opens ?? 0}x (${hot.filter((s) => (s.opens ?? 0) > 0).length} ever opened) — ${tokens}t`);
         return {
           content: [{ type: 'text', text: t('oldPage')(st.oldNode.id, st.oldNode.nodes.length, tokens, body) }],
-          details: { ok: true, id: st.oldNode.id, kind: 'old', nodes: st.oldNode.nodes.length, tokens },
+          details: { ok: true, id: st.oldNode.id, kind: 'old', nodes: st.oldNode.nodes.length, leaves: pitLeaves.length, opened: hot.filter((s) => (s.opens ?? 0) > 0).length, tokens },
         };
       }
       // A NODE next: its page is the micros of its leaves, each with the id that
@@ -2741,7 +2777,11 @@ export default function (pi: ExtensionAPI) {
       const body = sp.summary;
       const tokens = estimateTokens(body);
       const when = new Date(sp.at).toISOString().slice(0, 16).replace('T', ' ');
-      debugLog(cf, `OPEN ${id}: ${tokens}t of body, ${body.length} chars`);
+      // Usage, not policy: this only orders the pit's page (see the branch above).
+      sp.opens = (sp.opens ?? 0) + 1;
+      sp.lastOpen = Date.now();
+      saveState(key, st);
+      debugLog(cf, `OPEN ${id}: ${tokens}t of body, ${body.length} chars (open #${sp.opens})`);
       return {
         content: [{ type: 'text', text: t('openFound')(id, tokens, when) + body }],
         details: { ok: true, id, tokens, chars: body.length },
