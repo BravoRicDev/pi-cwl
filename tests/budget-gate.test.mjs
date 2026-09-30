@@ -148,11 +148,15 @@ test('senza NIENTE da fare il gate non chiede: non deve mai chiedere l\'impossib
   //    -> opzione 2 indisponibile
   // Chiedeva quindi una cosa impossibile a ogni turno, bruciando contesto.
   //
-  // Qui: 6 turni utente, tutti dentro una finestra di 10 -> non c'e' intervallo
-  // comprimibile, e nessun episodio e' aperto. Nulla da fare.
+  // Qui: DUE messaggi soli. Prima della finestra non c'e' abbastanza materiale
+  // per formare un intervallo (serve una coppia), e nessun episodio e' aperto:
+  // non c'e' davvero nulla da fare.
   const { sandbox, home, hooks, ctx } = await boot(overBudgetConfig({ protectedTurns: 10 }));
   try {
-    const messages = heavy(6);
+    const messages = [
+      { role: 'user', content: 'domanda ' + 'P'.repeat(400) },
+      { role: 'assistant', content: 'risposta ' + 'R'.repeat(400) },
+    ];
     for (let i = 0; i < 8; i++) {
       const r = await round(hooks, ctx, messages);
       assert.equal(gateOf(r).length, 0,
@@ -166,7 +170,10 @@ test('con un episodio APERTO il gate chiede, e propone solo l\'opzione disponibi
   try {
     // Un episodio aperto e' l'unica azione realmente disponibile qui.
     await tools.get('delimiter').execute('call-s', { action: 'start', name: 'lavoro-in-corso', type: 'act' }, undefined, undefined, ctx);
-    const messages = heavy(6);
+    const messages = [
+      { role: 'user', content: 'domanda ' + 'P'.repeat(400) },
+      { role: 'assistant', content: 'risposta ' + 'R'.repeat(400) },
+    ];
     for (let i = 0; i < 3; i++) await round(hooks, ctx, messages);
     const r = await round(hooks, ctx, messages);
     const demands = gateOf(r);

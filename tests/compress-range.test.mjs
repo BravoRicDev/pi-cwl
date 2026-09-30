@@ -85,10 +85,19 @@ test('la finestra di sicurezza non viene toccata: l\'intervallo si ferma prima',
 });
 
 test('senza niente da comprimere rifiuta invece di inventare un intervallo', async () => {
-  // Finestra di sicurezza cosi' larga da coprire tutto: non resta nulla.
+  // Due messaggi soli: prima della finestra non c'e' abbastanza materiale per
+  // formare un intervallo (serve una coppia), quindi non c'e' niente da prendere.
+  // Il caso "finestra tanto larga da coprire tutto" NON e' piu' un rifiuto: la
+  // parte piu' vecchia viene liberata apposta, altrimenti l'estensione non
+  // potrebbe mai chiudere il contesto (misurato: 469k token, soglia 68k, nessuna
+  // compattazione possibile).
   const { sandbox, home, tools, hooks, ctx } = await boot(config({ protectedTurns: 99 }));
   try {
-    await hooks.get('context')({ messages: conversation() }, ctx);
+    const minimale = [
+      { role: 'user', content: 'domanda ' + 'U'.repeat(200) },
+      { role: 'assistant', content: 'risposta ' + 'A'.repeat(200) },
+    ];
+    await hooks.get('context')({ messages: minimale }, ctx);
     const out = await call(tools, ctx, 'sintesi');
     assert.equal(out.details.ok, false);
     assert.equal(out.details.error, 'nothing-to-compress');

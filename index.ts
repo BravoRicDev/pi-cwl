@@ -1191,27 +1191,52 @@ function estimateEpisodeTokens(ep: Episode, messages: AgentMessage[]): number {
  * touch them. Returns null if there is nothing to remove.
  */
 /**
+ * Share of the list the safety window is allowed to cover.
+ *
+ * A window counted in USER TURNS can swallow the whole list once Pi's own
+ * compaction has collapsed it. Measured in two real sessions: the context sat at
+ * 455k tokens against a 68k threshold while the extension did NOTHING, because
+ * 10 turns WAS the entire conversation after compaction. All three compaction
+ * paths died at once — `cwl_compress_range` answered "nothing left to
+ * compress", the reasoning safety net found every message protected, and the
+ * budget gate asked for the impossible in a loop.
+ */
+const MAX_PROTECTED_SHARE = 0.5;
+
+/**
  * Index from which the messages are PROTECTED.
  *
  * Everything at index >= this value is never evicted nor stripped. The last
  * `turns` user turns are counted, and a turn begins at a user message.
  *
- * With fewer than `turns` user turns in the list, EVERYTHING is protected and
- * the result is 0: a brand-new conversation is never compacted, however big a
- * single turn may be.
+ * The window is CAPPED at `MAX_PROTECTED_SHARE` of the list. Protecting the
+ * recent work must never mean protecting all of it: that turns the safety
+ * guarantee into the reason the context grows without bound.
  */
 function protectedFromIndex(messages: AgentMessage[], turns: number): number {
   if (turns <= 0) return messages.length;
   let seen = 0;
+  let byTurns = 0;
   for (let i = messages.length - 1; i >= 0; i--) {
     // SAFETY: read-only field probe (role); the union does not expose it.
     const role = (messages[i] as unknown as RealMessage).role;
     if (role === 'user') {
       seen++;
-      if (seen > turns) return i + 1;
+      if (seen > turns) { byTurns = i + 1; break; }
     }
   }
-  return 0;
+  // Normal case: the window is honoured EXACTLY as configured. The cap must not
+  // touch this, or `protectedTurns` would stop meaning what it says.
+  if (byTurns > 0) return byTurns;
+  // DEGENERATE case: the list holds fewer user turns than the window, so the
+  // window would cover EVERYTHING. That is not a safety window any more: it is
+  // the reason the context grows without bound, because all three compaction
+  // paths die together. Measured in real sessions: 469k tokens against a 68k
+  // threshold, `cwl_compress_range` answering "nothing to compress", the
+  // reasoning net finding every message protected, and the gate looping on an
+  // impossible demand. Here the OLDEST part is freed so progress is always
+  // possible.
+  return Math.floor(messages.length * MAX_PROTECTED_SHARE);
 }
 
 /**

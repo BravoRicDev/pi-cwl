@@ -106,10 +106,18 @@ test('senza finestra (protectedTurns=0) non resta nessun thinking', async () => 
   } finally { home.restore(); sandbox.cleanup(); }
 });
 
-test('una conversazione piu\' corta della finestra non viene compattata affatto', async () => {
+test('una conversazione piu\' corta della finestra libera SOLO la parte piu\' vecchia', async () => {
   const { sandbox, home, hooks, ctx } = await boot(baseConfig({ protectedTurns: 10 }));
   try {
-    // 3 turni soltanto: tutto dentro la finestra.
+    // 3 turni, finestra di 10: la finestra coprirebbe TUTTO. Ma una finestra che
+    // copre tutto non e' piu' una finestra: e' il motivo per cui il contesto
+    // cresce senza limite, perche' tutte e tre le vie di compattazione muoiono
+    // insieme. MISURATO in sessioni vere: 469k token contro una soglia di 68k,
+    // `cwl_compress_range` che rispondeva "non resta niente da comprimere", e il
+    // gate in loop su una richiesta impossibile.
+    //
+    // Regola: nel caso degenerato la parte PIU' VECCHIA viene liberata, il
+    // recente resta intatto.
     const messages = [
       { role: 'user', content: 'uno' }, thinking('t1'),
       { role: 'user', content: 'due' }, thinking('t2'),
@@ -117,7 +125,9 @@ test('una conversazione piu\' corta della finestra non viene compattata affatto'
     ];
     const res = await hooks.get('context')({ messages }, ctx);
     const out = (res && res.messages) || messages;
-    assert.equal(out.filter(hasThinking).length, 3,
-      'una conversazione dentro la finestra di sicurezza non deve essere toccata');
+    const rimasti = out.filter(hasThinking).length;
+    assert.ok(rimasti < 3, 'la parte piu\' vecchia doveva essere liberata: senza questo il contesto non si chiude mai');
+    assert.ok(rimasti >= 1, 'il turno piu\' recente non deve essere toccato');
+    assert.equal(out.filter((m) => m.role === 'user').length, 3, 'i turni utente sono inviolabili');
   } finally { home.restore(); sandbox.cleanup(); }
 });
