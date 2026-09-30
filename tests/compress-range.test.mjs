@@ -375,3 +375,36 @@ test('dopo la prima compressione l\'indirizzo si rinnova: si puo\' comprimere an
       + JSON.stringify(seconda.details));
   } finally { home.restore(); sandbox.cleanup(); }
 });
+
+test('uno span i cui estremi sono usciti dal contesto viene potato, e si vede', async () => {
+  // Uno span non applicabile non fa danno al contesto, ma la sua esistenza e' un
+  // silenzio: il suo riassunto (migliaia di caratteri) viene ri-salvato nello
+  // stato a ogni turno. MISURATO: nel file di stato di una sessione vera, 4 span
+  // portavano 38.459 caratteri di riassunti su 51.880 byte di file.
+  const { sandbox, home, tools, hooks, ctx } = await boot(config());
+  try {
+    const turno = (i) => ([
+      { role: 'user', content: `turno ${i} contenuto ` + 'U'.repeat(200) },
+      { role: 'assistant', content: `risposta ${i} contenuto ` + 'A'.repeat(200) },
+    ]);
+    const lista = [];
+    for (let i = 1; i <= 6; i++) lista.push(...turno(i));
+
+    await hooks.get('context')({ messages: lista }, ctx);
+    const out = await call(tools, ctx, 'sintesi della prima meta\'');
+    assert.equal(out.details.ok, true, `rifiutato: ${JSON.stringify(out.details)}`);
+    assert.equal(out.details.spans, 1, 'lo span appena creato deve esistere');
+
+    const vivo = await tools.get('cwl_status').execute('t', {}, undefined, undefined, ctx);
+    assert.equal(vivo.details.spans, 1, 'uno span con gli estremi nel contesto NON deve essere potato');
+
+    // Una compattazione nativa sostituisce quella storia: gli estremi dello span
+    // non sono piu' nella lista, e non ci torneranno.
+    const dopoCompattazione = lista.slice(-2);
+    await hooks.get('context')({ messages: dopoCompattazione }, ctx);
+
+    const stat = await tools.get('cwl_status').execute('t', {}, undefined, undefined, ctx);
+    assert.equal(stat.details.spans, 0,
+      'lo span i cui estremi sono usciti dal contesto deve essere potato: ' + JSON.stringify(stat.details));
+  } finally { home.restore(); sandbox.cleanup(); }
+});

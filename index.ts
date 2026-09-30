@@ -148,6 +148,7 @@ type CwlMessages = {
   /** Status line for the currently compressible range. */
   statusRange: (tokens: number, start: string, end: string) => string;
   statusAddresses: (eligible: number, withId: number) => string;
+  statusSpans: (n: number) => string;
   /** Strings of the cwl_recall tool. */
   recallNotLoaded: string;
   recallNoTranscript: string;
@@ -223,6 +224,7 @@ const I18N: Record<Lang, CwlMessages> = {
     compressRangeNoSummary: 'The summary is required: it is the ONLY part of this call you have to write yourself.',
     statusRange: (tokens, start, end) => `Compressible range: ~${tokens} tokens (${start}..${end})`,
     statusAddresses: (eligible, withId) => `Addresses: ${withId}/${eligible} endpoint messages carry a stable id`,
+    statusSpans: (n) => `Compressed spans held: ${n}`,
     recallNotLoaded: 'The recall index is not loaded; /reload the extension.',
     recallNoTranscript: 'Transcript not found for this session.',
     recallUnreadable: 'Transcript unreadable.',
@@ -329,6 +331,7 @@ const I18N: Record<Lang, CwlMessages> = {
     compressRangeNoSummary: "Il riassunto e' obbligatorio: e' l'UNICA parte di questa chiamata che devi scrivere tu.",
     statusRange: (tokens, start, end) => `Intervallo comprimibile: ~${tokens} token (${start}..${end})`,
     statusAddresses: (eligible, withId) => `Indirizzi: ${withId}/${eligible} messaggi-endpoint con un id stabile`,
+    statusSpans: (n) => `Span di compressione tenuti: ${n}`,
     recallNotLoaded: "L'indice di recall non e' caricato; fai /reload dell'estensione.",
     recallNoTranscript: 'Transcript non trovato per questa sessione.',
     recallUnreadable: 'Transcript illeggibile.',
@@ -1656,8 +1659,10 @@ function applySpans(
   newSaved: number;
   pairDropped: number;
   pairStripped: number;
+  /** Spans whose endpoints are no longer in the list: they can never apply. */
+  dead: CompressedSpan[];
 } {
-  if (spans.length === 0) return { kept: messages, applied: 0, saved: 0, newApplied: 0, newSaved: 0, pairDropped: 0, pairStripped: 0 };
+  if (spans.length === 0) return { kept: messages, applied: 0, saved: 0, newApplied: 0, newSaved: 0, pairDropped: 0, pairStripped: 0, dead: [] };
 
   // address -> position index, computed once.
   const { exact, legacy } = addressMaps(messages);
@@ -1665,11 +1670,16 @@ function applySpans(
 
   // Nested spans make no sense: if one contains another, the outermost one
   // wins. A summary inside a summary loses information twice.
+  const dead: CompressedSpan[] = [];
   const resolved = spans
     .map((sp) => {
       const from = findPos(sp.startHash);
       const to = findPos(sp.endHash);
-      if (from === undefined || to === undefined) return null;
+      // Both endpoints gone: the history this span replaced is not in the list
+      // any more (native compaction replaced it, or the transcript grew past it).
+      // Collect it so the caller can drop it: its summary is thousands of
+      // characters of dead weight, re-saved in the state on every turn.
+      if (from === undefined || to === undefined) { dead.push(sp); return null; }
       // An endpoint is always a user/assistant message, but the message right
       // after an assistant is usually its tool RESULT (role 'toolResult').
       // Replacing the assistant while keeping that result leaves a tool_result
@@ -1692,7 +1702,7 @@ function applySpans(
     .filter((x, _all, arr) => !arr.some((o) => o !== x && o.from <= x.from && o.to >= x.to))
     .sort((a, b) => a.from - b.from);
 
-  if (resolved.length === 0) return { kept: messages, applied: 0, saved: 0, newApplied: 0, newSaved: 0, pairDropped: 0, pairStripped: 0 };
+  if (resolved.length === 0) return { kept: messages, applied: 0, saved: 0, newApplied: 0, newSaved: 0, pairDropped: 0, pairStripped: 0, dead };
 
   const replaced = new Set<number>();
   const injected: AgentMessage[] = [];
@@ -1753,6 +1763,7 @@ function applySpans(
     newSaved,
     pairDropped: repaired.dropped,
     pairStripped: repaired.stripped,
+    dead,
   };
 }
 
@@ -1892,6 +1903,7 @@ export default function (pi: ExtensionAPI) {
       if (st.addrEligible > 0) {
         lines.push(t('statusAddresses')(st.addrEligible, st.addrWithId));
       }
+      lines.push(t('statusSpans')(st.spans.length));
       if (active.length > 0) {
         lines.push(t('statusActive')(active.map(e => `${e.name}(${e.type})`).join(', ')));
       }
@@ -1911,6 +1923,7 @@ export default function (pi: ExtensionAPI) {
           evictions: st.totalEvictions,
           addrEligible: st.addrEligible,
           addrWithId: st.addrWithId,
+          spans: st.spans.length,
         },
       };
     },
@@ -2253,6 +2266,14 @@ export default function (pi: ExtensionAPI) {
     // threshold: the agent decides when to compress, not the extension estimate.
     if (st.spans.length > 0) {
       const applied = applySpans(messages, st.spans);
+      // A span whose endpoints left the context can never apply again, and each
+      // one carries a summary of thousands of characters that the state re-saves
+      // on every turn. Pruned here — outside the `applied > 0` guard, because the
+      // case that matters is when they are ALL dead — and said out loud.
+      if (applied.dead.length > 0) {
+        st.spans = st.spans.filter((s) => !applied.dead.includes(s));
+        debugLog(cf, `SPANS pruned: ${applied.dead.length} span(s) whose endpoints left the context (${st.spans.length} left)`);
+      }
       if (applied.applied > 0) {
         // Only spans counted for the FIRST time move the totals. The others are
         // re-applications: the context really is that much smaller, but it was
