@@ -82,14 +82,18 @@ test('la riga del pavimento ripartisce il contesto: i quattro numeri sommano al 
     // turno passato da `finish` sopra budget, e nel PRIMO turno (quello che crea
     // l'indirizzo) gli span non esistono ancora, quindi `dentro` sarebbe zero per
     // costruzione e il test non proverebbe niente.
-    const righe = [...log.matchAll(/CONTEXT (\d+)t still above trigger \d+t: (\d+)t in the protected window \(last \d+ user turns\), (\d+)t inside the spans, (\d+)t freely compressible, (\d+)t elsewhere/g)];
+    const righe = [...log.matchAll(/CONTEXT (\d+)t still above trigger \d+t: (\d+)t in the protected window \(last \d+ user turns\), (\d+)t inside the spans \((\d+) of (\d+) spans located here\), (\d+)t freely compressible, (\d+)t elsewhere/g)];
     assert.ok(righe.length > 0, 'la riga del pavimento non e\' stata scritta: il contesto e\' sopra il trigger e `finish` non ha dichiarato perche\'');
-    const [, totale, protetto, dentro, libero, altrove] = righe[righe.length - 1].map(Number);
+    const [, totale, protetto, dentro, localizzati, tenuti, libero, altrove] = righe[righe.length - 1].map(Number);
     assert.equal(
       protetto + dentro + libero + altrove,
       totale,
       `i quattro numeri devono ripartire il contesto: ${protetto} + ${dentro} + ${libero} + ${altrove} != ${totale}`,
     );
+    // La riga DICHIARA quante ancore ha trovato: senza questo numero un conto
+    // sbagliato produce `0t` indistinguibile da "dentro gli span non c'e' nulla".
+    assert.ok(tenuti > 0, 'il test non ha creato nessuno span: non prova niente');
+    assert.ok(localizzati <= tenuti, `localizzati (${localizzati}) non puo' superare gli span tenuti (${tenuti})`);
     // NON-VACUITA': con finestra di 1 turno e uno span applicato, due dei quattro
     // termini devono essere non nulli, altrimenti l'identita' e' vera per caso.
     assert.ok(protetto > 0, 'la finestra protetta risulta vuota con protectedTurns=1: il test non prova niente');

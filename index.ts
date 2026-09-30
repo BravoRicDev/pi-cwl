@@ -1383,16 +1383,13 @@ function compressibleRange(
 ): { startHash: string; endHash: string; tokens: number } | null {
   const floor = protectedFromIndex(messages, protectedTurns);
 
-  // Same resolution applySpans performs: a span is delimited by the ADDRESS of
-  // two user/assistant messages (see addressOf).
-  const { exact, legacy } = addressMaps(messages);
-  const findPos = (h: string): number | undefined => exact.get(h) ?? legacy.get(h);
+  // One resolution for every caller (see locateSpans). This used to be a copy
+  // that claimed to be "the same resolution applySpans performs" while NOT
+  // extending the range over the tool results that follow an assistant: the
+  // `covered` set was smaller than what the span actually removes.
   const covered = new Set<number>();
-  for (const sp of spans) {
-    const from = findPos(sp.startHash);
-    const to = findPos(sp.endHash);
-    if (from === undefined || to === undefined) continue;
-    for (let i = Math.min(from, to); i <= Math.max(from, to); i++) covered.add(i);
+  for (const { from, to } of locateSpans(messages, spans).resolved) {
+    for (let i = from; i <= to; i++) covered.add(i);
   }
 
   let first = -1;
@@ -1773,27 +1770,26 @@ function extractEpisodeText(
 }
 
 /**
- * Applies the spans compressed by the LLM: the messages between startHash and
- * endHash are replaced by the summary alone. The original stays in the JSONL
- * transcript, which is append-only: compression is therefore LOSSLESS and
- * cwl_recall can retrieve the text in full.
+ * Resolves every span against one message list: the ONLY place that turns two
+ * addresses into a range.
+ *
+ * Three copies of this logic used to live in this file — compressibleRange,
+ * applySpans and declareFloor — and they drifted: only applySpans extended the
+ * range over the tool results that follow an assistant, so `covered`, the applied
+ * set and the floor count disagreed about the same span. compressibleRange even
+ * carried the comment "Same resolution applySpans performs" while not doing it.
+ *
+ * Two rules live here and nowhere else:
+ *  - extend FORWARD over consecutive `toolResult` messages;
+ *  - drop a span contained in another (a summary inside a summary loses twice).
+ *
+ * An endpoint that no longer resolves means the history it described is not in
+ * this list any more: the span is returned in `dead` so the caller can drop it.
  */
-function applySpans(
+function locateSpans(
   messages: AgentMessage[],
   spans: CompressedSpan[],
-): {
-  kept: AgentMessage[];
-  applied: number;
-  saved: number;
-  newApplied: number;
-  newSaved: number;
-  pairDropped: number;
-  pairStripped: number;
-  /** Spans whose endpoints are no longer in the list: they can never apply. */
-  dead: CompressedSpan[];
-} {
-  if (spans.length === 0) return { kept: messages, applied: 0, saved: 0, newApplied: 0, newSaved: 0, pairDropped: 0, pairStripped: 0, dead: [] };
-
+): { resolved: { sp: CompressedSpan; from: number; to: number }[]; dead: CompressedSpan[] } {
   // address -> position index, computed once.
   const { exact, legacy } = addressMaps(messages);
   const findPos = (h: string): number | undefined => exact.get(h) ?? legacy.get(h);
@@ -1822,8 +1818,8 @@ function applySpans(
       // Extending forward is the right direction: the result is part of the
       // same exchange being summarised, so its tokens land in `original` too.
       // But this only covers the CONTIGUOUS layout: the pairing can never be
-      // trusted to position (see repairToolPairs, which is the actual
-      // guarantee). This is the faithful path for the common case.
+      // trusted to position (see repairToolPairs, which is the actual guarantee).
+      // This is the faithful path for the common case.
       let end = Math.max(from, to);
       while (end + 1 < messages.length && roleOf(messages[end + 1]) === 'toolResult') end++;
       return { sp, from, to: end };
@@ -1831,6 +1827,32 @@ function applySpans(
     .filter((x): x is { sp: CompressedSpan; from: number; to: number } => x !== null)
     .filter((x, _all, arr) => !arr.some((o) => o !== x && o.from <= x.from && o.to >= x.to))
     .sort((a, b) => a.from - b.from);
+  return { resolved, dead };
+}
+
+/**
+ * Applies the spans compressed by the LLM: the messages between startHash and
+ * endHash are replaced by the summary alone. The original stays in the JSONL
+ * transcript, which is append-only: compression is therefore LOSSLESS and
+ * cwl_recall can retrieve the text in full.
+ */
+function applySpans(
+  messages: AgentMessage[],
+  spans: CompressedSpan[],
+): {
+  kept: AgentMessage[];
+  applied: number;
+  saved: number;
+  newApplied: number;
+  newSaved: number;
+  pairDropped: number;
+  pairStripped: number;
+  /** Spans whose endpoints are no longer in the list: they can never apply. */
+  dead: CompressedSpan[];
+} {
+  if (spans.length === 0) return { kept: messages, applied: 0, saved: 0, newApplied: 0, newSaved: 0, pairDropped: 0, pairStripped: 0, dead: [] };
+
+  const { resolved, dead } = locateSpans(messages, spans);
 
   if (resolved.length === 0) return { kept: messages, applied: 0, saved: 0, newApplied: 0, newSaved: 0, pairDropped: 0, pairStripped: 0, dead };
 
@@ -2407,14 +2429,17 @@ export default function (pi: ExtensionAPI) {
     const declareFloor = (list: AgentMessage[], tokens: number): void => {
       if (tokens <= trigger) return;
       const floor = protectedFromIndex(list, cf.protectedTurns);
-      const { exact, legacy } = addressMaps(list);
-      const findPos = (h: string): number | undefined => exact.get(h) ?? legacy.get(h);
+      // NOTE: this list has already been through applySpans, so a span whose END
+      // anchor was an assistant does not contain that anchor any more: the span
+      // removed it (only user/system/developer/custom survive inside a span).
+      // Re-resolving HERE can therefore find nothing at all, which is why the
+      // row below declares how many it located instead of quietly printing 0.
+      // MEASURED in a live session: `0t inside the spans` with 24 spans applied,
+      // because every one of them had removed its own closing anchor.
+      const located = locateSpans(list, st.spans).resolved;
       const inSpans = new Set<number>();
-      for (const sp of st.spans) {
-        const from = findPos(sp.startHash);
-        const to = findPos(sp.endHash);
-        if (from === undefined || to === undefined) continue;
-        for (let i = Math.min(from, to); i <= Math.max(from, to); i++) inSpans.add(i);
+      for (const { from, to } of located) {
+        for (let i = from; i <= to; i++) inSpans.add(i);
       }
       let protectedTokens = 0;
       let spanTokens = 0;
@@ -2429,7 +2454,7 @@ export default function (pi: ExtensionAPI) {
       // span), so it is subtracted from it: the four numbers must partition the
       // context EXACTLY, and the test checks that identity.
       const free = Math.min(st.rangeTokens, outside);
-      debugLog(cf, `CONTEXT ${tokens}t still above trigger ${Math.round(trigger)}t: ${protectedTokens}t in the protected window (last ${cf.protectedTurns} user turns), ${spanTokens}t inside the spans, ${free}t freely compressible, ${outside - free}t elsewhere`);
+      debugLog(cf, `CONTEXT ${tokens}t still above trigger ${Math.round(trigger)}t: ${protectedTokens}t in the protected window (last ${cf.protectedTurns} user turns), ${spanTokens}t inside the spans (${located.length} of ${st.spans.length} spans located here), ${free}t freely compressible, ${outside - free}t elsewhere`);
     };
 
     /**
