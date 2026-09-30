@@ -27,12 +27,26 @@ fi
 if [ -z "$TSC" ] && command -v tsc >/dev/null 2>&1; then
   TSC="$(command -v tsc)"
 fi
+DECLARED=no
+if grep -q '"typescript"' package.json 2>/dev/null; then DECLARED=yes; fi
 if [ -n "$TSC" ] && [ -x "$TSC" ]; then
   "$TSC" -p tsconfig.check.json "$@"
   TYPECHECK=run
+  # Dichiarazione POSITIVA. Che i tipi siano stati controllati non deve dedursi
+  # dall'assenza di un avviso: l'assenza di un avviso e' esattamente cio' che per
+  # tre giri e' stata letta come "tipi a posto".
+  echo "[check.sh] typecheck eseguito: $TSC -p tsconfig.check.json"
 else
   echo "[check.sh] tsc non trovato: salto il typecheck, eseguo i test." >&2
-  echo "[check.sh] (installa typescript, o esporta TSC=/path/to/tsc, per il controllo dei tipi)" >&2
+  # typescript e' dichiarato in package.json dal primo commit, ma node_modules/
+  # per anni e' stato popolato SOLO dai link di --link-deps: la dipendenza era
+  # dichiarata e non installata. Questo caso va distinto da "su questa macchina
+  # il compilatore non c'e'": qui il rimedio e' un comando, non una decisione.
+  if [ "$DECLARED" = "yes" ]; then
+    echo "[check.sh] ATTENZIONE: typescript e' DICHIARATO in package.json e NON e' installato." >&2
+    echo "[check.sh] Il rimedio e' 'npm install' (poi 'node tests/_helpers.mjs --link-deps')." >&2
+  fi
+  echo "[check.sh] (oppure esporta TSC=/path/to/tsc per il controllo dei tipi)" >&2
 fi
 
 # 3. Carica il modulo VERO. Il typecheck non puo' vedere un errore a runtime
@@ -54,8 +68,10 @@ if [ "$TYPECHECK" = "skipped" ]; then
   echo "================================================================"
   echo "ATTENZIONE: TYPECHECK SALTATO — nessun tsc disponibile."
   echo "Verde qui significa: i TEST passano. NON significa: i tipi sono a posto."
-  echo "Per il controllo dei tipi: esporta TSC=/percorso/del/tsc, oppure"
-  echo "installa typescript come devDependency."
+  if [ "$DECLARED" = "yes" ]; then
+    echo "typescript e' DICHIARATO in package.json e non e' installato: lancia 'npm install'."
+  fi
+  echo "Per il controllo dei tipi: 'npm install', oppure esporta TSC=/percorso/del/tsc."
   echo "================================================================"
 fi
 exit $STATUS

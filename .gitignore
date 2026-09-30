@@ -6,3 +6,10 @@ __pycache__/
 
 # Documento di lavoro interno: mai nel repo pubblico.
 HANDOFF-COMPRESSIONE-OTTIMIZZATA.md
+
+# Lockfile: non e' portabile in questo repo. node_modules/ viene popolato dai
+# link a runtime verso il pacchetto Pi (tests/_helpers.mjs --link-deps), e npm
+# registra quei link nel lockfile come "extraneous" con il PATH ASSOLUTO
+# dell'installazione locale: su un'altra macchina il file sarebbe diverso. La
+# dipendenza vera (typescript) e' gia' dichiarata in package.json.
+package-lock.json
