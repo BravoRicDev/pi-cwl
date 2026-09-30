@@ -14,3 +14,6 @@ PLAN-*.md
 # ABSOLUTE path of the local installation, so the file would differ on any
 # other machine. The real dependency (typescript) is declared in package.json.
 package-lock.json
+
+# Artefatti di lavoro degli agenti: vivono dentro il progetto, non nel repo.
+.pi/

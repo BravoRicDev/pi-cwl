@@ -299,7 +299,7 @@ const I18N: Record<Lang, CwlMessages> = {
     indexLine: (pitNodes, pitLeaves, youngNodes, youngLeaves, topics, loose, waiting, headTokens, evictions, savedTokens) =>
       `pit ${pitNodes}n/${pitLeaves}l │ young ${youngNodes}n/${youngLeaves}l │ topics ${topics} │ loose ${loose} │ waiting micro ${waiting} │ head ~${headTokens}t │ ${evictions} evict │ ${savedTokens} saved`,
     groupRefused: (why, detail) =>
-      `\n\nGrouping refused (${why}${detail ? `: ${detail}` : ''}). Nothing was recorded. Only the leaves of the BUFFER — the last node, the one attached to the leaves still open — can be grouped or moved: older material stays where it is. A leaf already inside the old node cannot come back (the pit's synthesis stands for it), and a leaf without a micro would not appear in any head: write the micro first. A description is IMMUTABLE while its topic is OUTSIDE the old node, because there it IS the index; inside the old node it can be rewritten, and there it moves nothing.`,
+      `\n\nGrouping refused (${why}${detail ? `: ${detail}` : ''}). Nothing was recorded. Leaves can be taken from the buffer, from the loose ones, and from ordinary nodes (a TOPIC is not a source: its description stands for its leaves), and they must be consecutive in time. A leaf already inside the old node cannot come back (the pit's synthesis stands for it), and a leaf without a micro would not appear in any head: write the micro first. A description is IMMUTABLE while its topic is OUTSIDE the old node, because there it IS the index; inside the old node it can be rewritten, and there it moves nothing.`,
     groupTooSmall: (leaves, microChars, needChars) =>
       `\n\nNo topic was born: the ${leaves} leaf/leaves hold ${microChars} characters, and a topic must free at least ${needChars}. A topic is born COLLAPSED — its description replaces the labels of those leaves from this moment on — so it has to be worth more than the description that replaces them (~3,600 characters times the ratio, and never less than the absolute floor). Group more leaves, or leave them in the buffer until the topic is big enough.`,
     groupCreated: (name, id, leaves, microChars) =>
@@ -399,8 +399,8 @@ const I18N: Record<Lang, CwlMessages> = {
       microText: 'The micro-summary that REPLACES the body in the context. The body is NOT touched: cwl_open still returns all of it. Write the pieces that matter; ~1.200 characters (≈300 tokens) is the size this design is built for — and the ceiling is measured: going over it is said in the result.',
       oldDesc: 'Writes the RIASSUNTONE and merges the oldest young nodes into the old node: their micros leave the context and the synthesis stands for all of them. The nodes and their leaves stay readable — cwl_open pages through them.',
       oldText: 'The synthesis (merge summary) that replaces the micros of the merged nodes in the context. Write WHOLE PIECES: it is what the agent will see instead of them. It must cover the ORDINARY nodes you absorb — the description of any TOPIC node you absorb is glued to your text word for word, so do NOT rewrite what a topic already says. If the pit already holds a synthesis, cwl_open shows it: CARRY IT FORWARD, concatenated — a merge REPLACES the pit synthesis, it does not add to it.',
-      groupDesc: 'Groups leaves into a TOPIC node, which is born COLLAPSED: the name and the description you write now stand for its leaves in the index from this moment on, so the description must already cover the FUTURE use of the topic. Only the leaves of the buffer (the last node, attached to the leaves still open) can be grouped or moved. When the topic already exists, pass `node` and the description is NOT rewritten — that is what makes adding leaves later free.',
-      groupLeaves: 'Ids of the leaves to group or move. Only leaves of the buffer (or loose ones) can be moved, and each must already carry a micro.',
+      groupDesc: 'Groups leaves into a TOPIC node, which is born COLLAPSED: the name and the description you write now stand for its leaves in the index from this moment on, so the description must already cover the FUTURE use of the topic. Leaves can be taken from the buffer (the last node, attached to the leaves still open) and — unless `groupBeyondBuffer` is off — from any ORDINARY node: the leaves of an ordinary node are still in the head as micros, so the window does not close when the round ends. They must be a CHRONOLOGICAL BLOCK, because the topic is one block in the index: the nodes in between may be taken whole, and what the involved nodes keep is re-partitioned around the topic. A TOPIC is never a source — its description stands for its leaves. When the topic already exists, pass `node` and the description is NOT rewritten — that is what makes adding leaves later free.',
+      groupLeaves: 'Ids of the leaves to group or move: the buffer\'s, the loose ones, and — unless `groupBeyondBuffer` is off — the leaves of ordinary nodes. Each must already carry a micro, and they must be consecutive in time.',
       groupNodes: 'Ids of NODES to absorb into the topic: a topic can CONTAIN other topics. Containment only goes BACKWARD in time (a node absorbs only nodes that come after it), and the buffer is never absorbed. The absorbed node keeps its leaves and its description and stays readable with cwl_open: what changes is that its block is no longer injected, because the parent description stands for it.',
       groupNode: 'Id of an existing TOPIC node to add the leaves to. Omit it to create a new topic, which then requires `name` and `description`.',
       groupName: 'Short name of the new topic, written ONCE: it is part of the index prefix, so it never changes. e.g. "login-otp".',
@@ -476,7 +476,7 @@ const I18N: Record<Lang, CwlMessages> = {
     indexLine: (pitNodes, pitLeaves, youngNodes, youngLeaves, topics, loose, waiting, headTokens, evictions, savedTokens) =>
       `pozzo ${pitNodes}n/${pitLeaves}f │ giovani ${youngNodes}n/${youngLeaves}f │ topic ${topics} │ sciolte ${loose} │ aspettano micro ${waiting} │ testa ~${headTokens}t │ ${evictions} eviction │ ${savedTokens} risparmiati`,
     groupRefused: (why, detail) =>
-      `\n\nRaggruppamento rifiutato (${why}${detail ? `: ${detail}` : ''}). Non e' stato registrato niente. Si possono raggruppare o spostare SOLO le foglie del BUFFER — l'ultimo nodo, quello attaccato alle foglie ancora aperte: il materiale piu' vecchio resta dove sta. Una foglia gia' dentro il nodo vecchio non puo' tornare indietro (la sintesi del pozzo sta per lei), e una foglia senza micro non comparirebbe in nessuna testa: scrivi prima il micro. Una descrizione e' IMMUTABILE finche' il suo topic e' FUORI dal nodo vecchio, perche' li' e' l'indice; dentro il nodo vecchio si puo' riscrivere, e li' non muove niente.`,
+      `\n\nRaggruppamento rifiutato (${why}${detail ? `: ${detail}` : ''}). Non e' stato registrato niente. Si possono raggruppare o spostare le foglie del buffer, quelle sciolte e quelle dei nodi ordinari (un TOPIC non e' una sorgente: la sua descrizione sta per le sue foglie), e devono essere consecutive nel tempo. Una foglia gia' dentro il nodo vecchio non puo' tornare indietro (la sintesi del pozzo sta per lei), e una foglia senza micro non comparirebbe in nessuna testa: scrivi prima il micro. Una descrizione e' IMMUTABILE finche' il suo topic e' FUORI dal nodo vecchio, perche' li' e' l'indice; dentro il nodo vecchio si puo' riscrivere, e li' non muove niente.`,
     groupTooSmall: (leaves, microChars, needChars) =>
       `\n\nNessun topic e' nato: le ${leaves} foglia/e tengono ${microChars} caratteri, e un topic deve liberarne almeno ${needChars}. Un topic nasce GIA' COLLASSATO — la sua descrizione sostituisce le etichette di quelle foglie da questo momento — quindi deve valere piu' della descrizione che le sostituisce (~3.600 caratteri per il rapporto, e mai meno del minimo assoluto). Raggruppa piu' foglie, oppure lasciale nel buffer finche' il topic non e' abbastanza grande.`,
     groupCreated: (name, id, leaves, microChars) =>
@@ -572,8 +572,8 @@ const I18N: Record<Lang, CwlMessages> = {
       microText: "Il micro-riassunto che SOSTITUISCE il corpo nel contesto. Il corpo NON viene toccato: cwl_open lo restituisce ancora tutto. Scrivi i pezzi che contano; ~1.200 caratteri (≈300 token) e' la misura per cui questo design e' costruito — e il tetto e' misurato: sfondarlo viene detto nel risultato.",
       oldDesc: 'Scrive il RIASSUNTONE e accorpa i nodi giovani piu\' vecchi nel nodo vecchio: i loro micro escono dal contesto e la sintesi sta per tutti. I nodi e le loro foglie restano leggibili — cwl_open li pagina.',
       oldText: 'La sintesi (riassuntone) che sostituisce i micro dei nodi accorpati nel contesto. Scrivi PEZZI INTERI: e\' quello che l\'agente vedra\' al posto loro. Deve coprire i nodi ORDINARI che accorpi — la descrizione dei nodi TOPIC che accorpi viene incollata al tuo testo parola per parola, quindi NON riscrivere cio\' che un topic dice gia\'. Se il pozzo ha gia\' una sintesi, cwl_open la mostra: PORTALA AVANTI, concatenata — un accorpamento la SOSTITUISCE, non ci si aggiunge.',
-      groupDesc: 'Raggruppa le foglie in un nodo TOPIC, che nasce GIA\' COLLASSATO: il nome e la descrizione che scrivi adesso stanno per le sue foglie nell\'indice da questo momento, quindi la descrizione deve coprire GIA\' l\'uso futuro del topic. Si possono raggruppare o spostare solo le foglie del buffer (l\'ultimo nodo, attaccato alle foglie ancora aperte). Quando il topic esiste gia\', passa `node` e la descrizione NON viene riscritta: e\' questo che rende gratis l\'aggiunta di foglie.',
-      groupLeaves: 'Id delle foglie da raggruppare o spostare. Si spostano solo foglie del buffer (o sciolte), e ognuna deve gia\' avere un micro.',
+      groupDesc: 'Raggruppa le foglie in un nodo TOPIC, che nasce GIA\' COLLASSATO: il nome e la descrizione che scrivi adesso stanno per le sue foglie nell\'indice da questo momento, quindi la descrizione deve coprire GIA\' l\'uso futuro del topic. Si possono raggruppare o spostare le foglie del buffer (l\'ultimo nodo, attaccato alle foglie ancora aperte) e — se `groupBeyondBuffer` e\' attivo — quelle di qualsiasi nodo ORDINARIO: le foglie di un nodo ordinario sono ancora in testa come micro, quindi la finestra non si chiude a fine round. Devono essere un BLOCCO CRONOLOGICO, perche\' il topic e\' un blocco solo nell\'indice: i nodi in mezzo si possono prendere interi, e cio\' che i nodi coinvolti tengono viene ripartito attorno al topic. Un TOPIC non e\' mai una sorgente — la sua descrizione sta per le sue foglie. Quando il topic esiste gia\', passa `node` e la descrizione NON viene riscritta: e\' questo che rende gratis l\'aggiunta di foglie.',
+      groupLeaves: 'Id delle foglie da raggruppare o spostare: quelle del buffer, quelle sciolte e — se `groupBeyondBuffer` e\' attivo — quelle dei nodi ordinari. Ognuna deve gia\' avere un micro, e devono essere consecutive nel tempo.',
       groupNodes: 'Id dei NODI da assorbire nel topic: un topic puo\' CONTENERE altri topic. Il contenimento va SOLO all\'indietro nel tempo (un nodo assorbe solo nodi che stanno dopo di lui) e il buffer non si assorbe mai. Il nodo assorbito tiene le sue foglie e la sua descrizione e resta leggibile con cwl_open: cambia solo che il suo blocco non viene piu\' iniettato, perche\' la descrizione del genitore sta per lui.',
       groupNode: 'Id di un nodo TOPIC esistente a cui aggiungere le foglie. Omesso, crea un topic nuovo, che allora richiede `name` e `description`.',
       groupName: 'Nome breve del topic nuovo, scritto UNA VOLTA: fa parte del prefisso dell\'indice, quindi non cambia mai. Es. "login-otp".',
@@ -633,6 +633,16 @@ interface CwlConfig {
    * — and the reason a test can drive the whole tree with three leaves.
    */
   looseLeaves: number;
+  /**
+   * Whether `cwl_group` may take leaves that already sit inside an ORDINARY node, not just
+   * the buffer's or the loose ones. On by default, and disableable: the leaves of an ordinary
+   * node are still in the head as micros (a TOPIC stands for its leaves with one description,
+   * an ordinary node injects them), so they are in fact loose — and the window that today
+   * closes when the round ends is the reason a topic had to be born as the last act of a
+   * round. What it costs is the index prefix: the topic is born at the position of the first
+   * node involved, so the head is rewritten from there. Turn it off to keep the old rule.
+   */
+  groupBeyondBuffer: boolean;
   nodeCapacity: number;
   mergeNodesAt: number;
   /** How many times the synthesis a merge frees must outweigh the one it writes. */
@@ -720,6 +730,7 @@ const DEFAULT_CONFIG: CwlConfig = {
     stripIntermediate: true,
     removeEpisode: true,
   },
+  groupBeyondBuffer: true,
   showWidget: true,
   debug: false,
 };
@@ -791,6 +802,7 @@ function loadConfig(): CwlConfig {
           stripIntermediate: validBool(levels.stripIntermediate, DEFAULT_CONFIG.levels.stripIntermediate),
           removeEpisode: validBool(levels.removeEpisode, DEFAULT_CONFIG.levels.removeEpisode),
         },
+        groupBeyondBuffer: validBool(user.groupBeyondBuffer, DEFAULT_CONFIG.groupBeyondBuffer),
         showWidget: validBool(user.showWidget, DEFAULT_CONFIG.showWidget),
         debug: validBool(user.debug, DEFAULT_CONFIG.debug),
       };
@@ -1109,6 +1121,7 @@ function sessionKey(ctx: ExtensionContext | null | undefined): string {
     return anonymousKey(ctx);
   }
 }
+
 
 // When a context carries no session id at all, each context object gets its own
 // generated key. Two anonymous sessions can then never share state; the old
@@ -1925,7 +1938,8 @@ function indexShape(
   // without opening every node to see which ones were topics.
   const topics = st.nodes.filter((nd) => Boolean(nd.description)).length;
   const owned = new Set(st.nodes.flatMap((nd) => nd.leaves));
-  const looseIds = new Set(st.spans.slice(-cf.looseLeaves).map((s) => idOfSpan(s)));
+  // `slice(-0)` is `slice(0)`: see `refreshNodes`. Zero loose leaves means zero, not all.
+  const looseIds = new Set((cf.looseLeaves > 0 ? st.spans.slice(-cf.looseLeaves) : []).map((s) => idOfSpan(s)));
   // The head is what the context PAYS for the index: a topic node costs its ONE
   // description, not the labels of its leaves, and a loose leaf costs its own label (its
   // body is still in the context but the label is injected all the same). Counting only the
@@ -2203,7 +2217,9 @@ function refreshNodes(
   const inPit = inPitIds;
   const young = st.nodes.filter((nd) => !inPit.has(nd.id));
   const settled = new Set(st.nodes.flatMap((nd) => nd.leaves));
-  const loose = new Set(leaves.slice(-cf.looseLeaves).map((l) => idOfSpan(l)));
+  // `slice(-0)` is `slice(0)`: with `looseLeaves: 0` the whole list would be loose, so no leaf
+  // would ever enter a node and the buffer itself would not exist. Zero means zero.
+  const loose = new Set((cf.looseLeaves > 0 ? leaves.slice(-cf.looseLeaves) : []).map((l) => idOfSpan(l)));
   let formed = 0;
   let waiting = 0;
   // WHICH leaves are waiting, not just how many: without the ids the demand can only say
@@ -2222,7 +2238,58 @@ function refreshNodes(
     }
     current.leaves.push(id);
   }
-  return { formed, waiting, waitingIds, due: young.length >= cf.mergeNodesAt ? 1 : 0 };
+  // THE SIGNAL IS ANNOUNCED ONLY WHEN THE MERGE WOULD PASS ITS OWN SIZE GUARD. Counting the
+  // young nodes is not enough, and the difference is not cosmetic: the nudge kept asking while
+  // `cwl_old` refused, and the agent spent a turn writing a synthesis that was thrown away.
+  // MEASURED in one session: nine nudges, every one of them refused. A signal that does not
+  // survive the check it announces is noise, and noise trains the reader to ignore it.
+  const budget = mergeBudget(st, cf);
+  if (young.length >= cf.mergeNodesAt && !budget.ok) {
+    debugLog(cf, `OLD NODE not-due: ${young.length} young node(s), ${budget.freedChars} chars would leave, need ${budget.needChars} (synthesis ~${budget.synthesisChars}, ratio ${cf.mergeMinRatio}, floor ${cf.mergeMinChars})`);
+  }
+  return { formed, waiting, waitingIds, due: young.length >= cf.mergeNodesAt && budget.ok ? 1 : 0 };
+}
+
+/**
+ * What a young -> archive merge would FREE, and what it must free. ONE place, because two
+ * callers have to agree: `cwl_old` refuses on these numbers and the index nudge announces the
+ * merge on them. They disagreed once, and the nudge became noise.
+ *
+ * `absorbed` — WHEN the index is due (`young >= mergeNodesAt`) the NEWEST young node stays out:
+ * it is the one still filling up, and the pit is where the old material goes. Archiving EARLIER
+ * than that — fewer nodes than the index needs to ask — takes everything, the node in progress
+ * included. That is what makes `cwl_old` usable to put away material you no longer need WITHOUT
+ * losing it: an absorbed node is SETTLED (it keeps its leaves and stops growing), the leaves
+ * that come next form a fresh node, and every leaf stays readable through `cwl_open`.
+ *
+ * `freedChars` — WHAT LEAVES THE CONTEXT, and it is a MEASURE, not a guess: a TOPIC node costs
+ * its one description (the labels of its leaves left the head the moment it was born), while an
+ * ordinary node costs the labels of its leaves. The pit's own synthesis is replaced too, so it
+ * leaves as well. Summing the micros of a topic's leaves would count again what had already
+ * gone, and would make the guard approve a merge that frees nothing.
+ *
+ * `needChars` — the size guard, because a merge COSTS a synthesis. DECIDED with the operator and
+ * measured against the real numbers (~1,200 characters per label, ~3,600 for a synthesis): the
+ * merge must be worth `mergeMinRatio` times what it writes, and never less than `mergeMinChars`
+ * (6,000, about five leaves). MEASURED on the merges made by hand: 60 leaves left 88,806
+ * characters of micros and the synthesis that replaced them was ~3,400 (a ratio of 26).
+ */
+function mergeBudget(
+  st: CwlState,
+  cf: CwlConfig,
+): { absorbed: SpanNode[]; freedChars: number; needChars: number; synthesisChars: number; ok: boolean } {
+  const inPit = new Set(st.oldNode?.nodes ?? []);
+  const young = st.nodes.filter((nd) => !inPit.has(nd.id));
+  const absorbed = young.length >= cf.mergeNodesAt && young.length > 1
+    ? young.slice(0, young.length - 1)
+    : young;
+  const freedChars = (st.oldNode?.summary.length ?? 0) + absorbed.reduce((n, nd) => {
+    if (nd.description) return n + nd.description.length;
+    return n + nd.leaves.reduce((m, id) => m + (st.spans.find((s) => idOfSpan(s) === id)?.micro?.length ?? 0), 0);
+  }, 0);
+  const synthesisChars = Math.max(st.oldNode?.summary.length ?? 0, MERGE_SYNTHESIS_CHARS);
+  const needChars = Math.max(Math.round(cf.mergeMinRatio * synthesisChars), cf.mergeMinChars);
+  return { absorbed, freedChars, needChars, synthesisChars, ok: freedChars >= needChars };
 }
 
 interface CompressedSpan {
@@ -3687,9 +3754,8 @@ export default function (pi: ExtensionAPI) {
       // usable to put away material you no longer need WITHOUT losing it: an absorbed node
       // is SETTLED (it keeps its leaves and stops growing), the leaves that come next form
       // a fresh node, and every leaf stays readable through `cwl_open`.
-      const absorbed = young.length >= cf.mergeNodesAt && young.length > 1
-        ? young.slice(0, young.length - 1)
-        : young;
+      const budget = mergeBudget(st, cf);
+      const absorbed = budget.absorbed;
       const ids = absorbed.flatMap((nd) => nd.leaves);
       const microChars = ids.reduce(
         (n, id) => n + (st.spans.find((s) => idOfSpan(s) === id)?.micro?.length ?? 0),
@@ -3707,12 +3773,7 @@ export default function (pi: ExtensionAPI) {
       // ordinary node costs the labels of its leaves. The pit's own synthesis is replaced too,
       // so it leaves as well. Summing the micros of a topic's leaves would count again what had
       // already gone, and would make the guard approve a merge that frees nothing.
-      const freedChars = (st.oldNode?.summary.length ?? 0) + absorbed.reduce((n, nd) => {
-        if (nd.description) return n + nd.description.length;
-        return n + nd.leaves.reduce((m, id) => m + (st.spans.find((s) => idOfSpan(s) === id)?.micro?.length ?? 0), 0);
-      }, 0);
-      const synthesisChars = Math.max(st.oldNode?.summary.length ?? 0, MERGE_SYNTHESIS_CHARS);
-      const needChars = Math.max(Math.round(cf.mergeMinRatio * synthesisChars), cf.mergeMinChars);
+      const { freedChars, needChars, synthesisChars } = budget;
       if (freedChars < needChars) {
         debugLog(cf, `OLD not-due: ${ids.length} leaf/leaves would leave ${freedChars} chars, need ${needChars} (synthesis ~${synthesisChars}, ratio ${cf.mergeMinRatio}, floor ${cf.mergeMinChars})`);
         return {
@@ -3826,7 +3887,33 @@ export default function (pi: ExtensionAPI) {
           continue;
         }
         if (owner && inPit.has(owner.id)) return refuse('leaf-in-the-pit', `${id} (${owner.id})`);
-        if (owner && owner !== buffer) return refuse('leaf-not-in-the-buffer', `${id} (${owner.id})`);
+        if (owner && owner !== buffer) {
+          if (!cf.groupBeyondBuffer) return refuse('leaf-not-in-the-buffer', `${id} (${owner.id})`);
+          // A TOPIC is never a source. Its leaves are NOT in the head — one description stands
+          // for all of them — so taking one out would make that description a lie about what
+          // the topic holds, and the leaf would come back into the head as a micro.
+          if (owner.description) return refuse('leaf-in-a-topic', `${id} (${owner.id})`);
+        }
+      }
+      // THE TOPIC IS ONE BLOCK IN A CHRONOLOGICAL INDEX, so its leaves must be a chronological
+      // BLOCK too. Scattered NODES are fine — the ones in between are emptied, and what they keep
+      // is re-partitioned around the topic — but scattered LEAVES are not: a leaf left between two
+      // of the topic's own leaves has nowhere to go that is both inside the topic's span and
+      // outside it. Checked only in the new mode: under the old rule the buffer and the loose
+      // leaves are the newest ones, so they are consecutive by construction.
+      const uniqueIds = [...new Set(ids)];
+      const chrono = [...st.spans].sort((a, b) => a.at - b.at).map((s) => idOfSpan(s));
+      const order = new Map(chrono.map((leafId, i) => [leafId, i]));
+      const contiguity = (extra: string[]): string | null => {
+        const set = [...new Set([...uniqueIds, ...extra])];
+        if (set.length < 2) return null;
+        const pos = set.map((leafId) => order.get(leafId) ?? 0).sort((a, b) => a - b);
+        const span = pos[pos.length - 1] - pos[0] + 1;
+        return span === pos.length ? null : `${set.length} leaf/leaves over ${span} positions`;
+      };
+      if (cf.groupBeyondBuffer && !wantPit && !params.node) {
+        const broken = contiguity([]);
+        if (broken) return refuse('leaves-not-contiguous', broken);
       }
 
       if (params.node) {
@@ -3937,11 +4024,46 @@ export default function (pi: ExtensionAPI) {
       const base = hashText([...ids, ...nodeIds].join('|'));
       let id = `nd-${base.slice(0, 8)}`;
       for (let n = 2; st.nodes.some((nd) => nd.id === id); n++) id = `nd-${base.slice(0, 8)}-${n}`;
-      const moving = new Set(ids);
+      const moving = new Set(uniqueIds);
+      // WHERE THE TOPIC LANDS, and what happens to what it does NOT take. The involved nodes are
+      // the ones the taken leaves come from; the topic is born at the position of the FIRST of
+      // them, so everything before it in the index stays where it is. What those nodes keep is
+      // re-partitioned AROUND the topic — the older leftovers in front, the newer behind, chunked
+      // by `nodeCapacity` — because the planner would otherwise append them to the NEWEST node,
+      // moving them in time. A node left empty is dropped by `refreshNodes` itself; the buffer is
+      // not, and that is why the topic never takes its place.
+      const involved = st.nodes.filter((nd) => nd.leaves.some((x) => moving.has(x)));
+      const firstTaken = Math.min(...uniqueIds.map((leafId) => order.get(leafId) ?? 0));
+      const older: string[] = [];
+      const newer: string[] = [];
+      for (const nd of involved) {
+        for (const x of nd.leaves) {
+          if (moving.has(x)) continue;
+          ((order.get(x) ?? 0) < firstTaken ? older : newer).push(x);
+        }
+      }
+      const chunkNodes = (list: string[]): SpanNode[] => {
+        const out: SpanNode[] = [];
+        for (let i = 0; i < list.length; i += cf.nodeCapacity) {
+          const slice = list.slice(i, i + cf.nodeCapacity);
+          const stem = `nd-${hashText(slice.join('|')).slice(0, 8)}`;
+          let chunkId = stem;
+          for (let n = 2; st.nodes.some((nd) => nd.id === chunkId) || out.some((nd) => nd.id === chunkId); n++) {
+            chunkId = `${stem}-${n}`;
+          }
+          out.push({ id: chunkId, leaves: slice, at: Date.now() });
+        }
+        return out;
+      };
+      const insertAt = involved.length > 0
+        ? st.nodes.indexOf(involved[0])
+        : Math.max(0, st.nodes.length - 1);
+      const olderNodes = chunkNodes(older);
+      const newerNodes = chunkNodes(newer);
       for (const nd of st.nodes) nd.leaves = nd.leaves.filter((x) => !moving.has(x));
       const node: SpanNode = {
         id,
-        leaves: [...ids],
+        leaves: [...uniqueIds],
         name,
         description,
         children: absorbedNew.length ? absorbedNew.map((c) => c.id) : undefined,
@@ -3956,7 +4078,7 @@ export default function (pi: ExtensionAPI) {
         const lastPit = st.nodes.reduce((idx, nd, i) => (inPit.has(nd.id) ? i : idx), -1);
         st.nodes.splice(lastPit + 1, 0, node);
       } else {
-        st.nodes.splice(Math.max(0, st.nodes.length - 1), 0, node);
+        st.nodes.splice(insertAt, 0, ...olderNodes, node, ...newerNodes);
       }
       saveState(key, st);
       debugLog(cf, `GROUP ${id} "${name}": born ${wantPit ? 'INSIDE the pit' : 'at the frontier'} with ${ids.length} leaf/leaves, ${microChars} chars of micros, description of ${description.length} chars`);

@@ -22,8 +22,8 @@
  * THE FIVE WAYS THIS TEST MUST DIE:
  *  1. the topic replaces the buffer instead of sitting BEHIND it -> the first node would be
  *     a topic, which could not act as a buffer;
- *  2. a leaf that is not in the buffer is accepted -> material older than the frontier would
- *     be rearranged under the agent's hands;
+ *  2. a SCATTERED set of leaves is accepted -> the topic would not be one block in a
+ *     chronological index, and the leaves left between its own would have nowhere to go;
  *  3. a leaf already inside the old node is accepted -> the pit's synthesis stands for it,
  *     and the same content would be described twice;
  *  4. a topic below the size guard is born -> the description costs more than it frees;
@@ -195,17 +195,68 @@ test('the description is written once: adding leaves does not change it', async 
   }
 });
 
-test('only the leaves of the buffer can be moved', async () => {
-  const { sandbox, home, tools, hooks, ctx } = await boot({ nodeCapacity: 2, mergeMinRatio: 0, mergeMinChars: 0 });
+test('an ordinary node is a source too, and what it keeps is re-partitioned in time', async () => {
+  const { sandbox, home, tools, hooks, ctx } = await boot({ nodeCapacity: 2, looseLeaves: 0, mergeMinRatio: 0, mergeMinChars: 0 });
   try {
-    const st = await leavesWithMicros(sandbox, hooks, ctx, tools, 4);
-    // nodeCapacity 2 and looseLeaves 1: nodes are [leaf0, leaf1] and the buffer [leaf2];
-    // leaf3 is loose. So leaf2 is the one legal to move, and leaf0 is not.
-    const born = await group(tools, ctx, { leaves: [st.spans[2].id], name: 'frontier', description: 'Born from the frontier.' });
+    const st = await leavesWithMicros(sandbox, hooks, ctx, tools, 5);
+    // nodeCapacity 2 and looseLeaves 0: [l0,l1] [l2,l3] [l4] — and only the LAST one is the
+    // buffer. The first node is ordinary, and its leaves are still in the head as micros.
+    const before = stateOf(sandbox).nodes;
+    assert.deepEqual(before.map((nd) => nd.leaves.length), [2, 2, 1], `unexpected shape: ${JSON.stringify(before.map((nd) => nd.leaves))}`);
+    // A leaf of the FIRST node, which is neither the buffer nor loose: under the old rule this
+    // was refused outright, and that is exactly what `groupBeyondBuffer` opens up.
+    const born = await group(tools, ctx, { leaves: [st.spans[0].id], name: 'back', description: 'Older material, taken from a closed node.' });
+    assert.equal(born.details.ok, true, `the topic was not born: ${JSON.stringify(born.details)}`);
+    const after = stateOf(sandbox).nodes;
+    // The topic lands at the position of the node it took the leaf from, and the leaf left
+    // behind is in a node AFTER it: keeping the chronology is the whole point of the re-partition.
+    const topicIdx = after.findIndex((nd) => nd.id === born.details.id);
+    assert.equal(topicIdx, 0, `the topic was not born at the first node's place: ${JSON.stringify(after.map((nd) => nd.id))}`);
+    assert.deepEqual(after[0].leaves, [st.spans[0].id], 'the topic does not hold the leaf it took');
+    const restIdx = after.findIndex((nd) => nd.leaves.includes(st.spans[1].id));
+    assert.ok(restIdx > topicIdx, `the leaf left behind moved in time: node ${restIdx}, topic ${topicIdx}`);
+    // The buffer is still the LAST node and still holds its own leaf.
+    assert.deepEqual(after[after.length - 1].leaves, [st.spans[4].id], 'the buffer is no longer last');
+  } finally {
+    home.restore();
+  }
+});
+
+test('with groupBeyondBuffer off, only the leaves of the buffer can be moved', async () => {
+  const { sandbox, home, tools, hooks, ctx } = await boot({ nodeCapacity: 2, looseLeaves: 0, mergeMinRatio: 0, mergeMinChars: 0, groupBeyondBuffer: false });
+  try {
+    const st = await leavesWithMicros(sandbox, hooks, ctx, tools, 5);
+    const res = await group(tools, ctx, { leaves: [st.spans[0].id], name: 'back', description: 'Refused under the old rule.' });
+    assert.equal(res.details.ok, false, 'a leaf older than the frontier was moved with the key off');
+    assert.equal(res.details.why, 'leaf-not-in-the-buffer', `unexpected refusal: ${JSON.stringify(res.details)}`);
+  } finally {
+    home.restore();
+  }
+});
+
+test('a topic is never a source: its description stands for its leaves', async () => {
+  const { sandbox, home, tools, hooks, ctx } = await boot({ nodeCapacity: 2, looseLeaves: 0, mergeMinRatio: 0, mergeMinChars: 0 });
+  try {
+    const st = await leavesWithMicros(sandbox, hooks, ctx, tools, 5);
+    const born = await group(tools, ctx, { leaves: [st.spans[0].id, st.spans[1].id], name: 'first', description: 'A topic over the first node.' });
     assert.equal(born.details.ok, true, `the topic was not born: ${JSON.stringify(born.details)}`);
     const res = await group(tools, ctx, { node: born.details.id, leaves: [st.spans[0].id] });
-    assert.equal(res.details.ok, false, 'a leaf older than the frontier was moved');
-    assert.equal(res.details.why, 'leaf-not-in-the-buffer', `unexpected refusal: ${JSON.stringify(res.details)}`);
+    assert.equal(res.details.ok, false, 'a leaf was taken back out of a topic');
+    assert.equal(res.details.why, 'leaf-in-a-topic', `unexpected refusal: ${JSON.stringify(res.details)}`);
+  } finally {
+    home.restore();
+  }
+});
+
+test('the topic is one block: scattered leaves are refused', async () => {
+  const { sandbox, home, tools, hooks, ctx } = await boot({ nodeCapacity: 2, looseLeaves: 0, mergeMinRatio: 0, mergeMinChars: 0 });
+  try {
+    const st = await leavesWithMicros(sandbox, hooks, ctx, tools, 5);
+    // l0 and l2 are in different nodes and l1 sits between them: a topic holding both would
+    // not be one block, and l1 would have nowhere to go that is both inside its span and out.
+    const res = await group(tools, ctx, { leaves: [st.spans[0].id, st.spans[2].id], name: 'scattered', description: 'Two leaves with one in between.' });
+    assert.equal(res.details.ok, false, 'a scattered set of leaves was accepted');
+    assert.equal(res.details.why, 'leaves-not-contiguous', `unexpected refusal: ${JSON.stringify(res.details)}`);
   } finally {
     home.restore();
   }
