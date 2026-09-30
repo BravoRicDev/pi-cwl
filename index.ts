@@ -1486,7 +1486,11 @@ const MAX_PROTECTED_SHARE = 0.5;
  * refreshes. Counting only `user` made the window start at the last prompt the operator
  * typed, so everything after it — days of autonomous work — stayed protected and no
  * compaction path could touch anything. MEASURED in a live session: 348.650t protected out
- * of 436.837t, which is 80% of the list, i.e. exactly the degenerate branch below.
+ * of 436.837t, i.e. 80% of the context — and NOT because the degenerate branch below fired
+ * (that session has 33 `user` messages, so the normal branch did its job): the NORMAL branch
+ * was measuring the wrong thing. The last four `user` turns of an autonomous session are
+ * days of machine work, and everything BEFORE the window was already compressed (88.187t
+ * left, of which 85.491t of summaries inside the spans).
  *
  * A FOREIGN injected message counts like a prompt. Our OWN do not: a compression summary
  * sits where the compressed messages were, and the index demand rides at the END of the
@@ -1504,11 +1508,18 @@ function protectedFromIndex(messages: AgentMessage[], turns: number): number {
   if (turns <= 0) return messages.length;
   let seen = 0;
   let byTurns = 0;
+  // Two boundaries IN A ROW are ONE turn. A wake-up, a card refresh and another extension's
+  // notice arrive together at the start of the SAME exchange, and counting them apart made
+  // "four turns" mean a turn and a half — the opposite of what a safety window is for.
+  // Walking backwards, "in a row" is the message we just passed.
+  let afterBoundary = false;
   for (let i = messages.length - 1; i >= 0; i--) {
-    if (isTurnBoundary(messages[i])) {
+    if (!isTurnBoundary(messages[i])) { afterBoundary = false; continue; }
+    if (!afterBoundary) {
       seen++;
       if (seen > turns) { byTurns = i + 1; break; }
     }
+    afterBoundary = true;
   }
   // Normal case: the window is honoured EXACTLY as configured. The cap must not
   // touch this, or `protectedTurns` would stop meaning what it says.

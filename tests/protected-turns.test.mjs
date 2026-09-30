@@ -114,8 +114,48 @@ test('un turno autonomo (risveglio, carta) conta come un turno dell\'operatore',
 });
 
 /**
- * Quattro turni autonomi e, in fondo, QUATTRO iniezioni nostre.
+ * Dieci scambi, ognuno dei quali si APRE con tre iniezioni consecutive.
  *
+ * E' la forma reale: all'inizio di uno scambio arrivano insieme il risveglio di un cronjob,
+ * un rinnovo della memory card e magari la notifica di un'altra estensione. Nessuna di loro
+ * e' un turno in piu': sono lo STESSO inizio.
+ */
+const scambiConIniezioniConsecutive = (scambi) => {
+  const out = [
+    { role: 'user', content: 'operatore, giorni fa ' + 'U'.repeat(300), timestamp: 1 },
+    { role: 'assistant', content: 'risposta di allora ' + 'A'.repeat(300), timestamp: 2 },
+  ];
+  for (let i = 1; i <= scambi; i++) {
+    out.push({ role: 'custom', customType: 'background-task-notification', content: `risveglio ${i}`, timestamp: 100 + i * 10 });
+    out.push({ role: 'custom', customType: 'anti-amnesia', content: `carta ${i}`, timestamp: 101 + i * 10 });
+    out.push({ role: 'custom', customType: 'background-task-notification', content: `altro risveglio ${i}`, timestamp: 102 + i * 10 });
+    out.push({ role: 'assistant', content: `lavoro autonomo ${i} ` + 'A'.repeat(400), timestamp: 103 + i * 10 });
+    out.push({ role: 'toolResult', content: `output ${i} ` + 'T'.repeat(400), timestamp: 104 + i * 10 });
+  }
+  return out;
+};
+
+test('tre iniezioni consecutive contano come UN turno solo', async () => {
+  const { sandbox, home, hooks, ctx } = await boot();
+  try {
+    const prima = logDi(sandbox).length;
+    await hook(hooks, ctx, scambiConIniezioniConsecutive(10));
+    const log = logDi(sandbox).slice(prima);
+    const riga = /CONTEXT (\d+)t still above trigger \d+t: (\d+)t in the protected window/.exec(log);
+    assert.ok(riga, `il turno non dichiara il pavimento: ${log.trim().split('\n').slice(-3).join(' | ')}`);
+    const quota = Number(riga[2]) / Number(riga[1]);
+    assert.ok(
+      quota > 0.35,
+      `la finestra protetta copre solo il ${Math.round(quota * 100)}% del contesto: i confini ADIACENTI stanno contando ` +
+        'uno per uno, quindi le tre iniezioni che aprono lo stesso scambio mangiano tre "turni" e la finestra scivola ' +
+        'verso il presente. Quattro turni devono restare quattro scambi, anche quando piu\' strumenti si attivano in sequenza.',
+    );
+  } finally {
+    home.restore();
+  }
+});
+
+/**
  * Serve un caso dove la differenza si VEDE: con pochi turni, se le nostre iniezioni
  * contassero come confini il pavimento scivolerebbe di quattro turni in un colpo solo.
  */
