@@ -2373,6 +2373,13 @@ export default function (pi: ExtensionAPI) {
     st.rangeStartHash = range?.startHash ?? null;
     st.rangeEndHash = range?.endHash ?? null;
     st.rangeTokens = range?.tokens ?? 0;
+    // One line that answers, from a real session, WHY no range is on offer. Its
+    // ABSENCE is the answer too: it means the hook returned before this point
+    // (the spans branch, or under budget), which is a different defect from
+    // "there is nothing to compress".
+    debugLog(cf, `RANGE ${range
+      ? `${range.startHash}..${range.endHash} (~${range.tokens}t)`
+      : 'none'} | ${messages.length} msgs, ${currentTokens}t vs trigger ${Math.round(trigger)}t, ${st.spans.length} span(s)`);
 
     /**
      * Level A — the safety net: strip reasoning blocks, ahead of the safety
