@@ -725,6 +725,13 @@ interface CwlState {
    */
   unlocatable: number;
   unlocatableSeen: number;
+  /**
+   * Closed episodes located by DEDUCTION: their start anchor was carried away by
+   * a native compaction, so the range was derived instead of read. Same reason
+   * as above — measured, reported, never assumed.
+   */
+  deduced: number;
+  deducedSeen: number;
   /** Spans compressed by the LLM: hash of the first/last message + summary. */
   spans: CompressedSpan[];
   /** Text hashes of the messages seen: anchor for cwl_compress. */
@@ -766,6 +773,8 @@ function newState(): CwlState {
     addrWithId: 0,
     unlocatable: 0,
     unlocatableSeen: -1,
+    deduced: 0,
+    deducedSeen: -1,
     spans: [],
     knownHashes: new Set(),
     recallIndex: null,
@@ -1104,11 +1113,33 @@ const LEVEL_CONFIG_KEY: Record<StripLevel, keyof CwlConfig['levels'] | null> = {
  * to the end of the context and evict messages belonging to no episode at all —
  * including the agent's own memory card). The plan skips it too, instead of
  * inventing a range for it.
+ *
+ * ONE exception, and it points in one direction only. A native compaction cuts a
+ * PREFIX: Pi keeps `firstKeptEntryId` and everything after it, and the summary
+ * is prepended. So the only anchor a cut can carry away is the START one, and an
+ * episode that was still open when the cut happened loses its start while its
+ * end survives. Its surviving content is then everything the list still holds up
+ * to that end: `{from: 0, to: end, deduced: true}`.
+ *
+ * The opposite deduction (`end` lost, `start` alive -> `[start, len-1]`) is
+ * REFUSED, and the reason is structural rather than cautious: a prefix cut
+ * cannot take the end away while leaving the start, so that layout has no
+ * explanation here, and inventing a range for an unexplained layout is exactly
+ * how this extension would evict what it cannot account for.
+ *
+ * MEASURED before writing the branch (189 transcripts, 202 native compactions,
+ * 7 closed episodes): 5 episodes sat entirely before the cut — their BOTH
+ * anchors were gone, and no deduction can help those — 2 sat entirely after it,
+ * and 0 spanned it. So this branch fixes nothing that was observed: it is
+ * insurance for the layout the cut makes possible. `deduced` travels with the
+ * range for one reason only: the log can then say that a range was DERIVED
+ * rather than read, which is the difference between a measurement and an
+ * assumption.
  */
 function episodeRanges(
   messages: AgentMessage[],
   episodes: Episode[],
-): Map<string, { from: number; to: number }> {
+): Map<string, { from: number; to: number; deduced: boolean }> {
   const posByToolCallId = new Map<string, number>();
   messages.forEach((m, i) => {
     // SAFETY: toolCallId exists on the real tool-result messages; the public
@@ -1116,12 +1147,21 @@ function episodeRanges(
     const id = (m as unknown as RealMessage).toolCallId;
     if (typeof id === 'string') posByToolCallId.set(id, i);
   });
-  const out = new Map<string, { from: number; to: number }>();
+  const out = new Map<string, { from: number; to: number; deduced: boolean }>();
   for (const ep of episodes) {
-    const from = posByToolCallId.get(ep.startToolCallId);
     const to = ep.endToolCallId !== null ? posByToolCallId.get(ep.endToolCallId) : undefined;
-    if (from === undefined || to === undefined || to <= from) continue;
-    out.set(ep.name, { from, to: Math.min(to, messages.length - 1) });
+    if (to === undefined) continue;
+    const from = posByToolCallId.get(ep.startToolCallId);
+    if (from === undefined) {
+      // The prefix cut took the start anchor. With the whole prefix gone there is
+      // nothing older than index 0 left to claim, and an `end` AT 0 would claim
+      // nothing at all.
+      if (to <= 0) continue;
+      out.set(ep.name, { from: 0, to: Math.min(to, messages.length - 1), deduced: true });
+      continue;
+    }
+    if (to <= from) continue;
+    out.set(ep.name, { from, to: Math.min(to, messages.length - 1), deduced: false });
   }
   return out;
 }
@@ -2361,12 +2401,18 @@ export default function (pi: ExtensionAPI) {
     if (closedEps.length > 0) {
       const locatable = episodeRanges(messages, closedEps);
       st.unlocatable = closedEps.filter((ep) => !locatable.has(ep.name)).length;
+      st.deduced = [...locatable.values()].filter((r) => r.deduced).length;
       if (st.unlocatable !== st.unlocatableSeen) {
         st.unlocatableSeen = st.unlocatable;
         debugLog(cf, `EPISODES unlocatable: ${st.unlocatable} of ${closedEps.length} (their anchors left the context)`);
       }
+      if (st.deduced !== st.deducedSeen) {
+        st.deducedSeen = st.deduced;
+        debugLog(cf, `EPISODES deduced: ${st.deduced} episode(s) lost their START anchor to a native compaction (the cut takes a prefix); their range was derived, not read`);
+      }
     } else {
       st.unlocatable = 0;
+      st.deduced = 0;
     }
 
     // The spans compressed by the LLM are ALWAYS applied, not only above the
@@ -2508,6 +2554,12 @@ export default function (pi: ExtensionAPI) {
     // mapped and the full eviction would never fire.
     const episodeAt = new Map<number, Episode>();
     const episodesByName = new Map(g.closed().map((ep) => [ep.name, ep]));
+    // Closed episodes keep the ORDER THEY WERE OPENED IN, and an episode can only
+    // be deduced when its start anchor predates the compaction cut — so a deduced
+    // range is always written BEFORE the located ranges of the episodes opened
+    // after the cut, and those overwrite it on the indices they legitimately
+    // claim. That is why the loop needs no special ordering: reordering it would
+    // be code no test could break.
     for (const [name, range] of episodeRanges(messages, g.closed())) {
       const ep = episodesByName.get(name);
       if (!ep) continue;
@@ -2519,6 +2571,8 @@ export default function (pi: ExtensionAPI) {
     let truncated = 0;
     let removedTokens = 0;
     let truncatedTokens = 0;
+    /** Native summaries that a FULL eviction would have taken, and did not. */
+    let summariesSaved = 0;
     // toolCallIds whose tool result is being dropped: the assistant message that
     // carries the matching toolCall must not keep it, or the conversation has a
     // call with no result (an invalid request for the provider).
@@ -2540,6 +2594,21 @@ export default function (pi: ExtensionAPI) {
       // that role (pi-anti-amnesia's memory card is role:'custom'), and it sits
       // outside any episode of this extension.
       if (role === 'user' || role === 'system' || role === 'developer' || role === 'custom') {
+        kept.push(msg);
+        return;
+      }
+
+      // Pi's own compaction summary is NOT a user turn: it carries the role
+      // 'compactionSummary' (pi/dist/core/messages.js, createCompactionSummaryMessage),
+      // and a branch summary carries 'branchSummary'. Both are the ONLY copy of
+      // the history native compaction replaced — the transcript holds it, the
+      // provider does not — so they are inviolable in the same sense user turns
+      // are. They were simply missing from the list of protected roles, and that
+      // omission is what a deduced range starting at index 0 would have reached.
+      // Counted only when a FULLY evicted episode really claimed their index:
+      // otherwise the number would claim a save the `!ep` branch already gave.
+      if (role === 'compactionSummary' || role === 'branchSummary') {
+        if (ep && evictFull.has(ep.name)) summariesSaved++;
         kept.push(msg);
         return;
       }
@@ -2655,6 +2724,10 @@ export default function (pi: ExtensionAPI) {
         // other field, so it is still a valid message for the provider.
         kept[i] = { ...(m as object), content: filtered } as unknown as AgentMessage;
       }
+    }
+
+    if (summariesSaved > 0) {
+      debugLog(cf, `SUMMARY GUARD: ${summariesSaved} native summary message(s) sat inside an evicted range and were kept — they are the only copy of the history that was compacted`);
     }
 
     st.totalEvictions++;
