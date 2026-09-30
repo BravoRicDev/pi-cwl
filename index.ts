@@ -1478,14 +1478,34 @@ const MAX_PROTECTED_SHARE = 0.5;
  * recent work must never mean protecting all of it: that turns the safety
  * guarantee into the reason the context grows without bound.
  */
+/**
+ * Is this message the START of an exchange — a place where a turn begins?
+ *
+ * A `user` message is the obvious one, but not the only one. In an autonomous session the
+ * operator writes NOTHING for days: the turns are the cron wake-ups and the memory card
+ * refreshes. Counting only `user` made the window start at the last prompt the operator
+ * typed, so everything after it — days of autonomous work — stayed protected and no
+ * compaction path could touch anything. MEASURED in a live session: 348.650t protected out
+ * of 436.837t, which is 80% of the list, i.e. exactly the degenerate branch below.
+ *
+ * A FOREIGN injected message counts like a prompt. Our OWN do not: a compression summary
+ * sits where the compressed messages were, and the index demand rides at the END of the
+ * list, so counting either would move the window onto the wrong thing.
+ */
+function isTurnBoundary(m: AgentMessage): boolean {
+  // SAFETY: read-only probe of optional fields; the union does not expose them.
+  const probe = m as unknown as { role?: unknown; customType?: unknown };
+  if (probe.role === 'user') return true;
+  if (probe.role !== 'custom') return false;
+  return typeof probe.customType !== 'string' || !probe.customType.startsWith('cwl-');
+}
+
 function protectedFromIndex(messages: AgentMessage[], turns: number): number {
   if (turns <= 0) return messages.length;
   let seen = 0;
   let byTurns = 0;
   for (let i = messages.length - 1; i >= 0; i--) {
-    // SAFETY: read-only field probe (role); the union does not expose it.
-    const role = (messages[i] as unknown as RealMessage).role;
-    if (role === 'user') {
+    if (isTurnBoundary(messages[i])) {
       seen++;
       if (seen > turns) { byTurns = i + 1; break; }
     }
