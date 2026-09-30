@@ -161,7 +161,7 @@ type CwlMessages = {
   episodeRecallTruncatedHint: string;
   episodeRecallFound: (name: string, tokens: number, body: string) => string;
   /** Budget gate: the agent-driving channel. */
-  gateDemand: (current: string, budget: string, turns: number) => string;
+  gateDemand: (current: string, budget: string, turns: number, canClose: boolean, canCompress: boolean) => string;
   gateGiveUp: (attempts: number) => string;
   /** Texts that end up in the LLM context. */
   snippets: { delimiter: string; status: string; compress: string; recall: string; recallEpisode: string; compressRange: string };
@@ -232,15 +232,26 @@ const I18N: Record<Lang, CwlMessages> = {
     episodeRecallEmpty: (name) => `Episode "${name}" resolved to no readable text.`,
     episodeRecallTruncatedHint: '\n\n… (truncated; pass full=true for the whole episode)',
     episodeRecallFound: (name, tokens, body) => `Original content of episode "${name}" (~${tokens} tokens):\n\n${body}`,
-    gateDemand: (current, budget, turns) =>
-      `[CWL \u00b7 CONTEXT OVER BUDGET] The active context is ~${current} tokens against a budget of ${budget}, ` +
-      `and the deterministic eviction has nothing left to take. Do ONE of these NOW, in this turn:\n` +
-      `  1. close the episodes you no longer need: ` +
-      `delimiter(action="end", name="<episode>", description="<what you learned>")\n` +
-      `  2. compress a range you have already worked through: ` +
-      `cwl_compress_range(summary="<whole pieces, not a digest>") ` +
-      `— you do NOT need any hash, the extension already picked the range\n` +
-      `The last ${turns} turns are protected and will NOT be touched: compact something older.`,
+    gateDemand: (current, budget, turns, canClose, canCompress) => {
+      // Only the options that are ACTUALLY available. Measured in a real session:
+      // the demand listed both while all four episodes were closed and no
+      // compressible range existed, so it asked for the impossible every turn,
+      // burning the very context it was trying to save.
+      const opts: string[] = [];
+      if (canClose) {
+        opts.push('  1. close the episodes you no longer need: ' +
+          'delimiter(action="end", name="<episode>", description="<what you learned>")');
+      }
+      if (canCompress) {
+        opts.push(`  ${opts.length + 1}. compress a range you have already worked through: ` +
+          'cwl_compress_range(summary="<whole pieces, not a digest>") ' +
+          '\u2014 you do NOT need any hash, the extension already picked the range');
+      }
+      return `[CWL \u00b7 CONTEXT OVER BUDGET] The active context is ~${current} tokens against a budget of ${budget}, ` +
+        `and the deterministic eviction has nothing left to take. Do ONE of these NOW, in this turn:\n` +
+        opts.join('\n') +
+        `\nThe last ${turns} turns are protected and will NOT be touched: compact something older.`;
+    },
     gateGiveUp: (attempts) => `CWL: the compaction demand went unanswered for ${attempts} turns; dropping it for a cooldown.`,
     snippets: {
       delimiter: 'delimiter: marks the boundaries of a CWL episode (expl/act)',
@@ -326,15 +337,22 @@ const I18N: Record<Lang, CwlMessages> = {
     episodeRecallEmpty: (name) => `L'episodio "${name}" non ha prodotto testo leggibile.`,
     episodeRecallTruncatedHint: '\n\n… (troncato; passa full=true per l\'episodio intero)',
     episodeRecallFound: (name, tokens, body) => `Contenuto originale dell'episodio "${name}" (~${tokens} token):\n\n${body}`,
-    gateDemand: (current, budget, turns) =>
-      `[CWL \u00b7 CONTESTO OLTRE IL BUDGET] Il contesto attivo e' ~${current} token contro un budget di ${budget}, ` +
-      `e l'eviction deterministica non ha piu' niente da prendere. Fai UNA di queste cose ORA, in questo turno:\n` +
-      `  1. chiudi gli episodi che non ti servono piu': ` +
-      `delimiter(action="end", name="<episodio>", description="<cosa hai imparato>")\n` +
-      `  2. comprimi un intervallo che hai gia' consumato: ` +
-      `cwl_compress_range(summary="<pezzi interi, non un sommario>") ` +
-      `— non ti serve nessun hash, l'intervallo l'ha gia' scelto l'estensione\n` +
-      `Gli ultimi ${turns} turni sono protetti e NON verranno toccati: compatta qualcosa di piu' vecchio.`,
+    gateDemand: (current, budget, turns, canClose, canCompress) => {
+      const opts: string[] = [];
+      if (canClose) {
+        opts.push('  1. chiudi gli episodi che non ti servono piu\': ' +
+          'delimiter(action="end", name="<episodio>", description="<cosa hai imparato>")');
+      }
+      if (canCompress) {
+        opts.push(`  ${opts.length + 1}. comprimi un intervallo che hai gia' consumato: ` +
+          'cwl_compress_range(summary="<pezzi interi, non un sommario>") ' +
+          '\u2014 non ti serve nessun hash, l\'intervallo l\'ha gia\' scelto l\'estensione');
+      }
+      return `[CWL \u00b7 CONTESTO OLTRE IL BUDGET] Il contesto attivo e' ~${current} token contro un budget di ${budget}, ` +
+        `e l'eviction deterministica non ha piu' niente da prendere. Fai UNA di queste cose ORA, in questo turno:\n` +
+        opts.join('\n') +
+        `\nGli ultimi ${turns} turni sono protetti e NON verranno toccati: compatta qualcosa di piu' vecchio.`;
+    },
     gateGiveUp: (attempts) => `CWL: la richiesta di compattazione e' rimasta senza risposta per ${attempts} turni; la tolgo per un cooldown.`,
     snippets: {
       delimiter: 'delimiter: segna i confini di un episodio CWL (expl/act)',
@@ -1947,6 +1965,13 @@ export default function (pi: ExtensionAPI) {
       // Still over budget. Remember since when, so turn_end knows when to ask.
       if (st.overBudgetSince < 0) st.overBudgetSince = st.turns;
       if (!cf.gate || st.gateArmedTurn < 0) return { messages: list };
+      // Only demand what the extension can actually deliver. In a real session the
+      // gate asked to compact while ALL four episodes were already closed and
+      // cwl_compress_range answered "nothing left to compress": it demanded the
+      // impossible once per turn, burning the very context it was trying to save.
+      const canClose = st.graph.active().length > 0;
+      const canCompress = st.rangeStartHash !== null;
+      if (!canClose && !canCompress) return { messages: list };
       // SAFETY: Pi accepts the custom role in the context hook although the
       // AgentMessage union does not declare it; the extra keys are its contract.
       return {
@@ -1957,6 +1982,8 @@ export default function (pi: ExtensionAPI) {
             after.toLocaleString(),
             Math.round(trigger).toLocaleString(),
             cf.protectedTurns,
+            canClose,
+            canCompress,
           ),
           display: false,
           timestamp: Date.now(),
@@ -2278,7 +2305,12 @@ export default function (pi: ExtensionAPI) {
     // finds. The demand is dropped — with a cooldown — after a few unanswered
     // turns, so a model that ignores it is not nagged forever: the safety net in
     // the context hook is what actually bounds the context.
-    if (cf.gate && st.overBudgetSince >= 0 && (st.turns - st.overBudgetSince) >= GATE_AFTER_TURNS) {
+    // Arm only when there is something the agent can actually DO. Otherwise the
+    // demand is unsatisfiable BY CONSTRUCTION and just burns context: measured in
+    // a real session, where it asked every turn while no episode was open and no
+    // compressible range existed.
+    const actionable = st.graph.active().length > 0 || st.rangeStartHash !== null;
+    if (cf.gate && actionable && st.overBudgetSince >= 0 && (st.turns - st.overBudgetSince) >= GATE_AFTER_TURNS) {
       const inCooldown = st.lastGateViolationTurn >= 0 &&
         (st.turns - st.lastGateViolationTurn) < GATE_COOLDOWN_TURNS;
       if (!inCooldown) {

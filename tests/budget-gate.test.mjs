@@ -35,10 +35,10 @@ let seq = 0;
 async function boot(config) {
   const sandbox = makeSandbox({ name: `gate-${seq++}`, config });
   const home = withHome(sandbox.dir);
-  const { hooks } = await bootExtension(sandbox);
+  const { tools, hooks } = await bootExtension(sandbox);
   const ctx = sessionCtx(path.join(sandbox.dir, 'sessione.jsonl'));
   await hooks.get('session_start')({}, ctx);
-  return { sandbox, home, hooks, ctx };
+  return { sandbox, home, tools, hooks, ctx };
 }
 
 /** Messaggi senza thinking: niente da compattare, quindi si resta sopra budget. */
@@ -138,5 +138,42 @@ test('con gate=false non viene mai iniettata nessuna richiesta', async () => {
       const r = await round(hooks, ctx, messages);
       assert.equal(gateOf(r).length, 0, 'gate=false deve disattivare del tutto il canale');
     }
+  } finally { home.restore(); sandbox.cleanup(); }
+});
+
+test('senza NIENTE da fare il gate non chiede: non deve mai chiedere l\'impossibile', async () => {
+  // Riproduce una sessione vera. Misurato li': il gate chiedeva di compattare, ma
+  //  - nessun episodio era aperto (tutti e 4 chiusi)  -> opzione 1 indisponibile
+  //  - cwl_compress_range rispondeva "non resta niente da comprimere"
+  //    -> opzione 2 indisponibile
+  // Chiedeva quindi una cosa impossibile a ogni turno, bruciando contesto.
+  //
+  // Qui: 6 turni utente, tutti dentro una finestra di 10 -> non c'e' intervallo
+  // comprimibile, e nessun episodio e' aperto. Nulla da fare.
+  const { sandbox, home, hooks, ctx } = await boot(overBudgetConfig({ protectedTurns: 10 }));
+  try {
+    const messages = heavy(6);
+    for (let i = 0; i < 8; i++) {
+      const r = await round(hooks, ctx, messages);
+      assert.equal(gateOf(r).length, 0,
+        `turno ${i}: il gate ha chiesto di compattare senza avere nulla da proporre`);
+    }
+  } finally { home.restore(); sandbox.cleanup(); }
+});
+
+test('con un episodio APERTO il gate chiede, e propone solo l\'opzione disponibile', async () => {
+  const { sandbox, home, tools, hooks, ctx } = await boot(overBudgetConfig({ protectedTurns: 10 }));
+  try {
+    // Un episodio aperto e' l'unica azione realmente disponibile qui.
+    await tools.get('delimiter').execute('call-s', { action: 'start', name: 'lavoro-in-corso', type: 'act' }, undefined, undefined, ctx);
+    const messages = heavy(6);
+    for (let i = 0; i < 3; i++) await round(hooks, ctx, messages);
+    const r = await round(hooks, ctx, messages);
+    const demands = gateOf(r);
+    assert.equal(demands.length, 1, 'con un episodio aperto il gate deve chiedere');
+    const text = String(demands[0].content);
+    assert.match(text, /delimiter/, 'deve proporre la chiusura degli episodi');
+    assert.doesNotMatch(text, /cwl_compress_range/,
+      'non deve proporre un\'opzione che non e\' disponibile (niente intervallo comprimibile)');
   } finally { home.restore(); sandbox.cleanup(); }
 });
