@@ -1835,26 +1835,56 @@ function applySpans(
   let newSaved = 0;
   let newApplied = 0;
 
+  /**
+   * Inside a span these roles are NOT replaced by the summary: the operator's own
+   * turns (`user`), the directives (`system`/`developer`) and the injected
+   * messages (`custom`, which is where the span's own summary lives) stay where
+   * they are. Defined ONCE, and used both by the saving computation below and by
+   * the reconstruction of the list further down: if the two ever disagree, the
+   * saving becomes a number that claims space this list never freed. It did: 749t
+   * declared against 298t really lost on a 12-message probe.
+   */
+  const keptInsideSpan = (r: string | undefined): boolean =>
+    r === 'user' || r === 'system' || r === 'developer' || r === 'custom';
+
   for (const { sp, from, to } of resolved) {
-    let original = 0;
+    // What counts is what is really taken AWAY, not the size of the range: the
+    // roles that survive keep costing tokens in the list this function returns.
+    let removed = 0;
     for (let i = from; i <= to; i++) {
       replaced.add(i);
-      original += estimateMessageTokens(messages[i]);
+      if (!keptInsideSpan(roleOf(messages[i]))) removed += estimateMessageTokens(messages[i]);
     }
-    const gain = Math.max(0, original - estimateTokens(sp.summary));
+    // SAFETY: Pi accepts the custom role in the context hook although the
+    // AgentMessage union does not declare it; the extra keys are its contract.
+    const build = (claim: number): AgentMessage => ({
+      role: 'custom',
+      customType: 'cwl-compressed',
+      content: t('compressedNotice')(sp.startHash, sp.endHash, claim) + sp.summary,
+      display: false,
+      timestamp: Date.now(),
+    } as unknown as AgentMessage);
+    // The saving is what is removed MINUS what takes its place, and what takes its
+    // place is the WHOLE injected message: the wrapper the agent keeps reading
+    // ("[CWL ...] (~N token risparmiati)") costs tokens too. Counting only
+    // `sp.summary` made this row claim 749t (and, with the surviving `user` turns
+    // already subtracted, 377t) against the 298t the context really lost on a
+    // 12-message probe. ONE number, used by the totals, by the log row and by the
+    // notice inside the injected message. It is a fixed point because the claim is
+    // printed INSIDE that same message; it converges at once (only the digits
+    // change) and the extra passes cost nothing.
+    let gain = Math.max(0, removed - estimateMessageTokens(build(0)));
+    for (let k = 0; k < 3; k++) {
+      const next = Math.max(0, removed - estimateMessageTokens(build(gain)));
+      if (next === gain) break;
+      gain = next;
+    }
+    const injectedMsg = build(gain);
     saved += gain;
     // Count it once, HERE, where the real gain is known. Every later turn marks
     // it `counted`, so the caller leaves the totals alone.
     if (!sp.counted) { sp.counted = true; newSaved += gain; newApplied++; }
-    // SAFETY: Pi accepts the custom role in the context hook although the
-    // AgentMessage union does not declare it; the extra keys are its contract.
-    injected.push({
-      role: 'custom',
-      customType: 'cwl-compressed',
-      content: t('compressedNotice')(sp.startHash, sp.endHash, original) + sp.summary,
-      display: false,
-      timestamp: Date.now(),
-    } as unknown as AgentMessage);
+    injected.push(injectedMsg);
   }
 
   const kept: AgentMessage[] = [];
@@ -1871,7 +1901,7 @@ function applySpans(
     // inviolable"). Keep them; only the unprotected content is replaced.
     // SAFETY: read-only probe of an optional field, undefined for other roles.
     const role = (m as unknown as RealMessage).role;
-    if (role === 'user' || role === 'system' || role === 'developer' || role === 'custom') {
+    if (keptInsideSpan(role)) {
       kept.push(m);
     }
   });
