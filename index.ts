@@ -178,6 +178,8 @@ type CwlMessages = {
   oldHot: (listed: number, total: number) => string;
   /** La richiesta di scrivere il riassuntone: e' l'unico grilletto che l'agente vede. */
   indexDue: (young: number, need: number) => string;
+  /** Le foglie che aspettano un micro: la richiesta che fa partire l'indice. */
+  leavesDue: (missing: number, ids: string) => string;
   /** Una foglia potato: il riassunto e' perso, l'originale torna dal transcript. */
   openOriginal: (id: string, tokens: number, body: string) => string;
   openOriginalLost: (id: string) => string;
@@ -275,6 +277,7 @@ const I18N: Record<Lang, CwlMessages> = {
     oldPage: (id, nodes, tokens, body) => `[CWL old node ${id} — ${nodes} node(s) inside, ~${tokens} tokens. The synthesis first, then one line per node with its SHAPE; cwl_open("<node id>") opens one, and its leaves open in full.]\n\n${body}`,
     oldHot: (listed, total) => `--- Most consulted leaves (${listed} of ${total} in the old node; nothing was deleted, this is only the reading order) ---`,
     indexDue: (young, need) => `[CWL INDEX] ${young} node(s) of the index are due to merge (a merge starts at ${need}). Call cwl_old with the riassuntone: your synthesis replaces the micros of the oldest nodes, and their leaves stay readable with cwl_open.`,
+    leavesDue: (missing, ids) => `[CWL INDEX] ${missing} leaf/leaves still have their BODY in the context and wait for a micro: ${ids} — call cwl_micro with the id and a micro of ~200 words. The body leaves the context, the micro stands for it, and only then can the leaf enter a node.`,
     openOriginal: (id, tokens, body) => `[CWL leaf ${id} — its SUMMARY was dropped when the state pruned it, so here is the ORIGINAL from the append-only transcript (~${tokens} tokens, in full).]\n\n${body}`,
     openOriginalLost: (id) => `Leaf "${id}" was dropped from the state, and its anchors found NOTHING in the transcript. The original cannot be recovered by id from here: use cwl_recall with keywords from that content.`,
     microSet: (id, microChars, bodyChars, shorter) => microChars === 0
@@ -408,6 +411,7 @@ const I18N: Record<Lang, CwlMessages> = {
     oldPage: (id, nodes, tokens, body) => `[CWL nodo vecchio ${id} — ${nodes} nodo/i dentro, ~${tokens} token. Prima la sintesi, poi una riga per nodo con la sua FORMA; cwl_open("<id nodo>") ne apre uno, e le sue foglie si aprono intere.]\n\n${body}`,
     oldHot: (listed, total) => `--- Foglie piu' consultate (${listed} di ${total} nel nodo vecchio; niente e' stato cancellato, questo e' solo l'ordine di lettura) ---`,
     indexDue: (young, need) => `[CWL INDICE] ${young} nodo/i dell'indice sono da accorpare (si accorpa da ${need} in su). Chiama cwl_old col riassuntone: la tua sintesi sostituisce i micro dei nodi piu' vecchi, e le loro foglie restano leggibili con cwl_open.`,
+    leavesDue: (missing, ids) => `[CWL INDICE] ${missing} foglia/e hanno ancora il CORPO nel contesto e aspettano un micro: ${ids} — chiama cwl_micro con l'id e un micro di ~200 parole. Il corpo esce dal contesto, il micro lo rappresenta, e solo allora la foglia puo' entrare in un nodo.`,
     openOriginal: (id, tokens, body) => `[CWL foglia ${id} — il RIASSUNTO e' andato perso quando lo stato l'ha potato, quindi ecco l'ORIGINALE dal transcript append-only (~${tokens} token, per intero).]\n\n${body}`,
     openOriginalLost: (id) => `La foglia "${id}" era stata potato dallo stato, e le sue ancore nel transcript non hanno trovato niente. Da qui l'originale non e' piu' recuperabile per id: usa cwl_recall con parole chiave di quel contenuto.`,
     microSet: (id, microChars, bodyChars, shorter) => microChars === 0
@@ -1735,6 +1739,9 @@ function pitView(st: CwlState): PitView | null {
 /** How many dropped spans stay recoverable by id. */
 const GRAVE_MAX = 200;
 
+/** How many waiting leaf ids the micro demand names in one turn: a few is enough to start. */
+const MICRO_DEMAND_IDS = 8;
+
 /**
  * What is left of a span the state DROPPED: enough to find its original again.
  *
@@ -1769,7 +1776,10 @@ interface SpanNode {
  * A leaf that left the state (pruned: its anchors are gone) cannot stay in a node,
  * or the node would describe material that no longer exists.
  */
-function refreshNodes(st: CwlState, cf: CwlConfig): { formed: number; waiting: number; due: number } {
+function refreshNodes(
+  st: CwlState,
+  cf: CwlConfig,
+): { formed: number; waiting: number; waitingIds: string[]; due: number } {
   const leaves = [...st.spans].sort((a, b) => a.at - b.at);
   const byId = new Map(leaves.map((l) => [idOfSpan(l), l]));
   // A leaf that left the state (pruned) cannot stay, and neither can a leaf whose
@@ -1787,10 +1797,13 @@ function refreshNodes(st: CwlState, cf: CwlConfig): { formed: number; waiting: n
   const loose = new Set(leaves.slice(-cf.looseLeaves).map((l) => idOfSpan(l)));
   let formed = 0;
   let waiting = 0;
+  // WHICH leaves are waiting, not just how many: without the ids the demand can only say
+  // "some leaves" and the agent would have to guess which, or go read the state file.
+  const waitingIds: string[] = [];
   for (const leaf of leaves) {
     const id = idOfSpan(leaf);
     if (loose.has(id) || settled.has(id)) continue;
-    if (!leaf.micro) { waiting++; continue; }
+    if (!leaf.micro) { waiting++; waitingIds.push(id); continue; }
     let current = young[young.length - 1];
     if (!current || current.leaves.length >= cf.nodeCapacity) {
       current = { id: `nd-${hashText(id).slice(0, 8)}`, leaves: [], at: Date.now() };
@@ -1800,7 +1813,7 @@ function refreshNodes(st: CwlState, cf: CwlConfig): { formed: number; waiting: n
     }
     current.leaves.push(id);
   }
-  return { formed, waiting, due: young.length >= cf.mergeNodesAt ? 1 : 0 };
+  return { formed, waiting, waitingIds, due: young.length >= cf.mergeNodesAt ? 1 : 0 };
 }
 
 interface CompressedSpan {
@@ -3376,10 +3389,28 @@ export default function (pi: ExtensionAPI) {
     // was tested and could not fire in a real session — so the demand goes where the
     // compression demand already goes: into the context.
     const giovani = st.nodes.filter((nd) => !new Set(st.oldNode?.nodes ?? []).has(nd.id)).length;
-    const demanda = piano.due > 0 ? t('indexDue')(giovani, cf.mergeNodesAt) : null;
-    if (demanda) {
+    const richiestaMerge = piano.due > 0 ? t('indexDue')(giovani, cf.mergeNodesAt) : null;
+    if (richiestaMerge) {
       debugLog(cf, `OLD NODE due: ${cf.mergeNodesAt}+ young nodes — the oldest ones should merge: write the riassuntone with cwl_old`);
     }
+    // The FIRST step of the index needs the agent too, and it was the step with NO voice: the
+    // leaves without a micro were listed in the LOG and nothing in the context asked for them,
+    // so with zero nodes `piano.due` is 0, the merge demand never appears, and the mechanism
+    // cannot start at all. MEASURED live, right after the reload that made the index run:
+    // `NODES: 0 node(s) [none], 40 leaf/leaves waiting for a micro — their body is still in
+    // the context` at every single turn, 45 spans, 90.415t of summaries still in the context,
+    // and no demand anywhere. The request names a FEW ids instead of all forty: it stays
+    // small, it rides at the end of every turn until the work is done, and the agent does the
+    // rest next turn.
+    const richiestaMicro =
+      piano.waiting > 0
+        ? t('leavesDue')(piano.waiting, piano.waitingIds.slice(0, MICRO_DEMAND_IDS).join(' '))
+        : null;
+    if (richiestaMicro) {
+      debugLog(cf, `MICRO due: ${piano.waiting} leaf/leaves waiting for a micro — asked in the context (${Math.min(piano.waiting, MICRO_DEMAND_IDS)} id(s) named)`);
+    }
+    const demanda =
+      [richiestaMicro, richiestaMerge].filter((d): d is string => d !== null).join('\n\n') || null;
 
     if (st.spans.length > 0) {
       const applied = applySpans(messages, st.spans, pitView(st), demanda);
