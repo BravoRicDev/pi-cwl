@@ -167,3 +167,78 @@ test('il risparmio si conta UNA volta: riapplicare lo span non gonfia il totale'
       `il risparmio e' cresciuto senza nuove compressioni: ${dopoLaCompressione} -> ${dopoTreTurni}`);
   } finally { home.restore(); sandbox.cleanup(); }
 });
+
+/** Coppie toolCall/toolResult rotte: sono esattamente cio' che il provider rifiuta. */
+const orfani = (messages) => {
+  const chiamate = new Set();
+  const risultati = new Set();
+  for (const m of messages) {
+    if (Array.isArray(m.content)) {
+      for (const b of m.content) if (b && b.type === 'toolCall' && b.id) chiamate.add(b.id);
+    }
+    if (typeof m.toolCallId === 'string') risultati.add(m.toolCallId);
+  }
+  return {
+    senzaRisultato: [...chiamate].filter((id) => !risultati.has(id)),
+    senzaChiamata: [...risultati].filter((id) => !chiamate.has(id)),
+  };
+};
+
+/**
+ * Regressione: la compressione non deve spezzare una coppia toolCall/toolResult.
+ *
+ * Misurato su una sessione VERA. L'intervallo compresso finiva su un assistant
+ * che portava una toolCall (indice 1296) mentre il suo toolResult, 6396 char,
+ * restava fuori (indice 1297). Nel contesto sopravviveva un `tool_result` senza
+ * il suo `tool_use`, il provider rispondeva `400 status code (no body)` e la
+ * sessione si bloccava: nessun messaggio di errore utile, nessun modo di
+ * riprendere se non a mano.
+ *
+ * Il percorso di eviction deterministica conosceva GIA' questo invariante e lo
+ * rispettava (H1, `droppedToolCallIds`: "the assistant message that carries the
+ * matching toolCall must not keep it, or the conversation has a dangling...").
+ * Il percorso degli span non aveva alcuna guardia.
+ *
+ * Perche' il caso si presenta solo ORA: nel caso normale `protectedFromIndex`
+ * restituisce `indice_user + 1`, quindi il range finisce sempre su un messaggio
+ * user. Solo nel caso DEGENERATO (meno turni utente della finestra) il pavimento
+ * e' una quota arbitraria della lista, e allora puo' cadere subito dopo un
+ * assistant. E' la stessa condizione del fix "la finestra di sicurezza copriva
+ * TUTTA la lista": 469k token contro 68k di soglia.
+ */
+test('la compressione non lascia un toolResult orfano', async () => {
+  // protectedTurns 4 con 2 soli turni utente: caso degenerato, il pavimento
+  // cade a meta' lista — esattamente dove e' caduto nella sessione vera.
+  const { sandbox, home, tools, hooks, ctx } = await boot(config({ protectedTurns: 4 }));
+  try {
+    const testo = (t) => `${t} ` + 'X'.repeat(240);
+    const scambio = (n) => ([
+      { role: 'assistant', content: [{ type: 'text', text: testo(`penso ${n}`) }, { type: 'toolCall', id: `tc${n}`, name: 'bash', arguments: { command: 'ls' } }] },
+      { role: 'toolResult', toolCallId: `tc${n}`, content: [{ type: 'text', text: testo(`output ${n}`) }] },
+    ]);
+    const messages = [
+      { role: 'user', content: testo('turno 1') },
+      ...scambio(1),
+      ...scambio(2),
+      ...scambio(3),
+      { role: 'user', content: testo('turno 2') },
+    ];
+
+    await hooks.get('context')({ messages }, ctx);
+    const out = await call(tools, ctx, 'sintesi dei turni con strumenti');
+    assert.equal(out.details.ok, true, `rifiutato: ${JSON.stringify(out.details)}`);
+
+    // L'hook e' l'unico punto in cui la lista viene riscritta: e' cio' che va al provider.
+    const res = await hooks.get('context')({ messages }, ctx);
+    const kept = res.messages;
+    const { senzaRisultato, senzaChiamata } = orfani(kept);
+    assert.deepEqual(senzaChiamata, [],
+      `tool_result senza il suo tool_use: il provider risponde 400. Orfani: ${senzaChiamata.join(', ')}`);
+    assert.deepEqual(senzaRisultato, [],
+      `tool_use senza il suo risultato: il provider risponde 400. Orfani: ${senzaRisultato.join(', ')}`);
+    // La finestra di sicurezza resta intoccabile: estendere l'intervallo ai
+    // toolResult non deve diventare "mangia tutto fino in fondo".
+    assert.ok(kept.some((m) => m.role === 'user' && String(m.content).includes('turno 2')),
+      'il turno utente protetto deve sopravvivere');
+  } finally { home.restore(); sandbox.cleanup(); }
+});

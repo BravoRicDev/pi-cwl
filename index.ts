@@ -1355,6 +1355,13 @@ function hashText(text: string): string {
   return createHash('sha256').update(text).digest('hex').slice(0, 12);
 }
 
+/** Role of a message, or '' when it has no usable role. */
+function roleOf(m: unknown): string {
+  // SAFETY: read-only probe of an optional field; the union does not expose it.
+  const r = (m as { role?: unknown })?.role;
+  return typeof r === 'string' ? r : '';
+}
+
 /** Locates the session JSONL transcript, looking it up by key suffix. */
 /** Reads a file or returns null: missing and unreadable must not fail. */
 /** Concatenable text from a message (string or list of blocks). */
@@ -1504,7 +1511,21 @@ function applySpans(
     .map((sp) => {
       const from = posByHash.get(sp.startHash);
       const to = posByHash.get(sp.endHash);
-      return from === undefined || to === undefined ? null : { sp, from, to: Math.max(from, to) };
+      if (from === undefined || to === undefined) return null;
+      // An endpoint is always a user/assistant message, but the message right
+      // after an assistant is usually its tool RESULT (role 'toolResult').
+      // Replacing the assistant while keeping that result leaves a tool_result
+      // whose tool_use no longer exists, and the provider rejects the whole
+      // request with `400 status code (no body)` — blocking the session.
+      // MEASURED on a real session: the range ended on an assistant carrying a
+      // toolCall at index 1296 while its 6396-char toolResult sat just outside,
+      // at 1297. The deterministic eviction path already guards the opposite
+      // direction (H1, droppedToolCallIds); the spans path had no guard at all.
+      // Extending forward is the right direction: the result is part of the
+      // same exchange being summarised.
+      let end = Math.max(from, to);
+      while (end + 1 < messages.length && roleOf(messages[end + 1]) === 'toolResult') end++;
+      return { sp, from, to: end };
     })
     .filter((x): x is { sp: CompressedSpan; from: number; to: number } => x !== null)
     .filter((x, _all, arr) => !arr.some((o) => o !== x && o.from <= x.from && o.to >= x.to))
