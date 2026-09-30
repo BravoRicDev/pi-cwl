@@ -57,6 +57,14 @@ test('cwl_compress_range compresses the oldest range, without hashes', async () 
     const out = await call(tools, ctx, 'summary of the first turns: goal, decisions, paths');
     assert.equal(out.details.ok, true, `rejected: ${JSON.stringify(out.details)}`);
     assert.ok(out.details.tokens > 0, 'the compressed range must have tokens');
+    // The leaf id belongs in the ANSWER: the marker in the context carries it too, but a turn
+    // that compresses twice cannot read a marker it has not seen yet, and cannot group by name.
+    const leafId = String(out.details.id);
+    assert.match(leafId, /^sp-[0-9a-f]{8}$/, `the answer must name the leaf it just created: ${JSON.stringify(out.details)}`);
+    assert.ok(
+      out.content.map((c) => c.text).join('\n').includes(leafId),
+      'the leaf id is in the details but not in the text the model reads',
+    );
     // The address has been consumed: a second shot cannot re-compress the same one.
     const again = await call(tools, ctx, 'second attempt');
     assert.equal(again.details.ok, false);

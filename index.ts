@@ -142,7 +142,7 @@ type CwlMessages = {
   compressUnknownHash: (from: boolean, to: boolean) => string;
   compressApplied: (start: string, end: string) => string;
   /** cwl_compress_range: the extension picks the range, the model writes the text. */
-  compressRangeApplied: (start: string, end: string, tokens: number) => string;
+  compressRangeApplied: (start: string, end: string, tokens: number, leafId: string) => string;
   compressRangeNothing: string;
   compressRangeNoSummary: string;
   /** Status line for the currently compressible range. */
@@ -197,6 +197,12 @@ type CwlMessages = {
   oldTopicLine: (id: string, name: string, shape: string, taste: string) => string;
   /** The heading of the "consulted leaves" section inside the pit page. */
   oldHot: (listed: number, total: number) => string;
+  /** The header of the "superseded syntheses" block on the pit page. */
+  oldSupersededHead: (count: number) => string;
+  /** One superseded synthesis, listed on the pit page with its own address. */
+  oldSupersededLine: (id: string, chars: number) => string;
+  /** The page of one superseded synthesis: the text `cwl_old` replaced. */
+  oldSupersededPage: (id: string, chars: number, text: string) => string;
   /** The request to write the merge summary: it is the only trigger the agent sees. */
   indexDue: (young: number, need: number) => string;
   /** The leaves waiting for a micro: the request that starts the index. */
@@ -274,7 +280,7 @@ const I18N: Record<Lang, CwlMessages> = {
     compressRevoked: (start, end) => `Span ${start}..${end} restored to full text.`,
     compressUnknownHash: (from, to) => `Unknown hash. startHash found: ${from}, endHash found: ${to}. Copy them verbatim from the context.`,
     compressApplied: (start, end) => `Compressed ${start}..${end} into your summary. The original stays on disk: recover it with cwl_recall.`,
-    compressRangeApplied: (start, end, tokens) => `Compressed ${start}..${end} (~${tokens} tokens) into your summary. The original stays in the transcript: recover it with cwl_recall_episode or cwl_recall.`,
+    compressRangeApplied: (start, end, tokens, leafId) => `Compressed ${start}..${end} (~${tokens} tokens) into your summary. The original stays in the transcript: recover it with cwl_recall_episode or cwl_recall. This range became the leaf ${leafId}: cwl_open("${leafId}") reads it whole, and cwl_group takes its id to group it with the leaves born in the same turn.`,
     compressRangeNothing: 'Nothing left to compress: everything remaining is either inside the protected window or already compressed.',
     compressRangeNoSummary: 'The summary is required: it is the ONLY part of this call you have to write yourself.',
     statusRange: (tokens, start, end) => `Compressible range: ~${tokens} tokens (${start}..${end})`,
@@ -322,8 +328,11 @@ const I18N: Record<Lang, CwlMessages> = {
     oldHead: (id, nodes, tokens) => `[CWL OLD NODE ${id} — ${nodes} older node(s) merged behind this synthesis (~${tokens} tokens). Their micros left the context; cwl_open("${id}") pages through them, leaf by leaf.]\n\n`,
     oldPage: (id, nodes, tokens, body) => `[CWL old node ${id} — ${nodes} node(s) inside, ~${tokens} tokens. The synthesis first, then one line per node with its SHAPE; cwl_open("<node id>") opens one, and its leaves open in full.]\n\n${body}`,
     oldHot: (listed, total) => `--- Most consulted leaves (${listed} of ${total} in the old node; nothing was deleted, this is only the reading order) ---`,
+    oldSupersededHead: (count) => `--- Syntheses this one replaced (${count}, newest first): open one with cwl_open("<id>.s1") — cwl_old overwrites the synthesis instead of extending it, so these are kept readable rather than lost ---`,
+    oldSupersededLine: (id, chars) => `- ${id}: ${chars} chars`,
+    oldSupersededPage: (id, chars, text) => `[CWL superseded synthesis ${id} — ${chars} chars. This is a synthesis that the CURRENT one of the pit replaced; cwl_old overwrites instead of extending, so the archive keeps the text it would otherwise have erased. Nothing else refers to it.]\n\n${text}`,
     indexDue: (young, need) => `[CWL INDEX] ${young} node(s) of the index are due to merge (a merge starts at ${need}). Call cwl_old with the merge summary: your synthesis replaces the micros of the oldest nodes, and their leaves stay readable with cwl_open.`,
-    leavesDue: (missing, ids) => `[CWL INDEX] ${missing} leaf/leaves still have their BODY in the context and wait for a micro: ${ids} — call cwl_micro with the id and a micro of ~1.200 characters (≈300 tokens, ~200 words). The body leaves the context, the micro stands for it, and only then can the leaf enter a node. And while you label them: leaves that belong together can be grouped into a TOPIC with cwl_group — one description then stands for all of them, their labels leave the context, and the topic counts as a node like any other. It is the cheapest saving you can make.`,
+    leavesDue: (missing, ids) => `[CWL INDEX] ${missing} leaf/leaves still have their BODY in the context and wait for a micro: ${ids} — call cwl_micro with the id and a micro of ~1.200 characters (≈300 tokens, ~200 words). The body leaves the context, the micro stands for it, and only then can the leaf enter a node. And while you label them: leaves that belong together can be grouped into a TOPIC with cwl_group — one description then stands for all of them, their labels leave the context, and the topic counts as a node like any other. Do it NOW, while those leaves still have their BODY in the context: once a leaf is inside a node it cannot be moved any more, and the window closes. It is the cheapest saving you can make.`,
     openOriginal: (id, tokens, body) => `[CWL leaf ${id} — its SUMMARY was dropped when the state pruned it, so here is the ORIGINAL from the append-only transcript (~${tokens} tokens, in full).]\n\n${body}`,
     openOriginalLost: (id) => `Leaf "${id}" was dropped from the state, and its anchors found NOTHING in the transcript. The original cannot be recovered by id from here: use cwl_recall with keywords from that content.`,
     microSet: (id, microChars, bodyChars, shorter) => microChars === 0
@@ -442,7 +451,7 @@ const I18N: Record<Lang, CwlMessages> = {
     compressRevoked: (start, end) => `Span ${start}..${end} ripristinato al testo integrale.`,
     compressUnknownHash: (from, to) => `Hash sconosciuto. startHash trovato: ${from}, endHash trovato: ${to}. Copiali verbatim dal contesto.`,
     compressApplied: (start, end) => `Compresso ${start}..${end} nel tuo riepilogo. L'originale resta su disco: recuperalo con cwl_recall.`,
-    compressRangeApplied: (start, end, tokens) => `Compresso ${start}..${end} (~${tokens} token) nel tuo riepilogo. L'originale resta nel transcript: recuperalo con cwl_recall_episode o cwl_recall.`,
+    compressRangeApplied: (start, end, tokens, leafId) => `Compresso ${start}..${end} (~${tokens} token) nel tuo riepilogo. L'originale resta nel transcript: recuperalo con cwl_recall_episode o cwl_recall. Questo intervallo e' diventato la foglia ${leafId}: cwl_open("${leafId}") la legge intera, e cwl_group prende il suo id per raggrupparla con le foglie nate nello stesso giro.`,
     compressRangeNothing: "Non resta niente da comprimere: cio' che rimane e' dentro la finestra protetta oppure gia' compresso.",
     compressRangeNoSummary: "Il riassunto e' obbligatorio: e' l'UNICA parte di questa chiamata che devi scrivere tu.",
     statusRange: (tokens, start, end) => `Intervallo comprimibile: ~${tokens} token (${start}..${end})`,
@@ -490,8 +499,11 @@ const I18N: Record<Lang, CwlMessages> = {
     oldHead: (id, nodes, tokens) => `[CWL NODO VECCHIO ${id} — ${nodes} nodo/i piu' vecchi accorpati dietro questa sintesi (~${tokens} token). I loro micro sono usciti dal contesto; cwl_open("${id}") li pagina, foglia per foglia.]\n\n`,
     oldPage: (id, nodes, tokens, body) => `[CWL nodo vecchio ${id} — ${nodes} nodo/i dentro, ~${tokens} token. Prima la sintesi, poi una riga per nodo con la sua FORMA; cwl_open("<id nodo>") ne apre uno, e le sue foglie si aprono intere.]\n\n${body}`,
     oldHot: (listed, total) => `--- Foglie piu' consultate (${listed} di ${total} nel nodo vecchio; niente e' stato cancellato, questo e' solo l'ordine di lettura) ---`,
+    oldSupersededHead: (count) => `--- Sintesi sostituite da questa (${count}, dalla piu' recente): aprine una con cwl_open("<id>.s1") — cwl_old sostituisce la sintesi invece di estenderla, quindi queste restano leggibili invece di andare perse ---`,
+    oldSupersededLine: (id, chars) => `- ${id}: ${chars} caratteri`,
+    oldSupersededPage: (id, chars, text) => `[CWL sintesi sostituita ${id} — ${chars} caratteri. E' una sintesi che quella ATTUALE del pozzo ha sostituito; cwl_old sostituisce invece di estendere, quindi l'archivio tiene il testo che altrimenti avrebbe cancellato. Nient'altro la referenzia.]\n\n${text}`,
     indexDue: (young, need) => `[CWL INDICE] ${young} nodo/i dell'indice sono da accorpare (si accorpa da ${need} in su). Chiama cwl_old col riassuntone: la tua sintesi sostituisce i micro dei nodi piu' vecchi, e le loro foglie restano leggibili con cwl_open.`,
-    leavesDue: (missing, ids) => `[CWL INDICE] ${missing} foglia/e hanno ancora il CORPO nel contesto e aspettano un micro: ${ids} — chiama cwl_micro con l'id e un micro di ~1.200 caratteri (≈300 token, ~200 parole). Il corpo esce dal contesto, il micro lo rappresenta, e solo allora la foglia puo' entrare in un nodo. E mentre le etichetti: le foglie che vanno insieme si possono raggruppare in un TOPIC con cwl_group — una descrizione sola sta per tutte, le loro etichette escono dal contesto, e il topic conta come nodo come tutti gli altri. E' il risparmio piu' economico che hai.`,
+    leavesDue: (missing, ids) => `[CWL INDICE] ${missing} foglia/e hanno ancora il CORPO nel contesto e aspettano un micro: ${ids} — chiama cwl_micro con l'id e un micro di ~1.200 caratteri (≈300 token, ~200 parole). Il corpo esce dal contesto, il micro lo rappresenta, e solo allora la foglia puo' entrare in un nodo. E mentre le etichetti: le foglie che vanno insieme si possono raggruppare in un TOPIC con cwl_group — una descrizione sola sta per tutte, le loro etichette escono dal contesto, e il topic conta come nodo come tutti gli altri. Fallo ADESSO, finche' quelle foglie hanno ancora il CORPO nel contesto: una volta entrata in un nodo, una foglia non si sposta piu' e la finestra si chiude. E' il risparmio piu' economico che hai.`,
     openOriginal: (id, tokens, body) => `[CWL foglia ${id} — il RIASSUNTO e' andato perso quando lo stato l'ha potato, quindi ecco l'ORIGINALE dal transcript append-only (~${tokens} token, per intero).]\n\n${body}`,
     openOriginalLost: (id) => `La foglia "${id}" era stata potato dallo stato, e le sue ancore nel transcript non hanno trovato niente. Da qui l'originale non e' piu' recuperabile per id: usa cwl_recall con parole chiave di quel contenuto.`,
     microSet: (id, microChars, bodyChars, shorter) => microChars === 0
@@ -1818,11 +1830,24 @@ interface OldNode {
   nodes: string[];
   /** The agent's synthesis. Empty means the merge has not happened yet. */
   summary: string;
+  /**
+   * The syntheses this pit's CURRENT one replaced, newest first, bounded by
+   * SUPERSEDED_KEEP. `cwl_old` is the only destructive tool of the set: it
+   * OVERWRITES the synthesis instead of extending it, so a rewrite that does not
+   * carry the previous text forward would erase the only copy the archive has.
+   * They stay readable on their own pages, addressed as `<pit id>.s1`, `.s2`, ...
+   */
+  superseded?: string[];
   at: number;
 }
 
 /** How many leaves a page lists (a node's micros, or a pit's hot leaves). */
 const NODE_PAGE_MAX = 30;
+// How many syntheses of a pit stay readable after `cwl_old` replaced them. The archive is
+// the only place those texts exist, so the newest few stay openable instead of being
+// overwritten; the bound keeps both the state file and the pit page from growing at every
+// merge. Newest first: `.s1` is the synthesis replaced last.
+const SUPERSEDED_KEEP = 3;
 // How much of a topic's description the OLD node page shows. A pit topic can be born tiny
 // and numerous (no synthesis refacing there), so the page has to stay a page: the name and
 // a taste here, and cwl_open on the topic itself for the rest.
@@ -3125,7 +3150,11 @@ export default function (pi: ExtensionAPI) {
       const startHash = st.rangeStartHash;
       const endHash = st.rangeEndHash;
       const tokens = st.rangeTokens;
-      st.spans.push({ startHash, endHash, id: spanId(startHash, endHash), summary: params.summary, micro: microOrUndefined(params.micro), at: Date.now() });
+      // The leaf id belongs in the ANSWER too: the RICHIAMO marker injected into the context
+      // carries it, but a turn that compresses twice has to be able to group the leaves it
+      // has just born, and it cannot read a marker it has not seen yet.
+      const leafId = spanId(startHash, endHash);
+      st.spans.push({ startHash, endHash, id: leafId, summary: params.summary, micro: microOrUndefined(params.micro), at: Date.now() });
       // Spend the address: the next hook recomputes it on the smaller list, so a
       // second call cannot compress the same range twice.
       st.rangeStartHash = null;
@@ -3134,8 +3163,8 @@ export default function (pi: ExtensionAPI) {
       saveState(key, st);
       debugLog(cf, `COMPRESS-RANGE applied ${startHash}..${endHash} (~${tokens}t)`);
       return {
-        content: [{ type: 'text', text: t('compressRangeApplied')(startHash, endHash, tokens) + overCeiling(`${startHash}..${endHash}`, microOrUndefined(params.micro), cf) }],
-        details: { ok: true, spans: st.spans.length, tokens },
+        content: [{ type: 'text', text: t('compressRangeApplied')(startHash, endHash, tokens, leafId) + overCeiling(`${startHash}..${endHash}`, microOrUndefined(params.micro), cf) }],
+        details: { ok: true, spans: st.spans.length, tokens, id: leafId },
       };
     },
   });
@@ -3290,13 +3319,34 @@ export default function (pi: ExtensionAPI) {
         const hotLines = hot
           .map((s) => `- ${idOfSpan(s)} (opened ${s.opens ?? 0}x): ${s.micro ?? '(no micro yet)'}`)
           .join('\n');
-        const body = `${st.oldNode.summary}\n\n${righe}\n\n${t('oldHot')(hot.length, pitLeaves.length)}\n${hotLines}`;
+        // The syntheses this one replaced stay OPENABLE, a page each: `<pit id>.s1` is the
+        // one replaced last. Listed here with their size, so the pit page stays a page while
+        // nothing the archive held is lost. This is the "superseded by" the operator asked
+        // for: the CURRENT synthesis is the one in the context, the others are one call away.
+        const supersededLines = (st.oldNode.superseded ?? [])
+          .map((old, i) => t('oldSupersededLine')(`${st.oldNode?.id ?? ''}.s${i + 1}`, old.length))
+          .join('\n');
+        const body = `${st.oldNode.summary}\n\n${righe}\n\n${t('oldHot')(hot.length, pitLeaves.length)}\n${hotLines}`
+          + (supersededLines ? `\n\n${t('oldSupersededHead')(st.oldNode.superseded?.length ?? 0)}\n${supersededLines}` : '');
         const tokens = estimateTokens(body);
         debugLog(cf, `OPEN ${st.oldNode.id}: merge summary + ${st.oldNode.nodes.length} node(s), ${pitLeaves.length} leaf/leaves inside, most opened ${hot[0]?.opens ?? 0}x (${hot.filter((s) => (s.opens ?? 0) > 0).length} ever opened) — ${tokens}t`);
         return {
           content: [{ type: 'text', text: t('oldPage')(st.oldNode.id, st.oldNode.nodes.length, tokens, body) }],
           details: { ok: true, id: st.oldNode.id, kind: 'old', nodes: st.oldNode.nodes.length, leaves: pitLeaves.length, opened: hot.filter((s) => (s.opens ?? 0) > 0).length, tokens },
         };
+      }
+      // A superseded synthesis has its own page: `<pit id>.s1` is the most recently replaced
+      // one. Read on demand, which is why the pit page can afford to stay small.
+      const superseded = /^(.*)\.s(\d+)$/.exec(wanted);
+      if (superseded && st.oldNode && st.oldNode.id === superseded[1]) {
+        const old = st.oldNode.superseded?.[Number(superseded[2]) - 1];
+        if (old) {
+          debugLog(cf, `OPEN ${wanted}: superseded synthesis, ${old.length} chars`);
+          return {
+            content: [{ type: 'text', text: t('oldSupersededPage')(wanted, old.length, old) }],
+            details: { ok: true, id: wanted, kind: 'superseded', chars: old.length, tokens: estimateTokens(old) },
+          };
+        }
       }
       // A NODE next: its page is the micros of its leaves, each with the id that
       // opens it. Same rule as a leaf: the size is declared before it is handed over.
@@ -3521,6 +3571,10 @@ export default function (pi: ExtensionAPI) {
       const appended = absorbed
         .filter((nd) => nd.description)
         .map((nd) => `[topic "${nd.name ?? nd.id}"] ${nd.description}`);
+      // Keep what this merge REPLACES: `cwl_old` overwrites the synthesis, so for a rewrite
+      // that does not carry the previous text forward the pit page would have been the only
+      // place it ever lived. Newest first, bounded (see SUPERSEDED_KEEP).
+      if (pit.summary) pit.superseded = [pit.summary, ...(pit.superseded ?? [])].slice(0, SUPERSEDED_KEEP);
       pit.summary = appended.length > 0 ? `${text}\n\n${appended.join('\n\n')}` : text;
       pit.at = Date.now();
       st.oldNode = pit;
