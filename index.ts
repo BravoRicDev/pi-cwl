@@ -149,6 +149,8 @@ type CwlMessages = {
   statusRange: (tokens: number, start: string, end: string) => string;
   statusAddresses: (eligible: number, withId: number) => string;
   statusSpans: (n: number) => string;
+  /** The names of the topics, so the catalogue is reachable without opening every node. */
+  statusTopics: (n: number, names: string) => string;
   /** A merge that would free less than it costs: refused, with the numbers said. */
   oldTooSmall: (leaves: number, microChars: number, needChars: number) => string;
   /** The index shape in one line: the TUI widget and `cwl_status` show the same one. */
@@ -189,6 +191,8 @@ type CwlMessages = {
   oldHead: (id: string, nodes: number, tokens: number) => string;
   /** The old-node page: the merge summary and the shape of what it holds. */
   oldPage: (id: string, nodes: number, tokens: number, body: string) => string;
+  /** One entry of the old node's catalogue: a topic inside the pit, named and tasted. */
+  oldTopicLine: (id: string, name: string, shape: string, taste: string) => string;
   /** The heading of the "consulted leaves" section inside the pit page. */
   oldHot: (listed: number, total: number) => string;
   /** The request to write the merge summary: it is the only trigger the agent sees. */
@@ -274,6 +278,8 @@ const I18N: Record<Lang, CwlMessages> = {
     statusRange: (tokens, start, end) => `Compressible range: ~${tokens} tokens (${start}..${end})`,
     statusAddresses: (eligible, withId) => `Addresses: ${withId}/${eligible} endpoint messages carry a stable id`,
     statusSpans: (n) => `Compressed spans held: ${n}`,
+    statusTopics: (n, names) => `Topics (${n}): ${names}`,
+    oldTopicLine: (id, name, shape, taste) => `- ${id} \u00b7 TOPIC "${name}": ${shape} \u2014 ${taste}`,
     oldTooSmall: (leaves, microChars, needChars) =>
       `\n\nNothing was recorded: the ${leaves} leaf/leaves that would leave the context hold ${microChars} characters, and a merge must free at least ${needChars}. A merge COSTS a synthesis: the pit's summary is rewritten, so what leaves has to be worth more than what replaces it. Compress more first, or merge when the nodes are full.`,
     indexLine: (pitNodes, pitLeaves, youngNodes, youngLeaves, topics, loose, waiting, headTokens, evictions, savedTokens) =>
@@ -437,6 +443,8 @@ const I18N: Record<Lang, CwlMessages> = {
     statusRange: (tokens, start, end) => `Intervallo comprimibile: ~${tokens} token (${start}..${end})`,
     statusAddresses: (eligible, withId) => `Indirizzi: ${withId}/${eligible} messaggi-endpoint con un id stabile`,
     statusSpans: (n) => `Span di compressione tenuti: ${n}`,
+    statusTopics: (n, names) => `Topic (${n}): ${names}`,
+    oldTopicLine: (id, name, shape, taste) => `- ${id} \u00b7 TOPIC "${name}": ${shape} \u2014 ${taste}`,
     oldTooSmall: (leaves, microChars, needChars) =>
       `\n\nNon e\' stato registrato niente: le ${leaves} foglia/e che uscirebbero dal contesto tengono ${microChars} caratteri, e un accorpamento deve liberarne almeno ${needChars}. Un accorpamento COSTA una sintesi: la sintesi del pozzo viene riscritta, quindi cio\' che esce deve valere piu\' di cio\' che lo sostituisce. Comprimi altro prima, o accorpa quando i nodi sono pieni.`,
     indexLine: (pitNodes, pitLeaves, youngNodes, youngLeaves, topics, loose, waiting, headTokens, evictions, savedTokens) =>
@@ -1791,6 +1799,10 @@ interface OldNode {
 
 /** How many leaves a page lists (a node's micros, or a pit's hot leaves). */
 const NODE_PAGE_MAX = 30;
+// How much of a topic's description the OLD node page shows. A pit topic can be born tiny
+// and numerous (no synthesis refacing there), so the page has to stay a page: the name and
+// a taste here, and cwl_open on the topic itself for the rest.
+const PIT_TOPIC_TASTE = 200;
 
 /**
  * The synthesis one merge writes when the pit has none yet: ~900 tokens. MEASURED, not
@@ -2853,6 +2865,8 @@ export default function (pi: ExtensionAPI) {
       // The shape of the index: which memories exist, how big they are, and what the head
       // costs. The TUI widget shows the same line — one measurement, two windows.
       lines.push(t('indexLine')(...indexShape(st, cf)));
+      const topicNames = st.nodes.filter((nd) => nd.description).map((nd) => nd.name ?? nd.id);
+      if (topicNames.length > 0) lines.push(t('statusTopics')(topicNames.length, topicNames.join(', ')));
       if (st.unlocatable > 0) {
         lines.push(t('statusUnlocatable')(st.unlocatable));
       }
@@ -3214,7 +3228,15 @@ export default function (pi: ExtensionAPI) {
         const inPit = new Set(st.oldNode.nodes);
         const righe = st.nodes
           .filter((nd) => inPit.has(nd.id))
-          .map((nd) => `- ${nd.id}: ${nd.leaves.length} leaf/leaves (${nd.leaves[0]} .. ${nd.leaves[nd.leaves.length - 1]})`)
+          .map((nd) => {
+            const shape = `${nd.leaves.length} leaf/leaves (${nd.leaves[0]} .. ${nd.leaves[nd.leaves.length - 1]})`;
+            // A TOPIC inside the pit is a catalogue entry: its name and a taste of its
+            // description, so the page can be read WITHOUT opening every node. Its id stays
+            // because that is what cwl_group takes to add more leaves to it.
+            if (!nd.description) return `- ${nd.id}: ${shape}`;
+            const taste = nd.description.length > PIT_TOPIC_TASTE ? `${nd.description.slice(0, PIT_TOPIC_TASTE)}...` : nd.description;
+            return t('oldTopicLine')(nd.id, nd.name ?? '', shape, taste);
+          })
           .join('\n');
         // The page's second half: the leaves CONSULTED, most opened first. The rule the
         // operator asked for — not "the most recent", which are still in the young nodes

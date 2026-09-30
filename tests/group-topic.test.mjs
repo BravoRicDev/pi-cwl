@@ -349,3 +349,17 @@ test('the index line counts the topics', async () => {
     home.restore();
   }
 });
+
+test('the status names the topics, not just counts them', async () => {
+  const { sandbox, home, tools, hooks, ctx } = await boot();
+  try {
+    const st = await leavesWithMicros(sandbox, hooks, ctx, tools, 10);
+    assert.doesNotMatch(await statusText(tools, ctx), /Topics \(/, 'a fresh index should list no topic');
+    const born = await group(tools, ctx, { leaves: st.spans.slice(0, 9).map((s) => s.id), name: 'login-otp', description: DESCRIPTION });
+    assert.equal(born.details.ok, true, `the topic was not born: ${JSON.stringify(born.details)}`);
+    const line = await statusText(tools, ctx);
+    assert.match(line, /Topics \(1\): login-otp/, `the status does not name the topic: ${line}`);
+  } finally {
+    home.restore();
+  }
+});
