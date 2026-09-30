@@ -304,3 +304,43 @@ test('i risultati in blocco non si riparano per posizione: la garanzia e\' per i
       `il log deve dire di aver scartato il risultato orfano. Log:\n${log}`);
   } finally { home.restore(); sandbox.cleanup(); }
 });
+
+test('due messaggi con lo STESSO testo non collassano su un solo indirizzo', async () => {
+  // MISURATO in una sessione vera: 303 messaggi assistant con il testo "*", 51
+  // con "🌙", 40 con la stessa frase da 100 caratteri. Con il solo hash del
+  // testo collassano tutti su UN indirizzo, e la mappa tiene l'ULTIMA occorrenza:
+  // lo span creato sulla prima si risolveva sull'ultima, cioe' su un intervallo
+  // DIVERSO da quello chiesto — anche oltre la finestra di sicurezza.
+  // Il transcript porta un timestamp su ogni messaggio (epoch ms per gli
+  // assistant) ed e' quello a distinguere due testi identici.
+  const { sandbox, home, tools, hooks, ctx } = await boot(config({ protectedTurns: 4 }));
+  try {
+    const testo = (t) => `${t} ` + 'X'.repeat(240);
+    const messages = [
+      { role: 'user', content: testo('turno 1'), timestamp: 1000 },
+      // Ultimo endpoint valido sotto il pavimento: l'intervallo finisce qui.
+      { role: 'assistant', content: 'ok', timestamp: 2000 },
+      // Un messaggio non-endpoint, per far cadere il pavimento dopo il primo "ok".
+      { role: 'custom', customType: 'altro', content: 'riepilogo iniettato', timestamp: 2500 },
+      // STESSO TESTO del primo, ma oltre la finestra: qui l'indirizzo ambiguo
+      // faceva arrivare lo span fin qui, inghiottendolo.
+      { role: 'assistant', content: 'ok', timestamp: 9000 },
+      { role: 'user', content: testo('turno 2'), timestamp: 9500 },
+      { role: 'assistant', content: testo('risposta recente'), timestamp: 9600 },
+    ];
+
+    await hooks.get('context')({ messages }, ctx);
+    const out = await call(tools, ctx, 'sintesi del primo turno');
+    assert.equal(out.details.ok, true, `rifiutato: ${JSON.stringify(out.details)}`);
+
+    const res = await hooks.get('context')({ messages }, ctx);
+    const kept = res.messages;
+    assert.ok(kept.some((m) => m.customType === 'cwl-compressed'),
+      'lo span deve essere stato applicato, altrimenti il test non prova niente');
+    const primo = (l) => l.some((m) => m.role === 'assistant' && m.content === 'ok' && m.timestamp === 2000);
+    const secondo = (l) => l.some((m) => m.role === 'assistant' && m.content === 'ok' && m.timestamp === 9000);
+    assert.ok(!primo(kept), 'il primo "ok" e\' dentro l\'intervallo: il riassunto lo sostituisce');
+    assert.ok(secondo(kept),
+      'il secondo "ok" sta OLTRE la finestra: con l\'indirizzo ambiguo lo span arrivava fin li\' e lo cancellava');
+  } finally { home.restore(); sandbox.cleanup(); }
+});

@@ -147,6 +147,7 @@ type CwlMessages = {
   compressRangeNoSummary: string;
   /** Status line for the currently compressible range. */
   statusRange: (tokens: number, start: string, end: string) => string;
+  statusAddresses: (eligible: number, withId: number) => string;
   /** Strings of the cwl_recall tool. */
   recallNotLoaded: string;
   recallNoTranscript: string;
@@ -221,6 +222,7 @@ const I18N: Record<Lang, CwlMessages> = {
     compressRangeNothing: 'Nothing left to compress: everything remaining is either inside the protected window or already compressed.',
     compressRangeNoSummary: 'The summary is required: it is the ONLY part of this call you have to write yourself.',
     statusRange: (tokens, start, end) => `Compressible range: ~${tokens} tokens (${start}..${end})`,
+    statusAddresses: (eligible, withId) => `Addresses: ${withId}/${eligible} endpoint messages carry a stable id`,
     recallNotLoaded: 'The recall index is not loaded; /reload the extension.',
     recallNoTranscript: 'Transcript not found for this session.',
     recallUnreadable: 'Transcript unreadable.',
@@ -326,6 +328,7 @@ const I18N: Record<Lang, CwlMessages> = {
     compressRangeNothing: "Non resta niente da comprimere: cio' che rimane e' dentro la finestra protetta oppure gia' compresso.",
     compressRangeNoSummary: "Il riassunto e' obbligatorio: e' l'UNICA parte di questa chiamata che devi scrivere tu.",
     statusRange: (tokens, start, end) => `Intervallo comprimibile: ~${tokens} token (${start}..${end})`,
+    statusAddresses: (eligible, withId) => `Indirizzi: ${withId}/${eligible} messaggi-endpoint con un id stabile`,
     recallNotLoaded: "L'indice di recall non e' caricato; fai /reload dell'estensione.",
     recallNoTranscript: 'Transcript non trovato per questa sessione.',
     recallUnreadable: 'Transcript illeggibile.',
@@ -704,6 +707,12 @@ interface CwlState {
   lastSeenMessages: number;
   /** Tokens estimated at the next check. */
   lastMeasuredTokens: number;
+  /**
+   * Diagnostic, taken every turn: how many addressable messages carry a stable
+   * id. See stableIdOf — with 0 here, two identical texts share one address.
+   */
+  addrEligible: number;
+  addrWithId: number;
   /** Spans compressed by the LLM: hash of the first/last message + summary. */
   spans: CompressedSpan[];
   /** Text hashes of the messages seen: anchor for cwl_compress. */
@@ -741,6 +750,8 @@ function newState(): CwlState {
     messageCursor: 0,
     lastSeenMessages: 0,
     lastMeasuredTokens: 0,
+    addrEligible: 0,
+    addrWithId: 0,
     spans: [],
     knownHashes: new Set(),
     recallIndex: null,
@@ -1268,19 +1279,14 @@ function compressibleRange(
 ): { startHash: string; endHash: string; tokens: number } | null {
   const floor = protectedFromIndex(messages, protectedTurns);
 
-  // Same resolution applySpans performs: a span is delimited by the hashes of
-  // two user/assistant messages.
-  const posByHash = new Map<string, number>();
-  messages.forEach((m, i) => {
-    // SAFETY: read-only field probe (role); the union does not expose it.
-    const role = (m as unknown as RealMessage).role;
-    if (role !== 'user' && role !== 'assistant') return;
-    posByHash.set(hashText(textOf(m)), i);
-  });
+  // Same resolution applySpans performs: a span is delimited by the ADDRESS of
+  // two user/assistant messages (see addressOf).
+  const { exact, legacy } = addressMaps(messages);
+  const findPos = (h: string): number | undefined => exact.get(h) ?? legacy.get(h);
   const covered = new Set<number>();
   for (const sp of spans) {
-    const from = posByHash.get(sp.startHash);
-    const to = posByHash.get(sp.endHash);
+    const from = findPos(sp.startHash);
+    const to = findPos(sp.endHash);
     if (from === undefined || to === undefined) continue;
     for (let i = Math.min(from, to); i <= Math.max(from, to); i++) covered.add(i);
   }
@@ -1302,8 +1308,8 @@ function compressibleRange(
   }
   if (first < 0 || last <= first) return null;
   return {
-    startHash: hashText(textOf(messages[first])),
-    endHash: hashText(textOf(messages[last])),
+    startHash: addressOf(messages[first]),
+    endHash: addressOf(messages[last]),
     tokens,
   };
 }
@@ -1391,6 +1397,64 @@ function resultCallId(m: AgentMessage): string {
   // SAFETY: read-only probe of an optional field; the union does not expose it.
   const id = (m as unknown as { toolCallId?: unknown }).toolCallId;
   return typeof id === 'string' ? id : '';
+}
+
+/**
+ * Stable identity of a single message, when Pi gives us one.
+ *
+ * MEASURED why it is needed: in a real session 303 assistant messages carry the
+ * text "*", 51 carry "🌙", 40 carry the same 100-character sentence. Hashing the
+ * TEXT alone collapses every one of them onto a SINGLE address, and a map keyed
+ * by that hash keeps the last occurrence — so a span created on the first one
+ * resolved on the last, and the range the agent asked to compress was not the
+ * range that got replaced. The transcript carries a timestamp on every message
+ * (assistant: epoch ms) and it survives into this hook, so that is what
+ * separates two identical texts.
+ */
+function stableIdOf(m: AgentMessage): string {
+  // SAFETY: read-only probes of optional fields; the union does not expose them.
+  const o = m as unknown as { timestamp?: unknown; id?: unknown };
+  if (typeof o.timestamp === 'number' && Number.isFinite(o.timestamp)) return `t${o.timestamp}`;
+  if (typeof o.timestamp === 'string' && o.timestamp) return `t${o.timestamp}`;
+  return typeof o.id === 'string' && o.id ? `i${o.id}` : '';
+}
+
+/**
+ * Address of a message: its text, plus a stable id when there is one.
+ *
+ * Without an id it degrades to the text hash alone — which is also the address
+ * of every span created before this change, so those keep resolving.
+ */
+function addressOf(m: AgentMessage): string {
+  const id = stableIdOf(m);
+  const text = textOf(m);
+  return id ? hashText(`${id}|${text}`) : hashText(text);
+}
+
+/**
+ * The two address maps for one message list.
+ *
+ * `exact` holds addresses built by `addressOf` (unique when a stable id exists);
+ * `legacy` holds the text-only hash, which is what spans created before this
+ * change carry. Callers look in `exact` first, so old spans keep resolving and
+ * new ones cannot land on the wrong message.
+ *
+ * An empty body is not an address in either map: sha256("") would map every
+ * empty message onto one entry — 1407 of them measured in the largest session.
+ */
+function addressMaps(messages: AgentMessage[]): { exact: Map<string, number>; legacy: Map<string, number> } {
+  const exact = new Map<string, number>();
+  const legacy = new Map<string, number>();
+  messages.forEach((m, i) => {
+    // SAFETY: read-only field probe (role); the union does not expose it.
+    const role = (m as unknown as RealMessage).role;
+    if (role !== 'user' && role !== 'assistant') return;
+    const text = textOf(m);
+    if (!text.trim()) return;
+    exact.set(addressOf(m), i);
+    legacy.set(hashText(text), i);
+  });
+  return { exact, legacy };
 }
 
 /**
@@ -1595,21 +1659,16 @@ function applySpans(
 } {
   if (spans.length === 0) return { kept: messages, applied: 0, saved: 0, newApplied: 0, newSaved: 0, pairDropped: 0, pairStripped: 0 };
 
-  // hash -> position index, computed once.
-  const posByHash = new Map<string, number>();
-  messages.forEach((m, i) => {
-    // SAFETY: read-only probe of an optional field, undefined for other roles.
-    const role = (m as unknown as RealMessage).role;
-    if (role !== 'user' && role !== 'assistant') return;
-    posByHash.set(hashText(textOf(m)), i);
-  });
+  // address -> position index, computed once.
+  const { exact, legacy } = addressMaps(messages);
+  const findPos = (h: string): number | undefined => exact.get(h) ?? legacy.get(h);
 
   // Nested spans make no sense: if one contains another, the outermost one
   // wins. A summary inside a summary loses information twice.
   const resolved = spans
     .map((sp) => {
-      const from = posByHash.get(sp.startHash);
-      const to = posByHash.get(sp.endHash);
+      const from = findPos(sp.startHash);
+      const to = findPos(sp.endHash);
       if (from === undefined || to === undefined) return null;
       // An endpoint is always a user/assistant message, but the message right
       // after an assistant is usually its tool RESULT (role 'toolResult').
@@ -1828,6 +1887,11 @@ export default function (pi: ExtensionAPI) {
       if (st.rangeStartHash && st.rangeEndHash) {
         lines.push(t('statusRange')(st.rangeTokens, st.rangeStartHash, st.rangeEndHash));
       }
+      // An address must be UNIQUE, or a span resolves on the wrong message. These
+      // two numbers are the measurement of that, not a promise.
+      if (st.addrEligible > 0) {
+        lines.push(t('statusAddresses')(st.addrEligible, st.addrWithId));
+      }
       if (active.length > 0) {
         lines.push(t('statusActive')(active.map(e => `${e.name}(${e.type})`).join(', ')));
       }
@@ -1845,6 +1909,8 @@ export default function (pi: ExtensionAPI) {
           closed: closed.length,
           stripped: stripped.length,
           evictions: st.totalEvictions,
+          addrEligible: st.addrEligible,
+          addrWithId: st.addrWithId,
         },
       };
     },
@@ -2096,6 +2162,20 @@ export default function (pi: ExtensionAPI) {
     // turn. Measuring AFTER this also keeps the demand from inflating the very
     // number it is about.
     const messages: AgentMessage[] = eventMessages.filter((m) => !isGateMessage(m));
+
+    // Diagnostic, and free: it only reads a field, it does not hash. It answers
+    // ONE question without a debug log — do real messages carry a stable id? —
+    // which decides whether addressOf can tell two identical texts apart.
+    st.addrEligible = 0;
+    st.addrWithId = 0;
+    for (const m of messages) {
+      // SAFETY: read-only field probe (role); the union does not expose it.
+      const role = (m as unknown as RealMessage).role;
+      if (role !== 'user' && role !== 'assistant') continue;
+      if (!textOf(m).trim()) continue;
+      st.addrEligible++;
+      if (stableIdOf(m)) st.addrWithId++;
+    }
     const droppedGate = messages.length !== eventMessages.length;
 
     // Update the cursor with the REAL message count (not turns).
