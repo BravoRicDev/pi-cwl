@@ -154,7 +154,7 @@ type CwlMessages = {
   /** A merge that would free less than it costs: refused, with the numbers said. */
   oldTooSmall: (leaves: number, microChars: number, needChars: number) => string;
   /** The index shape in one line: the TUI widget and `cwl_status` show the same one. */
-  indexLine: (pitNodes: number, pitLeaves: number, youngNodes: number, youngLeaves: number, topics: number, loose: number, waiting: number, headTokens: string, evictions: number, savedTokens: string) => string;
+  indexLine: (pitNodes: number, pitLeaves: number, topicNodes: number, topicLeaves: number, bufferNodes: number, bufferLeaves: number, plainNodes: number, plainLeaves: number, loose: number, waiting: number, headTokens: string, evictions: number, savedTokens: string) => string;
   /** Grouping leaves into a topic node, and the four reasons to refuse it. */
   groupRefused: (why: string, detail: string) => string;
   groupTooSmall: (leaves: number, microChars: number, needChars: number) => string;
@@ -296,8 +296,8 @@ const I18N: Record<Lang, CwlMessages> = {
     oldTopicLine: (id, name, shape, taste) => `- ${id} \u00b7 TOPIC "${name}": ${shape} \u2014 ${taste}`,
     oldTooSmall: (leaves, microChars, needChars) =>
       `\n\nNothing was recorded: the ${leaves} leaf/leaves that would leave the context hold ${microChars} characters, and a merge must free at least ${needChars}. A merge COSTS a synthesis: the pit's summary is rewritten, so what leaves has to be worth more than what replaces it. Compress more first, or merge when the nodes are full.`,
-    indexLine: (pitNodes, pitLeaves, youngNodes, youngLeaves, topics, loose, waiting, headTokens, evictions, savedTokens) =>
-      `pit ${pitNodes}n/${pitLeaves}l │ young ${youngNodes}n/${youngLeaves}l │ topics ${topics} │ loose ${loose} │ waiting micro ${waiting} │ head ~${headTokens}t │ ${evictions} evict │ ${savedTokens} saved`,
+    indexLine: (pitNodes, pitLeaves, topicNodes, topicLeaves, bufferNodes, bufferLeaves, plainNodes, plainLeaves, loose, waiting, headTokens, evictions, savedTokens) =>
+      `pit ${pitNodes}n/${pitLeaves}l │ topics ${topicNodes}n/${topicLeaves}l │ buffer ${bufferNodes}n/${bufferLeaves}l │ ordinary ${plainNodes}n/${plainLeaves}l │ loose ${loose} │ waiting micro ${waiting} │ head ~${headTokens}t │ ${evictions} evict │ ${savedTokens} saved`,
     groupRefused: (why, detail) =>
       `\n\nGrouping refused (${why}${detail ? `: ${detail}` : ''}). Nothing was recorded. Leaves can be taken from the buffer, from the loose ones, and from ordinary nodes (a TOPIC is not a source: its description stands for its leaves), and they must be consecutive in time. A leaf already inside the old node cannot come back (the pit's synthesis stands for it), and a leaf without a micro would not appear in any head: write the micro first. A description is IMMUTABLE while its topic is OUTSIDE the old node, because there it IS the index; inside the old node it can be rewritten, and there it moves nothing.`,
     groupTooSmall: (leaves, microChars, needChars) =>
@@ -473,8 +473,8 @@ const I18N: Record<Lang, CwlMessages> = {
     oldTopicLine: (id, name, shape, taste) => `- ${id} \u00b7 TOPIC "${name}": ${shape} \u2014 ${taste}`,
     oldTooSmall: (leaves, microChars, needChars) =>
       `\n\nNon e\' stato registrato niente: le ${leaves} foglia/e che uscirebbero dal contesto tengono ${microChars} caratteri, e un accorpamento deve liberarne almeno ${needChars}. Un accorpamento COSTA una sintesi: la sintesi del pozzo viene riscritta, quindi cio\' che esce deve valere piu\' di cio\' che lo sostituisce. Comprimi altro prima, o accorpa quando i nodi sono pieni.`,
-    indexLine: (pitNodes, pitLeaves, youngNodes, youngLeaves, topics, loose, waiting, headTokens, evictions, savedTokens) =>
-      `pozzo ${pitNodes}n/${pitLeaves}f │ giovani ${youngNodes}n/${youngLeaves}f │ topic ${topics} │ sciolte ${loose} │ aspettano micro ${waiting} │ testa ~${headTokens}t │ ${evictions} eviction │ ${savedTokens} risparmiati`,
+    indexLine: (pitNodes, pitLeaves, topicNodes, topicLeaves, bufferNodes, bufferLeaves, plainNodes, plainLeaves, loose, waiting, headTokens, evictions, savedTokens) =>
+      `pozzo ${pitNodes}n/${pitLeaves}f │ topic ${topicNodes}n/${topicLeaves}f │ buffer ${bufferNodes}n/${bufferLeaves}f │ giovani ${plainNodes}n/${plainLeaves}f │ sciolte ${loose} │ aspettano micro ${waiting} │ testa ~${headTokens}t │ ${evictions} eviction │ ${savedTokens} risparmiati`,
     groupRefused: (why, detail) =>
       `\n\nRaggruppamento rifiutato (${why}${detail ? `: ${detail}` : ''}). Non e' stato registrato niente. Si possono raggruppare o spostare le foglie del buffer, quelle sciolte e quelle dei nodi ordinari (un TOPIC non e' una sorgente: la sua descrizione sta per le sue foglie), e devono essere consecutive nel tempo. Una foglia gia' dentro il nodo vecchio non puo' tornare indietro (la sintesi del pozzo sta per lei), e una foglia senza micro non comparirebbe in nessuna testa: scrivi prima il micro. Una descrizione e' IMMUTABILE finche' il suo topic e' FUORI dal nodo vecchio, perche' li' e' l'indice; dentro il nodo vecchio si puo' riscrivere, e li' non muove niente.`,
     groupTooSmall: (leaves, microChars, needChars) =>
@@ -1929,14 +1929,20 @@ const widgetLines = new Map<string, string>();
 function indexShape(
   st: CwlState,
   cf: typeof DEFAULT_CONFIG,
-): [number, number, number, number, number, number, number, string, number, string] {
+): [number, number, number, number, number, number, number, number, number, number, string, number, string] {
   const inPit = containedNodes(st, st.oldNode?.nodes ?? []);
   const pit = st.nodes.filter((nd) => inPit.has(nd.id));
   const young = st.nodes.filter((nd) => !inPit.has(nd.id));
-  // A topic is a node with a description: born collapsed, immutable while it is outside the
-  // pit. The count says how much of the index is CATALOGUED, which until now was invisible
-  // without opening every node to see which ones were topics.
-  const topics = st.nodes.filter((nd) => Boolean(nd.description)).length;
+  // The young nodes SPLIT in three, because the head pays for them in three different ways and
+  // mixing them made the line unreadable: a topic injects ONE description (its leaves left the
+  // head the moment it was born), the BUFFER is the working area the next round lands in, an
+  // ordinary node injects the labels of its leaves. Reported apart, a grouping SHOWS UP as
+  // leaves moving from `ordinary` to `topics` instead of the total going up — which is what the
+  // operator asked to see. Together the three cover every node that is not in the pit.
+  const buffer = st.nodes[st.nodes.length - 1];
+  const youngOthers = young.filter((nd) => nd !== buffer);
+  const youngTopics = youngOthers.filter((nd) => Boolean(nd.description));
+  const youngPlain = youngOthers.filter((nd) => !nd.description);
   const owned = new Set(st.nodes.flatMap((nd) => nd.leaves));
   // `slice(-0)` is `slice(0)`: see `refreshNodes`. Zero loose leaves means zero, not all.
   const looseIds = new Set((cf.looseLeaves > 0 ? st.spans.slice(-cf.looseLeaves) : []).map((s) => idOfSpan(s)));
@@ -1948,9 +1954,16 @@ function indexShape(
   // A node CONTAINED in another injects nothing: its parent's description stands for it, so
   // charging its micros here would overcount the head by everything inside it.
   const childIds = new Set(st.nodes.flatMap((nd) => nd.children ?? []));
-  let headChars = 0;
+  // The PIT is not a node of `st.nodes`: it lives in `st.oldNode`, and its block is ONE
+  // synthesis injected once, standing for every leaf it holds. Counting the pit's nodes
+  // instead — which is what this did — charged their descriptions and their labels and never
+  // charged the synthesis, which is bigger than both together. MEASURED on the live state:
+  // 17.599 characters counted against 23.057 actually injected, i.e. 76% of the truth, short
+  // by ~1.364 token. The operator's eye caught it ("head does not look realistic, it is much
+  // more") before any test did.
+  let headChars = st.oldNode?.summary.length ?? 0;
   for (const nd of st.nodes) {
-    if (childIds.has(nd.id)) continue;
+    if (childIds.has(nd.id) || inPit.has(nd.id)) continue;
     if (nd.description) headChars += nd.description.length;
     else for (const id of nd.leaves) headChars += microOf.get(id) ?? 0;
   }
@@ -1962,9 +1975,12 @@ function indexShape(
   return [
     pit.length,
     pit.reduce((n, nd) => n + nd.leaves.length, 0),
-    young.length,
-    young.reduce((n, nd) => n + nd.leaves.length, 0),
-    topics,
+    youngTopics.length,
+    youngTopics.reduce((n, nd) => n + nd.leaves.length, 0),
+    buffer ? 1 : 0,
+    buffer?.leaves.length ?? 0,
+    youngPlain.length,
+    youngPlain.reduce((n, nd) => n + nd.leaves.length, 0),
     looseIds.size,
     waiting,
     Math.round(headChars / 4).toLocaleString(),

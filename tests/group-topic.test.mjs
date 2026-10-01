@@ -94,10 +94,18 @@ const statusText = async (tools, ctx) =>
 const openPage = async (tools, ctx, id) =>
   text(await tools.get('cwl_open').execute('t', { id }, undefined, undefined, ctx));
 
-/** `young 2n/9l` from the index line: the nodes and the labels the head is made of. */
+/** The young part of the index line — `topics 2n/9l │ buffer 1n/0l │ ordinary 0n/0l` — summed:
+ *  the nodes and the labels the head is made of outside the pit. The line keeps the three
+ *  apart because the head pays for them differently (a topic costs ONE description, the buffer
+ *  is the working area, an ordinary node costs the labels of its leaves); what the tests below
+ *  watch is their SUM, so a grouping shows up as leaves moving from one group to another. */
 const youngOf = (line) => {
-  const m = String(line).match(/young (\d+)n\/(\d+)l/);
-  return m ? { nodes: Number(m[1]), leaves: Number(m[2]) } : null;
+  const m = String(line).match(
+    /topics (\d+)n\/(\d+)l │ buffer (\d+)n\/(\d+)l │ ordinary (\d+)n\/(\d+)l/,
+  );
+  return m
+    ? { nodes: Number(m[1]) + Number(m[3]) + Number(m[5]), leaves: Number(m[2]) + Number(m[4]) + Number(m[6]) }
+    : null;
 };
 
 const group = (tools, ctx, args) => tools.get('cwl_group').execute('t', args, undefined, undefined, ctx);
@@ -403,8 +411,32 @@ test('the index line counts the topics', async () => {
     const born = await group(tools, ctx, { leaves: st.spans.slice(0, 9).map((s) => s.id), name: 'login-otp', description: DESCRIPTION });
     assert.equal(born.details.ok, true, `the topic was not born: ${JSON.stringify(born.details)}`);
     const line = await statusText(tools, ctx);
-    assert.match(line, /topics 1/, `the topic is not counted in the index line: ${line}`);
-    assert.match(line, /young 2n/, 'the buffer behind the topic disappeared from the line');
+    // The three groups, checked APART: a topic holds its labels and injects ONE description, the
+    // buffer survives behind it, and nothing is left in the ordinary group. Asserting only a
+    // total would not say which of the three moved.
+    assert.match(line, /topics 1n\/9l/, `the topic is not counted with the labels it holds: ${line}`);
+    assert.match(line, /buffer 1n\/0l/, `the buffer behind the topic disappeared from the line: ${line}`);
+    assert.match(line, /ordinary 0n\/0l/, `the labels of the topic are still counted as ordinary: ${line}`);
+  } finally {
+    home.restore();
+  }
+});
+
+test('the index line keeps all its sections, in order', async () => {
+  const { sandbox, home, tools, hooks, ctx } = await boot();
+  try {
+    await leavesWithMicros(sandbox, hooks, ctx, tools, 10);
+    const line = await statusText(tools, ctx);
+    // `indexShape` hands its numbers to `t('indexLine')` POSITIONALLY, and a positional tuple is
+    // not protected by the typecheck: nothing notices a section added, dropped or reordered
+    // except a test that reads the line as a whole. This is that test. It is here because the
+    // operator reads this line every round, and a section silently disappearing would take a
+    // measurement away without a single failure.
+    assert.match(
+      line,
+      /pit \d+n\/\d+l │ topics \d+n\/\d+l │ buffer \d+n\/\d+l │ ordinary \d+n\/\d+l │ loose \d+ │ waiting micro \d+ │ head ~[\d,.]+t │ \d+ evict │ [\d,.]+ saved/,
+      `the index line lost its shape: ${line}`,
+    );
   } finally {
     home.restore();
   }
@@ -445,7 +477,7 @@ test('a topic survives a restart: the file carries the catalogue', async () => {
     // The SHAPE must not move across the restart: a topic is a young node too (it is outside
     // the pit), so the count has to match, not vanish. Compared as a STRING, because
     // `youngOf` hands back a parsed shape, not a primitive. What proves the fix is the name.
-    const youngShape = (line) => ((line.match(/young (\d+)n\/(\d+)l/) ?? ['', '?', '?']).slice(1, 3).join('/'));
+    const youngShape = (line) => (String(line).match(/topics (\d+)n\/(\d+)l │ buffer (\d+)n\/(\d+)l │ ordinary (\d+)n\/(\d+)l/) ?? []).slice(1).join('/');
     assert.equal(youngShape(after), youngShape(before), `the shape of the index moved across the restart: ${youngShape(before)} -> ${youngShape(after)}`);
     const page = await openPage(run2.tools, ctx, born.details.id);
     assert.ok(page.includes(DESCRIPTION), `the description did not survive the restart: ${page.slice(0, 200)}`);
