@@ -178,15 +178,16 @@ export async function bootExtension(sandbox, { name = 'ext' } = {}) {
   const { default: extension } = await import(url);
   const tools = new Map();
   const hooks = new Map();
+  const commands = new Map();
   const notes = [];
   const pi = {
     on(event, handler) { hooks.set(event, handler); },
     registerTool(tool) { tools.set(tool.name, tool); },
-    registerCommand() {},
+    registerCommand(name, definition) { commands.set(name, definition); },
     sendMessage(msg) { notes.push(msg); },
   };
   extension(pi);
-  return { tools, hooks, notes };
+  return { tools, hooks, notes, commands };
 }
 
 /**

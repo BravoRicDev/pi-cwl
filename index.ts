@@ -243,6 +243,13 @@ type CwlMessages = {
   adoptBusy: (name: string) => string;
   adoptEmpty: (from: string) => string;
   adoptOtherSession: string;
+  /** The slash commands: the fork in the operator's hands, with no agent in between. */
+  cmdMemoriesDesc: () => string;
+  cmdAdoptDesc: () => string;
+  cmdPickSource: () => string;
+  cmdPickName: () => string;
+  cmdCancelled: () => string;
+  cmdNoAdoptable: () => string;
   /** cwl_micro: the body leaves the context, the micro takes its place. */
   microSet: (id: string, microChars: number, bodyChars: number, shorter: boolean) => string;
   /** Budget gate: the agent-driving channel. */
@@ -416,6 +423,12 @@ const I18N: Record<Lang, CwlMessages> = {
     adoptBusy: (name) => `The memory "${name}" is already this session's memory: there is nothing to fork.`,
     adoptEmpty: (from) => `The memory "${from}" has no leaves: there is nothing to fork.`,
     adoptOtherSession: 'A memory cannot be adopted while it belongs to a LIVING session: that session keeps writing its own copy and the two would overwrite each other. Close it first, or adopt from a session file path.',
+    cmdMemoriesDesc: () => 'List the CWL memories on this machine, by name and size.',
+    cmdAdoptDesc: () => 'Fork a memory into this session: pick it from the list, then name the fork.',
+    cmdPickSource: () => 'Pick the memory to fork:',
+    cmdPickName: () => 'Name for the fork (empty keeps the default):',
+    cmdCancelled: () => 'Nothing was adopted.',
+    cmdNoAdoptable: () => 'No adoptable memory on this machine.',
     oldSupersededPage: (id, chars, text) => `[CWL superseded synthesis ${id} — ${chars} chars. This is a synthesis that the CURRENT one of the pit replaced; cwl_old overwrites instead of extending, so the archive keeps the text it would otherwise have erased. Nothing else refers to it.]\n\n${text}`,
     indexDue: (young, need) => `[CWL INDEX] ${young} node(s) of the index are due to merge (a merge starts at ${need}). Call cwl_old with the merge summary: your synthesis replaces the content of the oldest nodes — their topics' descriptions and their labels — and their leaves stay readable with cwl_open.`,
     topicDue: (id, leaves, microChars, needChars) => `[CWL TOPIC] the buffer (${id}) holds ${leaves} leaf/leaves, and their micros are ${microChars} characters — enough for the ${needChars} a topic must free. Open a topic NOW with cwl_group: pass those leaves, a name, and a description that already covers their FUTURE use, and one description then stands for all of them. This is the last moment it is possible: a leaf that enters a node can never be moved again, and the window closes with it.`,
@@ -655,6 +668,12 @@ const I18N: Record<Lang, CwlMessages> = {
     adoptBusy: (name) => `La memoria "${name}" e\' gia\' la memoria di questa sessione: non c\'e\' niente da forkare.`,
     adoptEmpty: (from) => `La memoria "${from}" non ha foglie: non c\'e\' niente da forkare.`,
     adoptOtherSession: 'Una memoria non si adotta mentre appartiene a una sessione VIVA: quella continua a scrivere la sua copia e le due si sovrascriverebbero. Chiudila prima, oppure adotta dal path del file di sessione.',
+    cmdMemoriesDesc: () => 'Elenca le memorie CWL di questa macchina, per nome e dimensione.',
+    cmdAdoptDesc: () => 'Forka una memoria in questa sessione: sceglila dalla lista, poi dai un nome al fork.',
+    cmdPickSource: () => 'Scegli la memoria da forkare:',
+    cmdPickName: () => 'Nome per il fork (vuoto = resta quello di default):',
+    cmdCancelled: () => 'Non e\' stato adottato niente.',
+    cmdNoAdoptable: () => 'Nessuna memoria adottabile su questa macchina.',
     oldSupersededPage: (id, chars, text) => `[CWL sintesi sostituita ${id} — ${chars} caratteri. E' una sintesi che quella ATTUALE del pozzo ha sostituito; cwl_old sostituisce invece di estendere, quindi l'archivio tiene il testo che altrimenti avrebbe cancellato. Nient'altro la referenzia.]\n\n${text}`,
     indexDue: (young, need) => `[CWL INDICE] ${young} nodo/i dell'indice sono da accorpare (si accorpa da ${need} in su). Chiama cwl_old col riassuntone: la tua sintesi sostituisce il contenuto dei nodi piu' vecchi — le descrizioni dei loro topic e i micro dei loro nodi sparsi — e le loro foglie restano leggibili con cwl_open.`,
     topicDue: (id, leaves, microChars, needChars) => `[CWL TOPIC] il buffer (${id}) tiene ${leaves} foglia/e, e i loro micro sono ${microChars} caratteri — abbastanza per i ${needChars} che un topic deve liberare. Apri un topic ADESSO con cwl_group: passa quelle foglie, un nome e una descrizione che copra gia' il loro uso FUTURO, e una descrizione sola sta per tutte. E' l'ultimo momento in cui si puo': una foglia che entra in un nodo non si sposta piu', e la finestra si chiude con lei.`,
@@ -3629,6 +3648,162 @@ function applySpans(
   };
 }
 
+// ---------------------------------------------------------------------------
+// Memories, shared by the tools and by the slash commands
+// ---------------------------------------------------------------------------
+
+/**
+ * One memory on disk, as `cwl_memories` shows it and `cwl_adopt` forks it.
+ *
+ * `name` is the raw name a fork resolves by; `display` is the same name with the
+ * `(LIVE)` marker the listing shows, which must never be used as an argument.
+ */
+interface MemoryEntry {
+  name: string;
+  display: string;
+  leaves: number;
+  nodes: number;
+  pit: string;
+  savedAt: number;
+  alive: boolean;
+  file: string;
+  data: Partial<PersistedState>;
+}
+
+/** Every memory on disk, parsed once: a memory is found by the NAME inside the file. */
+function listMemories(): MemoryEntry[] {
+  let files: string[] = [];
+  try { files = fs.readdirSync(STATE_DIR).filter((f) => f.endsWith('.json')); } catch { files = []; }
+  const found: MemoryEntry[] = [];
+  for (const f of files) {
+    const raw = readFileOrNull(path.join(STATE_DIR, f));
+    if (raw === null) continue;
+    let data: Partial<PersistedState>;
+    try { data = JSON.parse(raw) as Partial<PersistedState>; } catch { continue; }
+    const leaves = Array.isArray(data.spans) ? data.spans.length : 0;
+    const nodes = Array.isArray(data.nodes) ? data.nodes.length : 0;
+    const name = typeof data.name === 'string' && data.name ? data.name : f.replace(/\.json$/, '');
+    const pit = data.oldNode && typeof data.oldNode.id === 'string' ? data.oldNode.id : 'no';
+    const alive = typeof data.ownerPid === 'number' && data.ownerPid !== process.pid && isPidAlive(data.ownerPid);
+    found.push({
+      name,
+      display: alive ? `${name} (LIVE)` : name,
+      leaves, nodes, pit, alive,
+      savedAt: typeof data.savedAt === 'number' ? data.savedAt : 0,
+      file: path.join(STATE_DIR, f),
+      data,
+    });
+  }
+  found.sort((a, b) => b.savedAt - a.savedAt);
+  return found;
+}
+
+/**
+ * The fork itself, shared by the tool and the slash command: resolve `from`
+ * (name or path), refuse what cannot be forked, then copy.
+ *
+ * It is a plain function and not a tool body so that the two entry points cannot
+ * drift: the guards and the copy are one implementation.
+ */
+function performAdopt(
+  cf: CwlConfig,
+  st: CwlState,
+  key: string,
+  from: string,
+  as: string | undefined,
+): { ok: boolean; text: string; details: Record<string, unknown> } {
+  const all = listMemories();
+  const mine = st.memoryName ?? defaultMemoryName(key);
+  const nameOf = (d: Partial<PersistedState>, file: string): string =>
+    typeof d.name === 'string' && d.name ? d.name : path.basename(file).replace(/\.json$/, '');
+
+  let source: MemoryEntry | undefined = all.find((s) => s.name === from);
+  if (!source) {
+    // A path is the other way in: a state file, or the session file it belongs to.
+    if (path.isAbsolute(from) && fs.existsSync(from)) {
+      if (from.endsWith('.jsonl')) {
+        const viaSession = loadPersistedState(from);
+        const hit = viaSession ? all.find((s) => s.name === (viaSession.memoryName ?? '')) : undefined;
+        source = hit;
+      } else {
+        const raw = readFileOrNull(from);
+        if (raw !== null) {
+          try {
+            const data = JSON.parse(raw) as Partial<PersistedState>;
+            const named = nameOf(data, from);
+            source = { name: named, display: named, leaves: 0, nodes: 0, pit: 'no', savedAt: 0, alive: false, file: from, data };
+          } catch { source = undefined; }
+        }
+      }
+    }
+  }
+  if (!source) {
+    const names = all.map((s) => s.name).join(', ') || '- none -';
+    return { ok: false, text: t('adoptNotFound')(from, names), details: { ok: false, error: 'memory-not-found', from } };
+  }
+  const sourceName = nameOf(source.data, source.file);
+  if (sourceName === mine) {
+    return { ok: false, text: t('adoptBusy')(mine), details: { ok: false, error: 'already-this-memory', name: mine } };
+  }
+  // A memory whose owner is still alive keeps writing its own copy: forking it would give
+  // two writers to one past, and the two branches would erase each other.
+  const aliveOwner = typeof source.data.ownerPid === 'number' && source.data.ownerPid !== process.pid
+    && isPidAlive(source.data.ownerPid) && source.file !== statePath(key);
+  if (aliveOwner) {
+    return { ok: false, text: t('adoptOtherSession'), details: { ok: false, error: 'memory-in-use', from: sourceName, pid: source.data.ownerPid } };
+  }
+  const leaves = Array.isArray(source.data.spans) ? source.data.spans : [];
+  if (leaves.length === 0) {
+    return { ok: false, text: t('adoptEmpty')(sourceName), details: { ok: false, error: 'memory-empty', from: sourceName } };
+  }
+
+  // THE FORK. The leaves are copied and marked ARCHIVED: they carry anchors of another
+  // transcript, so `locateSpans` skips them (never resolved, never dead) and the pruning
+  // can never touch them — the summary IS the copy that exists from here on. The usage
+  // counters are dropped on purpose: how often a leaf was opened is the history of a
+  // session that is not this one.
+  st.spans = leaves.map((sp) => ({ ...sp, archived: true, counted: true, opens: undefined, lastOpen: undefined }));
+  st.nodes = Array.isArray(source.data.nodes) ? source.data.nodes : [];
+  st.oldNode = source.data.oldNode ?? null;
+  st.looseFrom = Math.max(0, st.spans.length - DEFAULT_CONFIG.looseLeaves);
+  // The graveyard points at a transcript this session does not have, and the episodes are
+  // positions in the old message list: neither travels.
+  st.graves = [];
+  st.graph = new EpisodeGraph();
+  st.totalEvictions = 0;
+  st.totalEvictedTokens = 0;
+  st.memoryName = as && as.trim() ? as.trim() : `${sourceName}--fork`;
+  st.importedFrom = sourceName;
+  // The fork COPIES the bodies, not a pointer to them: the operator chose copied over
+  // shared, so the branch survives the deletion of the source. The copy is byte-identical,
+  // so the offsets the source indexed remain valid here unchanged.
+  if (source.file) {
+    const srcBodies = source.file.replace(/\.json$/, '.bodies.jsonl');
+    if (fs.existsSync(srcBodies)) {
+      try { fs.copyFileSync(srcBodies, bodiesPath(key)); } catch { /* the fork keeps what the index carries */ }
+    }
+  }
+  st.bodies = new Map<string, [number, number]>();
+  const srcMap = source.data.bodies;
+  if (srcMap && typeof srcMap === 'object') {
+    for (const [k, v] of Object.entries(srcMap)) {
+      if (Array.isArray(v) && v.length === 2 && typeof v[0] === 'number' && typeof v[1] === 'number') {
+        st.bodies.set(k, [v[0], v[1]]);
+      }
+    }
+  }
+  // A source older than the bodies store carries its pit summaries in the spans still:
+  // this moves them into the FORK's file, exactly as a save would.
+  moveLeafBodiesToDisk(key, st);
+  saveState(key, st);
+  debugLog(cf, `ADOPT: forked "${sourceName}" into "${st.memoryName}" — ${st.spans.length} leaf/leaves ARCHIVED, ${st.nodes.length} node(s), pit ${st.oldNode ? st.oldNode.id : 'none'}; episodes did not travel`);
+  return {
+    ok: true,
+    text: t('adoptDone')(st.memoryName, sourceName, st.spans.length, st.nodes.length),
+    details: { ok: true, name: st.memoryName, from: sourceName, leaves: st.spans.length, nodes: st.nodes.length, pit: st.oldNode ? st.oldNode.id : null },
+  };
+}
+
 export default function (pi: ExtensionAPI) {
   // ---- Tools -------------------------------------------------------------
 
@@ -4201,29 +4376,14 @@ function indexNodeViews(st: CwlState): IndexNodeView[] {
       // Reading every state file is the ONE heavy read of the set, and it is deliberate: a
       // memory is found by NAME, and the name lives inside the file. It is an explicit act,
       // never a per-turn cost.
-      let files: string[] = [];
-      try { files = fs.readdirSync(STATE_DIR).filter((f) => f.endsWith('.json')); } catch { files = []; }
-      const found: { name: string; leaves: number; nodes: number; pit: string; savedAt: number }[] = [];
-      for (const f of files) {
-        const raw = readFileOrNull(path.join(STATE_DIR, f));
-        if (raw === null) continue;
-        let data: Partial<PersistedState>;
-        try { data = JSON.parse(raw) as Partial<PersistedState>; } catch { continue; }
-        const leaves = Array.isArray(data.spans) ? data.spans.length : 0;
-        const nodes = Array.isArray(data.nodes) ? data.nodes.length : 0;
-        const name = typeof data.name === 'string' && data.name ? data.name : f.replace(/\.json$/, '');
-        const pit = data.oldNode && typeof data.oldNode.id === 'string' ? data.oldNode.id : 'no';
-        const alive = typeof data.ownerPid === 'number' && data.ownerPid !== process.pid && isPidAlive(data.ownerPid);
-        found.push({ name: alive ? `${name} (LIVE)` : name, leaves, nodes, pit, savedAt: typeof data.savedAt === 'number' ? data.savedAt : 0 });
-      }
+      const found = listMemories();
       if (found.length === 0) {
         return { content: [{ type: 'text', text: t('memoriesEmpty')() }], details: { ok: true, memories: 0, names: [] as string[] } };
       }
-      found.sort((a, b) => b.savedAt - a.savedAt);
-      const rows = found.map((m) => t('memoriesRow')(m.name, m.leaves, m.nodes, m.pit)).join('\n');
+      const rows = found.map((m) => t('memoriesRow')(m.display, m.leaves, m.nodes, m.pit)).join('\n');
       return {
         content: [{ type: 'text', text: t('memoriesList')(rows) }],
-        details: { ok: true, memories: found.length, names: found.map((m) => m.name) },
+        details: { ok: true, memories: found.length, names: found.map((m) => m.display) },
       };
     },
   });
@@ -4242,103 +4402,9 @@ function indexNodeViews(st: CwlState): IndexNodeView[] {
       const st = getState(key);
       const cf = getConfig(key);
       const from = String(params.from ?? '').trim();
-      const mine = st.memoryName ?? defaultMemoryName(key);
-
-      /** Every state on disk, parsed once: the name may be any of them. */
-      const all = (): { file: string; data: Partial<PersistedState> }[] => {
-        let files: string[] = [];
-        try { files = fs.readdirSync(STATE_DIR).filter((f) => f.endsWith('.json')); } catch { return []; }
-        const out: { file: string; data: Partial<PersistedState> }[] = [];
-        for (const f of files) {
-          const raw = readFileOrNull(path.join(STATE_DIR, f));
-          if (raw === null) continue;
-          try { out.push({ file: path.join(STATE_DIR, f), data: JSON.parse(raw) as Partial<PersistedState> }); } catch { /* not a state file */ }
-        }
-        return out;
-      };
-      const nameOf = (d: Partial<PersistedState>, file: string): string =>
-        typeof d.name === 'string' && d.name ? d.name : path.basename(file).replace(/\.json$/, '');
-
-      let source = all().find((s) => nameOf(s.data, s.file) === from);
-      if (!source) {
-        // A path is the other way in: a state file, or the session file it belongs to.
-        if (path.isAbsolute(from) && fs.existsSync(from)) {
-          if (from.endsWith('.jsonl')) {
-            const viaSession = loadPersistedState(from);
-            const hit = viaSession ? all().find((s) => nameOf(s.data, s.file) === (viaSession.memoryName ?? '')) : undefined;
-            source = hit;
-          } else {
-            const raw = readFileOrNull(from);
-            if (raw !== null) {
-              try { source = { file: from, data: JSON.parse(raw) as Partial<PersistedState> }; } catch { source = undefined; }
-            }
-          }
-        }
-      }
-      if (!source) {
-        const names = all().map((s) => nameOf(s.data, s.file)).join(', ') || '- none -';
-        return { content: [{ type: 'text', text: t('adoptNotFound')(from, names) }], details: { ok: false, error: 'memory-not-found', from } };
-      }
-      const sourceName = nameOf(source.data, source.file);
-      if (sourceName === mine) {
-        return { content: [{ type: 'text', text: t('adoptBusy')(mine) }], details: { ok: false, error: 'already-this-memory', name: mine } };
-      }
-      // A memory whose owner is still alive keeps writing its own copy: forking it would give
-      // two writers to one past, and the two branches would erase each other.
-      const aliveOwner = typeof source.data.ownerPid === 'number' && source.data.ownerPid !== process.pid
-        && isPidAlive(source.data.ownerPid) && source.file !== statePath(key);
-      if (aliveOwner) {
-        return { content: [{ type: 'text', text: t('adoptOtherSession') }], details: { ok: false, error: 'memory-in-use', from: sourceName, pid: source.data.ownerPid } };
-      }
-      const leaves = Array.isArray(source.data.spans) ? source.data.spans : [];
-      if (leaves.length === 0) {
-        return { content: [{ type: 'text', text: t('adoptEmpty')(sourceName) }], details: { ok: false, error: 'memory-empty', from: sourceName } };
-      }
-
-      // THE FORK. The leaves are copied and marked ARCHIVED: they carry anchors of another
-      // transcript, so `locateSpans` skips them (never resolved, never dead) and the pruning
-      // can never touch them — the summary IS the copy that exists from here on. The usage
-      // counters are dropped on purpose: how often a leaf was opened is the history of a
-      // session that is not this one.
-      st.spans = leaves.map((sp) => ({ ...sp, archived: true, counted: true, opens: undefined, lastOpen: undefined }));
-      st.nodes = Array.isArray(source.data.nodes) ? source.data.nodes : [];
-      st.oldNode = source.data.oldNode ?? null;
-      st.looseFrom = Math.max(0, st.spans.length - DEFAULT_CONFIG.looseLeaves);
-      // The graveyard points at a transcript this session does not have, and the episodes are
-      // positions in the old message list: neither travels.
-      st.graves = [];
-      st.graph = new EpisodeGraph();
-      st.totalEvictions = 0;
-      st.totalEvictedTokens = 0;
-      st.memoryName = params.as && String(params.as).trim() ? String(params.as).trim() : `${sourceName}--fork`;
-      st.importedFrom = sourceName;
-      // The fork COPIES the bodies, not a pointer to them: the operator chose copied over
-      // shared, so the branch survives the deletion of the source. The copy is byte-identical,
-      // so the offsets the source indexed remain valid here unchanged.
-      if (source.file) {
-        const srcBodies = source.file.replace(/\.json$/, '.bodies.jsonl');
-        if (fs.existsSync(srcBodies)) {
-          try { fs.copyFileSync(srcBodies, bodiesPath(key)); } catch { /* the fork keeps what the index carries */ }
-        }
-      }
-      st.bodies = new Map<string, [number, number]>();
-      const srcMap = source.data.bodies;
-      if (srcMap && typeof srcMap === 'object') {
-        for (const [k, v] of Object.entries(srcMap)) {
-          if (Array.isArray(v) && v.length === 2 && typeof v[0] === 'number' && typeof v[1] === 'number') {
-            st.bodies.set(k, [v[0], v[1]]);
-          }
-        }
-      }
-      // A source older than the bodies store carries its pit summaries in the spans still:
-      // this moves them into the FORK's file, exactly as a save would.
-      moveLeafBodiesToDisk(key, st);
-      saveState(key, st);
-      debugLog(cf, `ADOPT: forked "${sourceName}" into "${st.memoryName}" — ${st.spans.length} leaf/leaves ARCHIVED, ${st.nodes.length} node(s), pit ${st.oldNode ? st.oldNode.id : 'none'}; episodes did not travel`);
-      return {
-        content: [{ type: 'text', text: t('adoptDone')(st.memoryName, sourceName, st.spans.length, st.nodes.length) }],
-        details: { ok: true, name: st.memoryName, from: sourceName, leaves: st.spans.length, nodes: st.nodes.length, pit: st.oldNode ? st.oldNode.id : null },
-      };
+      const as = params.as === undefined ? undefined : String(params.as);
+      const res = performAdopt(cf, st, key, from, as);
+      return { content: [{ type: 'text', text: res.text }], details: res.details };
     },
   });
 
@@ -6379,6 +6445,53 @@ function indexNodeViews(st: CwlState): IndexNodeView[] {
           pit: pitOrdinary.map((nd) => nd.id),
         },
       };
+    },
+  });
+
+  // ---- Slash commands ----------------------------------------------------
+  // The same two acts the tools expose, but in the OPERATOR's hands: forking a
+  // memory is a decision about which past to continue, and it belongs to whoever
+  // is at the keyboard, not to the model.
+
+  pi.registerCommand('cwl_memories', {
+    description: t('cmdMemoriesDesc')(),
+    handler: async (_args, ctx) => {
+      if (!ctx.hasUI) return;
+      const found = listMemories();
+      if (found.length === 0) {
+        ctx.ui.notify(t('memoriesEmpty')(), 'warning');
+        return;
+      }
+      const rows = found.map((m) => t('memoriesRow')(m.display, m.leaves, m.nodes, m.pit)).join('\n');
+      ctx.ui.notify(t('memoriesList')(rows), 'info');
+    },
+  });
+
+  pi.registerCommand('cwl_adopt', {
+    description: t('cmdAdoptDesc')(),
+    handler: async (_args, ctx) => {
+      if (!ctx.hasUI) return;
+      const key = sessionKey(ctx);
+      const st = getState(key);
+      const cf = getConfig(key);
+      // A LIVE memory is not offered: forking it would give two writers to one past.
+      const adoptable = listMemories().filter((m) => !m.alive);
+      if (adoptable.length === 0) {
+        ctx.ui.notify(t('cmdNoAdoptable')(), 'warning');
+        return;
+      }
+      const choice = await ctx.ui.select(t('cmdPickSource')(), adoptable.map((m) => m.name));
+      if (choice === undefined) {
+        ctx.ui.notify(t('cmdCancelled')(), 'info');
+        return;
+      }
+      const entered = await ctx.ui.input(t('cmdPickName')(), `${choice}--fork`);
+      if (entered === undefined) {
+        ctx.ui.notify(t('cmdCancelled')(), 'info');
+        return;
+      }
+      const res = performAdopt(cf, st, key, choice, entered.trim() || undefined);
+      ctx.ui.notify(res.text, res.ok ? 'info' : 'error');
     },
   });
 
