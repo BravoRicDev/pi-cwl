@@ -258,6 +258,12 @@ type CwlMessages = {
   cmdPickName: () => string;
   cmdCancelled: () => string;
   cmdNoAdoptable: () => string;
+  /** /cwl_save and /cwd_save: operator-triggered full compaction with zero protected turns. */
+  cmdSaveDesc: () => string;
+  cmdSaveNothing: () => string;
+  cmdSaveTriggered: (tokens: number) => string;
+  cmdSavePrompt: (note?: string) => string;
+  cmdSaveDemand: (note?: string) => string;
   /** cwl_micro: the body leaves the context, the micro takes its place. */
   microSet: (id: string, microChars: number, bodyChars: number, shorter: boolean) => string;
   /** Budget gate: the agent-driving channel. */
@@ -445,6 +451,11 @@ const I18N: Record<Lang, CwlMessages> = {
     cmdPickName: () => 'Name for the fork (empty keeps the default):',
     cmdCancelled: () => 'Nothing was adopted.',
     cmdNoAdoptable: () => 'No adoptable memory on this machine.',
+    cmdSaveDesc: () => 'Force total compaction (zero protected turns) into a final leaf for inheritance or topic change.',
+    cmdSaveNothing: () => 'Nothing left to compact: all recent messages are already inside leaves or not enough messages exist.',
+    cmdSaveTriggered: (tokens) => `Total compaction triggered: ~${tokens} recent tokens will be compressed into the final leaf.`,
+    cmdSavePrompt: (note) => `[/cwl_save COMMAND] Perform full compaction of the entire recent history (including the latest turn, zero protected turns) by calling cwl_compress_range with an accurate summary and micro.${note ? `\nOperator note: "${note}"` : ''}`,
+    cmdSaveDemand: (note) => `TOTAL COMPACTION REQUESTED (/cwl_save): The operator requested full compaction of the recent history into a final leaf (zero protected turns). Call cwl_compress_range(summary="...", micro="...") detailing all work done so far and final status.${note ? ` Note: "${note}"` : ''}`,
     oldSupersededPage: (id, chars, text) => `[CWL superseded synthesis ${id} — ${chars} chars. This is a synthesis that the CURRENT one of the pit replaced; cwl_old overwrites instead of extending, so the archive keeps the text it would otherwise have erased. Nothing else refers to it.]\n\n${text}`,
     indexDue: (young, need) => `[CWL INDEX] ${young} node(s) of the index are due to merge (a merge starts at ${need}). Call cwl_old with the merge summary: your synthesis replaces the content of the oldest nodes — their topics' descriptions and their labels — and their leaves stay readable with cwl_open.`,
     topicDue: (id, leaves, microChars, needChars) => `[CWL TOPIC] the buffer (${id}) holds ${leaves} leaf/leaves, and their micros are ${microChars} characters — enough for the ${needChars} a topic must free. Open a topic NOW with cwl_group: pass those leaves, a name, and a description that already covers their FUTURE use, and one description then stands for all of them. This is the last moment it is possible: a leaf that enters a node can never be moved again, and the window closes with it.`,
@@ -698,6 +709,11 @@ const I18N: Record<Lang, CwlMessages> = {
     cmdPickName: () => 'Nome per il fork (vuoto = resta quello di default):',
     cmdCancelled: () => 'Non e\' stato adottato niente.',
     cmdNoAdoptable: () => 'Nessuna memoria adottabile su questa macchina.',
+    cmdSaveDesc: () => 'Forza la compattazione totale (zero turni protetti) in una foglia finale per eredità o cambio topic.',
+    cmdSaveNothing: () => 'Nessun messaggio recente da compattare: tutta la cronologia e\' gia\' dentro le foglie o non ci sono abbastanza messaggi.',
+    cmdSaveTriggered: (tokens) => `Compattazione totale avviata: ~${tokens} token recenti verranno compressi nella foglia finale.`,
+    cmdSavePrompt: (note) => `[COMANDO /cwl_save] Esegui subito la compattazione totale dell'intera cronologia recente (fino all'ultimo turno, zero turni protetti) chiamando cwl_compress_range con summary e micro accurati.${note ? `\nNota dell'operatore: "${note}"` : ''}`,
+    cmdSaveDemand: (note) => `RICHIESTA DI COMPATTAZIONE TOTALE (/cwl_save): L'operatore ha richiesto di compattare l'intera cronologia recente in un'unica foglia (zero turni protetti). Chiama cwl_compress_range(summary="...", micro="...") descrivendo in dettaglio tutto il lavoro svolto finora e lo stato finale.${note ? ` Nota: "${note}"` : ''}`,
     oldSupersededPage: (id, chars, text) => `[CWL sintesi sostituita ${id} — ${chars} caratteri. E' una sintesi che quella ATTUALE del pozzo ha sostituito; cwl_old sostituisce invece di estendere, quindi l'archivio tiene il testo che altrimenti avrebbe cancellato. Nient'altro la referenzia.]\n\n${text}`,
     indexDue: (young, need) => `[CWL INDICE] ${young} nodo/i dell'indice sono da accorpare (si accorpa da ${need} in su). Chiama cwl_old col riassuntone: la tua sintesi sostituisce il contenuto dei nodi piu' vecchi — le descrizioni dei loro topic e i micro dei loro nodi sparsi — e le loro foglie restano leggibili con cwl_open.`,
     topicDue: (id, leaves, microChars, needChars) => `[CWL TOPIC] il buffer (${id}) tiene ${leaves} foglia/e, e i loro micro sono ${microChars} caratteri — abbastanza per i ${needChars} che un topic deve liberare. Apri un topic ADESSO con cwl_group: passa quelle foglie, un nome e una descrizione che copra gia' il loro uso FUTURO, e una descrizione sola sta per tutte. E' l'ultimo momento in cui si puo': una foglia che entra in un nodo non si sposta piu', e la finestra si chiude con lei.`,
@@ -1364,6 +1380,13 @@ interface CwlState {
    * was just written, so the closing itself is FREE.
    */
   looseFrom: number;
+  /**
+   * Set by /cwl_save (or /cwd_save): forces total compaction with zero protected
+   * turns on the next context pass, so the entire history up to the end enters a final leaf.
+   */
+  forceAllNext?: boolean;
+  /** Optional note provided by the operator to /cwl_save. */
+  forceAllNote?: string;
 }
 
 function newState(): CwlState {
@@ -1404,6 +1427,8 @@ function newState(): CwlState {
     // 0 = every span is loose. A state restored from disk clamps it (see
     // `loadPersistedState`); a fresh state has no spans, so 0 is the honest value.
     looseFrom: 0,
+    forceAllNext: false,
+    forceAllNote: undefined,
   };
 }
 
@@ -1777,6 +1802,8 @@ const EPISODE_PREVIEW_CHARS = 4000;
 
 /** customType of the injected demand, so it can be replaced instead of stacked. */
 const GATE_CUSTOM_TYPE = 'cwl-budget-gate';
+/** customType of the demand appended to context (index, leaves, topics, force-save). */
+const DEMAND_CUSTOM_TYPE = 'cwl-demand';
 /**
  * customType of the announcement that opens an INHERITED memory (`cwl_adopt`). It is its own
  * type and not one of the notices above because it says something about the SESSION, not
@@ -1789,6 +1816,11 @@ const INHERITED_CUSTOM_TYPE = 'cwl-inherited';
 function isGateMessage(m: AgentMessage): boolean {
   // SAFETY: read-only field probe (customType); the AgentMessage union does not declare it.
   return (m as unknown as RealMessage).customType === GATE_CUSTOM_TYPE;
+}
+/** True when the message is a general demand injected by this extension. */
+function isDemandMessage(m: AgentMessage): boolean {
+  // SAFETY: read-only field probe (customType); the AgentMessage union does not declare it.
+  return (m as unknown as RealMessage).customType === DEMAND_CUSTOM_TYPE;
 }
 /**
  * True when the message is the announcement of an inherited memory. It needs its own filter
@@ -3431,7 +3463,7 @@ function applySpans(
   // SAFETY: Pi accepts `custom` in the context hook although the AgentMessage union
   // does not declare it — the same contract as the compression notices below.
   const demandMsg: AgentMessage | null = demand
-    ? ({ role: 'custom', customType: 'cwl-demand', content: demand, display: false, timestamp: Date.now() } as unknown as AgentMessage)
+    ? ({ role: 'custom', customType: DEMAND_CUSTOM_TYPE, content: demand, display: false, timestamp: Date.now() } as unknown as AgentMessage)
     : null;
   /**
    * The announcement of an INHERITED memory, when there is one to make. It is an INJECTION
@@ -4242,6 +4274,8 @@ function indexNodeViews(st: CwlState): IndexNodeView[] {
         micro: microOrUndefined(params.micro),
         at: Date.now(),
       });
+      st.forceAllNext = false;
+      st.forceAllNote = undefined;
       // Durable immediately: the agent asked for this compression, so it must
       // survive a restart even if the process is killed before the next turn ends.
       saveState(key, st);
@@ -4365,6 +4399,8 @@ function indexNodeViews(st: CwlState): IndexNodeView[] {
       st.rangeStartHash = null;
       st.rangeEndHash = null;
       st.rangeTokens = 0;
+      st.forceAllNext = false;
+      st.forceAllNote = undefined;
       // The event the NEXT request follows: this leaf landed where the compressed
       // content used to be, so everything after it is rewritten and the provider
       // will pay a cache WRITE instead of a READ. Recorded BEFORE the save, or a
@@ -5422,7 +5458,7 @@ function indexNodeViews(st: CwlState): IndexNodeView[] {
     // index-based decision below — the episode ranges and `safetyFloor` — is
     // resolved against whatever list this variable holds, so the two must never
     // disagree.
-    let messages: AgentMessage[] = eventMessages.filter((m) => !isGateMessage(m) && !isInheritedMessage(m));
+    let messages: AgentMessage[] = eventMessages.filter((m) => !isGateMessage(m) && !isInheritedMessage(m) && !isDemandMessage(m));
 
     // MEASUREMENT of the cache — the instrument this design never had. The provider
     // cache is a PREFIX cache, and every leaf written here lands where the
@@ -5788,10 +5824,11 @@ function indexNodeViews(st: CwlState): IndexNodeView[] {
     if (microRequest) {
       debugLog(cf, `MICRO due: ${plan.waiting} leaf/leaves waiting for a micro — asked in the context (${Math.min(plan.waiting, MICRO_DEMAND_IDS)} id(s) named)`);
     }
+    const saveRequest = st.forceAllNext ? t('cmdSaveDemand')(st.forceAllNote) : null;
     const demand =
-      [microRequest, mergeRequest, topicRequest].filter((d): d is string => d !== null).join('\n\n') || null;
+      [saveRequest, microRequest, mergeRequest, topicRequest].filter((d): d is string => d !== null).join('\n\n') || null;
 
-    if (st.spans.length > 0) {
+    if (st.spans.length > 0 || demand !== null || Boolean(st.importedFrom)) {
       // An inherited memory announces itself, and the announcement is an INJECTION at the END
       // (see `inheritedMsg`): without it the agent does not know that the index at the top of
       // its context is NOT its own past, and goes looking for its history on disk — the real
@@ -5874,7 +5911,8 @@ function indexNodeViews(st: CwlState): IndexNodeView[] {
         // Recomputed HERE, on the ORIGINAL list: the span endpoints must still
         // resolve, or `covered` would be empty and the same region would be
         // offered again.
-        const nextRange = compressibleRange(messages, st.spans, cf.protectedTurns);
+        const protTurns = st.forceAllNext ? 0 : cf.protectedTurns;
+        const nextRange = compressibleRange(messages, st.spans, protTurns);
         storeRange(st, cf, nextRange, messages);
         rangeStoredBySpans = true;
 
@@ -5911,6 +5949,10 @@ function indexNodeViews(st: CwlState): IndexNodeView[] {
     }
 
     if (currentTokens <= trigger) {
+      if (st.forceAllNext && !rangeStoredBySpans) {
+        const range = compressibleRange(messages, st.spans, 0);
+        storeRange(st, cf, range, messages, currentTokens, trigger);
+      }
       // Under budget: nothing to compact and nothing to ask for. This is also the
       // ONLY way the gate closes — by effect, never by a confirmation token.
       st.overBudgetSince = -1;
@@ -5924,17 +5966,18 @@ function indexNodeViews(st: CwlState): IndexNodeView[] {
       // measured: the file kept the pre-prune snapshot while the memory had the grave, so
       // `cwl_open` could not find what it had just written.
       persistIfUsed();
-      return droppedGate ? { messages } : undefined;
+      return (droppedGate || st.forceAllNext || demand !== null) ? { messages } : undefined;
     }
 
+    const protTurns = st.forceAllNext ? 0 : cf.protectedTurns;
     // The last `protectedTurns` user turns are inviolable: compaction must never
     // destroy the context the agent is working on.
-    const safetyFloor = protectedFromIndex(messages, cf.protectedTurns);
+    const safetyFloor = protectedFromIndex(messages, protTurns);
 
     // Addresses of the largest range the agent may ask to compress. Recomputed
     // here because this hook is the only place that sees the real message list.
     if (!rangeStoredBySpans) {
-      const range = compressibleRange(messages, st.spans, cf.protectedTurns);
+      const range = compressibleRange(messages, st.spans, protTurns);
       storeRange(st, cf, range, messages, currentTokens, trigger);
     }
 
@@ -6570,6 +6613,45 @@ function indexNodeViews(st: CwlState): IndexNodeView[] {
       const res = performAdopt(cf, st, key, choice, entered.trim() || undefined);
       ctx.ui.notify(res.text, res.ok ? 'info' : 'error');
     },
+  });
+
+  const saveHandler = async (args: string | undefined, ctx: ExtensionContext) => {
+    const key = sessionKey(ctx);
+    const st = getState(key);
+    const sm = ctx?.sessionManager as
+      | { buildContextEntries?: () => Array<{ type?: string; message?: AgentMessage }> }
+      | undefined;
+    const messages = typeof sm?.buildContextEntries === 'function'
+      ? sm.buildContextEntries()
+          .filter((e) => !!e && e.type === 'message' && !!e.message)
+          .map((e) => e.message as AgentMessage)
+      : [];
+    const checkRange = messages.length > 0 ? compressibleRange(messages, st.spans, 0) : null;
+    if (!checkRange) {
+      if (ctx.hasUI) ctx.ui.notify(t('cmdSaveNothing')(), 'warning');
+      return;
+    }
+    st.forceAllNext = true;
+    st.forceAllNote = typeof args === 'string' && args.trim() ? args.trim() : undefined;
+    saveState(key, st);
+    if (ctx.hasUI) {
+      ctx.ui.notify(t('cmdSaveTriggered')(checkRange.tokens), 'info');
+    }
+    const promptText = t('cmdSavePrompt')(st.forceAllNote);
+    const piSender = pi as unknown as { sendUserMessage?: (msg: string) => Promise<unknown> | void };
+    if (typeof piSender.sendUserMessage === 'function') {
+      await piSender.sendUserMessage(promptText);
+    }
+  };
+
+  pi.registerCommand('cwl_save', {
+    description: t('cmdSaveDesc')(),
+    handler: saveHandler,
+  });
+
+  pi.registerCommand('cwd_save', {
+    description: t('cmdSaveDesc')(),
+    handler: saveHandler,
   });
 
   pi.on('session_shutdown', async (_event, ctx) => {
