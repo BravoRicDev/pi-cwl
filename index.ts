@@ -232,6 +232,8 @@ type CwlMessages = {
   /** A leaf that was pruned: its summary is lost, the original comes back from the transcript. */
   openOriginal: (id: string, tokens: number, body: string) => string;
   openOriginalLost: (id: string) => string;
+  /** cwl_open: the summary left the RAM (the leaf is in the pit) and the disk record is gone. */
+  openBodyLost: (id: string) => string;
   /** The memories a session can fork, and the fork itself. See `cwl_memories` / `cwl_adopt`. */
   memoriesEmpty: () => string;
   memoriesList: (rows: string) => string;
@@ -405,6 +407,7 @@ const I18N: Record<Lang, CwlMessages> = {
     oldHot: (listed, total) => `--- Most consulted leaves (${listed} of ${total} in the old node; nothing was deleted, this is only the reading order) ---`,
     oldSupersededHead: (count) => `--- Syntheses this one replaced (${count}, newest first): open one with cwl_open("<id>.s1") — cwl_old overwrites the synthesis instead of extending it, so these are kept readable rather than lost ---`,
     oldSupersededLine: (id, chars) => `- ${id}: ${chars} chars`,
+    openBodyLost: (id) => `Leaf "${id}" has no body: its summary left the memory (the leaf is inside the pit) and the disk record is gone. If the leaf has a micro, that is what remains of it.`,
     memoriesEmpty: () => 'No CWL memory exists yet.',
     memoriesList: (rows) => `CWL memories:\n${rows}`,
     memoriesRow: (name, leaves, nodes, pit) => `- ${name} │ ${leaves} leaf/leaves │ ${nodes} node(s) │ pit: ${pit}`,
@@ -643,6 +646,7 @@ const I18N: Record<Lang, CwlMessages> = {
     oldHot: (listed, total) => `--- Foglie piu' consultate (${listed} di ${total} nel nodo vecchio; niente e' stato cancellato, questo e' solo l'ordine di lettura) ---`,
     oldSupersededHead: (count) => `--- Sintesi sostituite da questa (${count}, dalla piu' recente): aprine una con cwl_open("<id>.s1") — cwl_old sostituisce la sintesi invece di estenderla, quindi queste restano leggibili invece di andare perse ---`,
     oldSupersededLine: (id, chars) => `- ${id}: ${chars} caratteri`,
+    openBodyLost: (id) => `La foglia "${id}" non ha corpo: il suo riassunto e' uscito dalla memoria (la foglia e' dentro il pozzo) e il record su disco non c'e' piu'. Se la foglia ha una micro, e' quello che ne resta.`,
     memoriesEmpty: () => 'Non esiste ancora nessuna memoria CWL.',
     memoriesList: (rows) => `Memorie CWL:\n${rows}`,
     memoriesRow: (name, leaves, nodes, pit) => `- ${name} │ ${leaves} foglia/e │ ${nodes} nodo/i │ pozzo: ${pit}`,
@@ -1294,6 +1298,13 @@ interface CwlState {
    * leaves from the moment it is created.
    */
   importedFrom?: string;
+  /**
+   * Where the DEEP bodies live: leaf id -> [byte offset, byte length] in the append-only
+   * bodies file. Only the leaves INSIDE the pit have their summary moved there (the level-0
+   * rule: everything outside the pit keeps micro + full summary in RAM). A summary, once
+   * written, is never rewritten, so an offset never moves.
+   */
+  bodies: Map<string, [number, number]>;
   /** Tokens held by that range: shown in the status and in the demand. */
   rangeTokens: number;
   /**
@@ -1345,6 +1356,7 @@ function newState(): CwlState {
     lastUsageTs: 0,
     lastEvent: 'none',
     turnsSinceCompress: -1,
+    bodies: new Map(),
     rangeTokens: 0,
     // 0 = every span is loose. A state restored from disk clamps it (see
     // `loadPersistedState`); a fresh state has no spans, so 0 is the honest value.
@@ -1435,6 +1447,8 @@ interface PersistedState {
    * copy and the two branches would overwrite each other.
    */
   ownerPid?: number;
+  /** The deep bodies, leaf id -> [offset, len] in the append-only bodies file. Optional. */
+  bodies?: Record<string, [number, number]>;
   /** The pit. Persisted because it carries the agent's merge summary, which no rule can recompute. */
   oldNode?: OldNode | null;
   /**
@@ -1485,6 +1499,73 @@ function isPidAlive(pid: number): boolean {
   }
 }
 
+/** The append-only store of the deep bodies, next to the state file that indexes it. */
+function bodiesPath(key: string): string {
+  return statePath(key).replace(/\.json$/, '.bodies.jsonl');
+}
+
+/**
+ * The leaves the PIT stands for, computed straight from the state.
+ *
+ * Not `pitView`: that one returns null while the synthesis is empty, but a leaf can be inside
+ * the pit before (or without) a synthesis, and its body must still be movable. The pit's
+ * nodes own the leaves; nothing else matters.
+ */
+function pitLeafIds(st: CwlState): Set<string> {
+  const inPit = new Set(st.oldNode?.nodes ?? []);
+  const out = new Set<string>();
+  for (const nd of st.nodes) {
+    if (!inPit.has(nd.id)) continue;
+    for (const id of nd.leaves) out.add(id);
+  }
+  return out;
+}
+
+/** One leaf's body record, read at its stored offset: ONE read, never the whole file. */
+function readBody(key: string, st: CwlState, id: string): { text: string; micro?: string } | null {
+  const rec = st.bodies.get(id);
+  if (!rec) return null;
+  try {
+    const fd = fs.openSync(bodiesPath(key), 'r');
+    try {
+      const buf = Buffer.alloc(rec[1]);
+      const n = fs.readSync(fd, buf, 0, rec[1], rec[0]);
+      const parsed = JSON.parse(buf.toString('utf8', 0, n)) as { text?: string; micro?: string };
+      if (typeof parsed.text !== 'string' || !parsed.text) return null;
+      return { text: parsed.text, micro: typeof parsed.micro === 'string' ? parsed.micro : undefined };
+    } finally { fs.closeSync(fd); }
+  } catch { return null; }
+}
+
+/**
+ * The level-0 rule, applied: the bodies of the leaves INSIDE the pit leave the RAM and move
+ * to the append-only bodies file. Idempotent, and ordered so that nothing can be lost: the
+ * line is appended and its offset recorded BEFORE the in-RAM summary is blanked, so a crash
+ * at any point leaves the summary in one of the two places.
+ */
+function moveLeafBodiesToDisk(key: string, st: CwlState): void {
+  const ids = pitLeafIds(st);
+  if (ids.size === 0) return;
+  let fd: number | null = null;
+  try {
+    for (const sp of st.spans) {
+      const id = idOfSpan(sp);
+      if (!ids.has(id)) continue;
+      if (!sp.summary) continue; // already moved, or never had a body
+      if (st.bodies.has(id)) continue;
+      if (fd === null) fd = fs.openSync(bodiesPath(key), 'a');
+      const line = `${JSON.stringify({ id, text: sp.summary })}\n`;
+      const offset = fs.fstatSync(fd).size;
+      fs.writeSync(fd, line);
+      st.bodies.set(id, [offset, Buffer.byteLength(line)]);
+      sp.summary = '';
+    }
+  } catch { /* on failure the summary stays in RAM and the next save retries */ }
+  finally {
+    if (fd !== null) { try { fs.closeSync(fd); } catch { /* already closed */ } }
+  }
+}
+
 function statePath(key: string): string {
   return path.join(STATE_DIR, `${createHash('sha256').update(key).digest('hex').slice(0, 32)}.json`);
 }
@@ -1505,6 +1586,9 @@ function defaultMemoryName(key: string): string {
 function saveState(key: string, st: CwlState): void {
   try {
     fs.mkdirSync(STATE_DIR, { recursive: true });
+    // The level-0 rule: before writing, move the pit's leaf bodies out of the state. Append
+    // FIRST, blank AFTER — whatever the crash order, the summary survives in one of the two.
+    moveLeafBodiesToDisk(key, st);
     const payload: PersistedState = {
       version: STATE_VERSION,
       key,
@@ -1512,6 +1596,7 @@ function saveState(key: string, st: CwlState): void {
       name: st.memoryName ?? defaultMemoryName(key),
       importedFrom: st.importedFrom,
       ownerPid: process.pid,
+      bodies: Object.fromEntries(st.bodies),
       graph: { episodes: st.graph.all },
       spans: st.spans,
       looseFrom: st.looseFrom,
@@ -1571,6 +1656,14 @@ function loadPersistedState(key: string): CwlState | null {
     st.turns = typeof data.turns === 'number' ? data.turns : 0;
     st.memoryName = typeof data.name === 'string' && data.name ? data.name : undefined;
     st.importedFrom = typeof data.importedFrom === 'string' && data.importedFrom ? data.importedFrom : undefined;
+    st.bodies = new Map<string, [number, number]>();
+    if (data.bodies && typeof data.bodies === 'object') {
+      for (const [k, v] of Object.entries(data.bodies)) {
+        if (Array.isArray(v) && v.length === 2 && typeof v[0] === 'number' && typeof v[1] === 'number') {
+          st.bodies.set(k, [v[0], v[1]]);
+        }
+      }
+    }
     st.overBudgetSince = typeof data.overBudgetSince === 'number' ? data.overBudgetSince : -1;
     st.gateArmedTurn = typeof data.gateArmedTurn === 'number' ? data.gateArmedTurn : -1;
     st.gateAttempts = typeof data.gateAttempts === 'number' ? data.gateAttempts : 0;
@@ -4219,6 +4312,27 @@ function indexNodeViews(st: CwlState): IndexNodeView[] {
       st.totalEvictedTokens = 0;
       st.memoryName = params.as && String(params.as).trim() ? String(params.as).trim() : `${sourceName}--fork`;
       st.importedFrom = sourceName;
+      // The fork COPIES the bodies, not a pointer to them: the operator chose copied over
+      // shared, so the branch survives the deletion of the source. The copy is byte-identical,
+      // so the offsets the source indexed remain valid here unchanged.
+      if (source.file) {
+        const srcBodies = source.file.replace(/\.json$/, '.bodies.jsonl');
+        if (fs.existsSync(srcBodies)) {
+          try { fs.copyFileSync(srcBodies, bodiesPath(key)); } catch { /* the fork keeps what the index carries */ }
+        }
+      }
+      st.bodies = new Map<string, [number, number]>();
+      const srcMap = source.data.bodies;
+      if (srcMap && typeof srcMap === 'object') {
+        for (const [k, v] of Object.entries(srcMap)) {
+          if (Array.isArray(v) && v.length === 2 && typeof v[0] === 'number' && typeof v[1] === 'number') {
+            st.bodies.set(k, [v[0], v[1]]);
+          }
+        }
+      }
+      // A source older than the bodies store carries its pit summaries in the spans still:
+      // this moves them into the FORK's file, exactly as a save would.
+      moveLeafBodiesToDisk(key, st);
       saveState(key, st);
       debugLog(cf, `ADOPT: forked "${sourceName}" into "${st.memoryName}" — ${st.spans.length} leaf/leaves ARCHIVED, ${st.nodes.length} node(s), pit ${st.oldNode ? st.oldNode.id : 'none'}; episodes did not travel`);
       return {
@@ -4404,10 +4518,21 @@ function indexNodeViews(st: CwlState): IndexNodeView[] {
         (s) => idOfSpan(s) === wanted || s.startHash === wanted || s.endHash === wanted,
       );
       if (!sp) {
-        // Not in the state. Maybe it was DROPPED — native compaction took its anchors —
-        // and then the summary is gone for good while the ORIGINAL is still in the
-        // append-only transcript. The graveyard kept the stable ids that find it: the id
-        // itself could not, being a hash of the anchors.
+        // Not in the state: it was DROPPED — its endpoints left the context for good. The
+        // operator's rule says micro + summary must ALWAYS remain and the original transcript
+        // may go away: the summary (and the micro, when it had one) were appended to the body
+        // store when the span was pruned, and that store is asked BEFORE declaring anything
+        // lost. The graveyard still finds the ORIGINAL text when the transcript has it.
+        const droppedAt = (id: string, when: string): { content: { type: 'text'; text: string }[]; details: Record<string, unknown> } | null => {
+          const stored = readBody(key, st, id);
+          if (!stored) return null;
+          const tokens = estimateTokens(stored.text);
+          const microLine = stored.micro ? `\n\n[MICRO]\n${stored.micro}` : '';
+          return {
+            content: [{ type: 'text', text: t('openFound')(id, tokens, when) + stored.text + microLine }],
+            details: { ok: true, id, kind: 'body', dropped: true, tokens, chars: stored.text.length, hasMicro: Boolean(stored.micro) },
+          };
+        };
         const grave = st.graves.find((g) => g.id === wanted);
         if (grave) {
           const transcriptPath = findTranscript(key);
@@ -4421,20 +4546,35 @@ function indexNodeViews(st: CwlState): IndexNodeView[] {
               details: { ok: true, id: wanted, kind: 'original', dropped: true, tokens, chars: original.length },
             };
           }
-          // Declared, never silent: the ids were there and found nothing, so the content
-          // is only reachable by MEANING from here on.
+          const fromBody = droppedAt(wanted, new Date(grave.at).toISOString().slice(0, 16).replace('T', ' '));
+          if (fromBody) return fromBody;
+          // Declared, never silent: neither the transcript nor the body store has it.
           return {
             content: [{ type: 'text', text: t('openOriginalLost')(wanted) }],
             details: { ok: false, error: 'original-lost', id: wanted, kind: 'original' },
           };
         }
+        // No grave either (the anchors left before the span ever resolved): the body store
+        // is the only place left, and the rule says it must be asked.
+        const fromBody = droppedAt(wanted, '');
+        if (fromBody) return fromBody;
         return {
           content: [{ type: 'text', text: t('openMissing')(wanted) }],
           details: { ok: false, error: 'unknown-id', id: wanted, spans: st.spans.length },
         };
       }
       const id = idOfSpan(sp);
-      const body = sp.summary;
+      // A leaf absorbed into the PIT may have its body on disk: the summary leaves the RAM
+      // when it enters the archive, and it is read back on demand — one read at the stored
+      // offset, never the whole file.
+      const stored = sp.summary ? null : readBody(key, st, id);
+      const body = sp.summary || (stored ? stored.text : '');
+      if (!body) {
+        return {
+          content: [{ type: 'text', text: t('openBodyLost')(id) }],
+          details: { ok: false, error: 'body-lost', id },
+        };
+      }
       const tokens = estimateTokens(body);
       const when = new Date(sp.at).toISOString().slice(0, 16).replace('T', ' ');
       // Usage, not policy: this only orders the pit's page (see the branch above).
@@ -5530,10 +5670,26 @@ function indexNodeViews(st: CwlState): IndexNodeView[] {
       // on every turn. Pruned here — outside the `applied > 0` guard, because the
       // case that matters is when they are ALL dead — and said out loud.
       if (applied.dead.length > 0) {
-        // Before dropping them, write down what can find their original again: the stable
-        // ids of their anchors. The SUMMARY is lost for good — it lived only in the state
-        // — but the messages it replaced are still in the append-only transcript, and the
-        // id alone could not find them: it is a HASH of the anchors.
+        // A dead span can never apply again. The OLD contract dropped the summary, on the
+        // argument that the original is still in the append-only transcript. The operator's
+        // rule changed that: MICRO + SUMMARY must always remain, the original transcript may
+        // go away. So the body (and the micro, when there is one) are appended to the body
+        // store FIRST — one record per leaf — and only then the span leaves the state.
+        // Whatever the failure order, nothing is lost: append before drop.
+        let fd: number | null = null;
+        try {
+          for (const sp of applied.dead) {
+            const id = idOfSpan(sp);
+            if (!sp.summary || st.bodies.has(id)) continue;
+            if (fd === null) fd = fs.openSync(bodiesPath(key), 'a');
+            const line = `${JSON.stringify({ id, text: sp.summary, micro: sp.micro ?? undefined })}\n`;
+            const offset = fs.fstatSync(fd).size;
+            fs.writeSync(fd, line);
+            st.bodies.set(id, [offset, Buffer.byteLength(line)]);
+          }
+        } finally {
+          if (fd !== null) { try { fs.closeSync(fd); } catch { /* already closed */ } }
+        }
         for (const sp of applied.dead) {
           if (sp.startSid && sp.endSid) {
             st.graves.push({ id: idOfSpan(sp), startSid: sp.startSid, endSid: sp.endSid, at: Date.now() });
@@ -5541,7 +5697,7 @@ function indexNodeViews(st: CwlState): IndexNodeView[] {
         }
         st.graves = st.graves.slice(-GRAVE_MAX);
         st.spans = st.spans.filter((s) => !applied.dead.includes(s));
-        debugLog(cf, `SPANS pruned: ${applied.dead.length} span(s) that can never apply again — endpoints gone, or contained in another span (${st.spans.length} left, ${st.graves.length} still recoverable by id from the transcript)`);
+        debugLog(cf, `SPANS pruned: ${applied.dead.length} span(s) that can never apply again — endpoints gone, or contained in another span (${st.spans.length} left, ${st.bodies.size} bodie(s) preserved on disk, ${st.graves.length} still recoverable by id from the transcript)`);
       }
       // A partial overlap leaves both spans applied on purpose (dropping one would
       // bring back what only it covers), but the shared messages are then inside
