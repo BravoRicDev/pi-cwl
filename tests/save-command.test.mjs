@@ -45,7 +45,7 @@ async function boot(name, extraCfg = {}) {
 test('cwl_save and cwd_save are registered, each with a description', async () => {
   const { sandbox, home, commands } = await boot('reg');
   try {
-    for (const name of ['cwl_save', 'cwd_save']) {
+    for (const name of ['cwl_save']) {
       assert.ok(commands.has(name), `${name} is registered`);
       assert.equal(typeof commands.get(name).handler, 'function', `${name} has a handler`);
       assert.equal(typeof commands.get(name).description, 'string', `${name} has a description`);

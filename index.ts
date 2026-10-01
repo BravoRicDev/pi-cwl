@@ -6737,11 +6737,6 @@ function indexNodeViews(st: CwlState): IndexNodeView[] {
     handler: saveHandler,
   });
 
-  pi.registerCommand('cwd_save', {
-    description: t('cmdSaveDesc')(),
-    handler: saveHandler,
-  });
-
   pi.on('session_shutdown', async (_event, ctx) => {
     const key = sessionKey(ctx);
     const st = getState(key);
