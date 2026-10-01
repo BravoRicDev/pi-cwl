@@ -153,6 +153,10 @@ type CwlMessages = {
   statusTopics: (n: number, names: string) => string;
   /** Ids of the nodes that are NOT topics (the pit, the buffer): the two an agent needs most. */
   statusIds: (ids: string) => string;
+  /** #1 — the leaf ids of the buffer and of the young nodes, only when explicitly asked. */
+  statusLeafIds: (ids: string) => string;
+  statusLooseIds: (ids: string) => string;
+  statusLeafIdsHint: string;
   /** A merge that would free less than it costs: refused, with the numbers said. */
   oldTooSmall: (leaves: number, microChars: number, needChars: number) => string;
   /** The index shape in one line: the TUI widget and `cwl_status` show the same one. */
@@ -335,6 +339,9 @@ const I18N: Record<Lang, CwlMessages> = {
     statusSpans: (n) => `Compressed spans held: ${n}`,
     statusTopics: (n, names) => `Topics (${n}): ${names}`,
     statusIds: (ids) => `Node ids: ${ids}`,
+    statusLeafIds: (ids) => `Leaf ids: ${ids}`,
+    statusLooseIds: (ids) => `Loose leaves: ${ids}`,
+    statusLeafIdsHint: 'Also list the LEAF ids of the buffer and of the young nodes, plus the loose leaves. Off by default: cwl_status is called often and the buffer alone can hold fourteen leaves, while the ids are one cwl_map away.',
     oldTopicLine: (id, name, shape, taste) => `- ${id} \u00b7 TOPIC "${name}": ${shape} \u2014 ${taste}`,
     oldTooSmall: (leaves, microChars, needChars) =>
       `\n\nNothing was recorded: the ${leaves} leaf/leaves that would leave the context hold ${microChars} characters, and a merge must free at least ${needChars}. A merge COSTS a synthesis: the pit's summary is rewritten, so what leaves has to be worth more than what replaces it. Compress more first, or merge when the nodes are full.`,
@@ -555,6 +562,9 @@ const I18N: Record<Lang, CwlMessages> = {
     statusSpans: (n) => `Span di compressione tenuti: ${n}`,
     statusTopics: (n, names) => `Topic (${n}): ${names}`,
     statusIds: (ids) => `Id dei nodi: ${ids}`,
+    statusLeafIds: (ids) => `Id delle foglie: ${ids}`,
+    statusLooseIds: (ids) => `Foglie sciolte: ${ids}`,
+    statusLeafIdsHint: 'Elenca anche gli ID delle FOGLIE del buffer e dei nodi giovani, piu\' le foglie sciolte. Spento di default: cwl_status viene chiamato spesso e il solo buffer puo\' tenere quattordici foglie, mentre gli id sono a un cwl_map di distanza.',
     oldTopicLine: (id, name, shape, taste) => `- ${id} \u00b7 TOPIC "${name}": ${shape} \u2014 ${taste}`,
     oldTooSmall: (leaves, microChars, needChars) =>
       `\n\nNon e\' stato registrato niente: le ${leaves} foglia/e che uscirebbero dal contesto tengono ${microChars} caratteri, e un accorpamento deve liberarne almeno ${needChars}. Un accorpamento COSTA una sintesi: la sintesi del pozzo viene riscritta, quindi cio\' che esce deve valere piu\' di cio\' che lo sostituisce. Comprimi altro prima, o accorpa quando i nodi sono pieni.`,
@@ -3386,8 +3396,10 @@ function indexNodeViews(st: CwlState): IndexNodeView[] {
     label: 'CWL Status',
     description: t('params').statusDesc,
     promptSnippet: t('snippets').status,
-    parameters: Type.Object({}),
-    async execute(_toolCallId, _params, _signal, _onUpdate, ctx) {
+    parameters: Type.Object({
+      leafIds: Type.Optional(Type.Boolean({ description: t('statusLeafIdsHint') })),
+    }),
+    async execute(_toolCallId, params, _signal, _onUpdate, ctx) {
       const key = sessionKey(ctx);
       const st = getState(key);
       const cf = getConfig(key);
@@ -3429,6 +3441,23 @@ function indexNodeViews(st: CwlState): IndexNodeView[] {
       const bufferNode = st.nodes.length > 0 ? st.nodes[st.nodes.length - 1] : null;
       if (bufferNode) nodeIds.push(`${bufferNode.id} (buffer)`);
       if (nodeIds.length > 0) lines.push(t('statusIds')(nodeIds.join(', ')));
+      // #1 — THE LEAF IDS, only when asked. `cwl_status` is called often and the ids are the
+      // part of it that grows with the session: the buffer alone can hold fourteen leaves,
+      // and every one of them is a line the caller may never read. Off by default, so every
+      // existing caller pays exactly what it paid before.
+      if (params.leafIds === true) {
+        const young = st.nodes.filter((nd) => !nd.description);
+        const shown = young.map((nd) => `${nd.id}: ${nd.leaves.join(' ')}`);
+        if (shown.length > 0) lines.push(t('statusLeafIds')(shown.join(' | ')));
+        // The loose leaves are the ones with no owner at all: they are the newest material
+        // and the easiest to lose track of, so they get their own line.
+        const owned = new Set(young.flatMap((nd) => nd.leaves));
+        const loose = [...st.spans]
+          .sort((a, b) => a.at - b.at)
+          .map((s) => idOfSpan(s))
+          .filter((id) => !owned.has(id) && !st.nodes.some((nd) => nd.leaves.includes(id)));
+        if (loose.length > 0) lines.push(t('statusLooseIds')(loose.join(' ')));
+      }
       if (st.unlocatable > 0) {
         lines.push(t('statusUnlocatable')(st.unlocatable));
       }

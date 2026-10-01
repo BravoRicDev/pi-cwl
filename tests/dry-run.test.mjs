@@ -15,6 +15,9 @@
  *     to still be there.
  *  4. pagination whose DEFAULT truncates would silently change what every existing caller
  *     sees. The default must return everything, and `total` must always be the real total.
+ *  5. leaf ids in `cwl_status` must stay OFF by default: that tool is called often and the ids
+ *     are the part of it that grows with the session, so a default that lists them makes every
+ *     caller pay for a line it may never read.
  */
 import assert from 'node:assert/strict';
 import test from 'node:test';
@@ -284,6 +287,27 @@ test('cwl_pending names the pit and says which operation applies to it', async (
     const after = await call(tools, 'cwl_pending', {}, ctx);
     assert.ok(after.details.pit.length > 0, 'the pit is not named, so an agent cannot tell where its leaves are');
     assert.match(after.content[0].text, /pit: true/, 'the answer does not say which operation applies to the pit');
+  } finally {
+    home.restore();
+  }
+});
+
+// ---------------------------------------------------------------------------
+// #1 — the leaf ids in cwl_status are OPT-IN
+// ---------------------------------------------------------------------------
+
+test('cwl_status lists the leaf ids only when asked', async () => {
+  const { sandbox, home, tools, hooks, ctx } = await boot();
+  try {
+    const ids = await makeLeaves(sandbox, tools, hooks, ctx, 6);
+
+    const off = await call(tools, 'cwl_status', {}, ctx);
+    assert.equal(/Leaf ids:/.test(off.content[0].text), false, 'the leaf ids appear by default: every caller pays for them');
+
+    const on = await call(tools, 'cwl_status', { leafIds: true }, ctx);
+    assert.match(on.content[0].text, /Leaf ids:/, 'the option did not add the leaf ids');
+    assert.ok(ids.some((id) => on.content[0].text.includes(id)), 'no leaf id was listed, so the line is empty');
+    assert.ok(on.content[0].text.length > off.content[0].text.length, 'the option added nothing');
   } finally {
     home.restore();
   }
