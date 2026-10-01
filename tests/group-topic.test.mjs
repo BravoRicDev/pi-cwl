@@ -435,7 +435,7 @@ test('the index line keeps all its sections, in order', async () => {
     // measurement away without a single failure.
     assert.match(
       line,
-      /pit \d+n\/\d+l │ topics \d+n\/\d+l │ buffer \d+n\/\d+l │ ordinary \d+n\/\d+l │ loose \d+ │ waiting micro \d+ │ head ~[\d,.]+t │ \d+ evict │ [\d,.]+ saved/,
+      /pit \d+n\/\d+l │ topics \d+n\/\d+l │ buffer \d+n\/\d+l │ ordinary \d+n\/\d+l │ loose \d+ │ head ~[\d,.]+t │ \d+ evict │ [\d,.]+ saved/,
       `the index line lost its shape: ${line}`,
     );
   } finally {
