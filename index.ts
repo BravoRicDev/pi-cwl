@@ -137,7 +137,7 @@ type CwlMessages = {
    */
   inheritedHead: (name: string, from: string, leaves: number, nodes: number) => string;
   episodeClosed: (type: string, name: string) => string;
-  statusMeasured: (tokens: string) => string;
+  statusMeasured: (tokens: string, extra?: string) => string;
   statusActive: (list: string) => string;
   statusStripped: (list: string) => string;
   /** UI notice when falling back to the global reasoning strip. */
@@ -365,7 +365,7 @@ const I18N: Record<Lang, CwlMessages> = {
       `Do NOT go looking on the filesystem or in old session logs for what this memory already says. ` +
       `An archived leaf is never compressed nor pruned again: for those leaves the summary is the ONLY copy that exists.`,
     episodeClosed: (type, name) => `Episode ${type} "${name}" closed.`,
-    statusMeasured: (tokens) => `Measured context tokens: ~${tokens}`,
+    statusMeasured: (tokens, extra) => `Measured context tokens: ~${tokens}${extra ? ` (${extra})` : ''}`,
     statusActive: (list) => `Active: ${list}`,
     statusStripped: (list) => `Stripped: ${list}`,
     evictionNotice: (dropped, truncated, from, to) => `CWL: ${dropped} evicted, ${truncated} reduced (${from} -> ${to} tokens).`,
@@ -623,7 +623,7 @@ const I18N: Record<Lang, CwlMessages> = {
       `NON andare a cercare nel filesystem o nei vecchi log di sessione cio' che questa memoria gia' dice. ` +
       `Una foglia archiviata non viene piu' compressa ne' potato: per quelle foglie il riassunto e' l'UNICA copia che esiste.`,
     episodeClosed: (type, name) => `Episodio ${type} "${name}" chiuso.`,
-    statusMeasured: (tokens) => `Token contesto misurati: ~${tokens}`,
+    statusMeasured: (tokens, extra) => `Token contesto misurati: ~${tokens}${extra ? ` (${extra})` : ''}`,
     statusActive: (list) => `Attivi: ${list}`,
     statusStripped: (list) => `Stripped: ${list}`,
     evictionNotice: (dropped, truncated, from, to) => `CWL: ${dropped} evictati, ${truncated} ridotti (${from} -> ${to} token).`,
@@ -1085,18 +1085,24 @@ function debugLog(cfg: CwlConfig, msg: string) {
 }
 
 // ---------------------------------------------------------------------------
-// Token estimation (approximate, no tokenizer call)
+// Token estimation (dynamic calibration based on provider usage)
 // ---------------------------------------------------------------------------
 
-/** Token estimate: ~4 characters per token for English prose; it overestimates for code. */
-function estimateTokens(text: string): number {
-  return Math.ceil(text.length / 4);
+/** Default char-to-token ratio (4.0 preserves byte-length fixture math until real usage arrives). */
+const DEFAULT_CHAR_TOKEN_RATIO = 4.0;
+const MIN_CHAR_TOKEN_RATIO = 1.8;
+const MAX_CHAR_TOKEN_RATIO = 5.0;
+
+/** Token estimate: characters divided by char-to-token ratio (default 3.2, or dynamically calibrated). */
+function estimateTokens(text: string, ratio: number = DEFAULT_CHAR_TOKEN_RATIO): number {
+  const r = typeof ratio === 'number' && Number.isFinite(ratio) && ratio > 0 ? ratio : DEFAULT_CHAR_TOKEN_RATIO;
+  return Math.ceil(text.length / r);
 }
 
-function estimateMessageTokens(msg: unknown): number {
+function estimateMessageTokens(msg: unknown, ratio: number = DEFAULT_CHAR_TOKEN_RATIO): number {
   try {
     const s = JSON.stringify(msg);
-    return estimateTokens(s);
+    return estimateTokens(s, ratio);
   } catch {
     return 0;
   }
@@ -1346,6 +1352,23 @@ interface CwlState {
    */
   turnsSinceCompress: number;
   /**
+   * Dynamically calibrated char-to-token ratio, learned from assistant usage reports.
+   * Defaults to 3.2 (realistic for Italian prose, code and JSON).
+   */
+  charTokenRatio: number;
+  /**
+   * Incompressible system overhead (System Prompt + Tool JSON Schemas) in tokens,
+   * derived from `promptTokens - estimatedMessageTokens` when an assistant usage is observed.
+   */
+  systemOverheadTokens: number;
+  /**
+   * Last total context tokens reported by provider/Pi (promptTokens + output or getContextUsage).
+   */
+  providerContextTokens: number;
+  /** Calibration baseline bookkeeping for Δchars / Δtokens calculation. */
+  lastCalibChars: number;
+  lastCalibTokens: number;
+  /**
    * The NAME of this memory, so a memory can be found and adopted by a human-readable name
    * instead of a hash of a session path. Optional: a state written before names existed simply
    * has none, and `defaultMemoryName` derives one when it is saved.
@@ -1422,6 +1445,11 @@ function newState(): CwlState {
     lastUsageTs: 0,
     lastEvent: 'none',
     turnsSinceCompress: -1,
+    charTokenRatio: DEFAULT_CHAR_TOKEN_RATIO,
+    systemOverheadTokens: 0,
+    providerContextTokens: 0,
+    lastCalibChars: 0,
+    lastCalibTokens: 0,
     bodies: new Map(),
     rangeTokens: 0,
     // 0 = every span is loose. A state restored from disk clamps it (see
@@ -1542,6 +1570,9 @@ interface PersistedState {
   gateWithheld?: string;
   /** Optional on load: a state written before this field existed has none. */
   looseFrom?: number;
+  charTokenRatio?: number;
+  systemOverheadTokens?: number;
+  providerContextTokens?: number;
 }
 
 const STATE_VERSION = 1;
@@ -1682,6 +1713,9 @@ function saveState(key: string, st: CwlState): void {
       gateAttempts: st.gateAttempts,
       lastGateViolationTurn: st.lastGateViolationTurn,
       gateWithheld: st.gateWithheld,
+      charTokenRatio: st.charTokenRatio,
+      systemOverheadTokens: st.systemOverheadTokens,
+      providerContextTokens: st.providerContextTokens,
     };
     // Atomic write: a crash mid-write must not leave a truncated file that then
     // fails to parse on resume and silently loses the whole state.
@@ -1721,6 +1755,15 @@ function loadPersistedState(key: string): CwlState | null {
     st.totalEvictedTokens = typeof data.totalEvictedTokens === 'number' ? data.totalEvictedTokens : 0;
     st.lastEvictionTurn = typeof data.lastEvictionTurn === 'number' ? data.lastEvictionTurn : -1;
     st.lastMeasuredTokens = typeof data.lastMeasuredTokens === 'number' ? data.lastMeasuredTokens : 0;
+    st.charTokenRatio = typeof data.charTokenRatio === 'number' && Number.isFinite(data.charTokenRatio) && data.charTokenRatio >= MIN_CHAR_TOKEN_RATIO && data.charTokenRatio <= MAX_CHAR_TOKEN_RATIO
+      ? data.charTokenRatio
+      : DEFAULT_CHAR_TOKEN_RATIO;
+    st.systemOverheadTokens = typeof data.systemOverheadTokens === 'number' && Number.isFinite(data.systemOverheadTokens) && data.systemOverheadTokens >= 0
+      ? data.systemOverheadTokens
+      : 0;
+    st.providerContextTokens = typeof data.providerContextTokens === 'number' && Number.isFinite(data.providerContextTokens) && data.providerContextTokens >= 0
+      ? data.providerContextTokens
+      : 0;
     st.turns = typeof data.turns === 'number' ? data.turns : 0;
     st.memoryName = typeof data.name === 'string' && data.name ? data.name : undefined;
     st.importedFrom = typeof data.importedFrom === 'string' && data.importedFrom ? data.importedFrom : undefined;
@@ -2288,6 +2331,7 @@ function compressibleRange(
   messages: AgentMessage[],
   spans: CompressedSpan[],
   protectedTurns: number,
+  ratio: number = DEFAULT_CHAR_TOKEN_RATIO,
 ): { startHash: string; endHash: string; tokens: number } | null {
   const floor = protectedFromIndex(messages, protectedTurns);
 
@@ -2313,7 +2357,7 @@ function compressibleRange(
     if (!textOf(messages[i]).trim()) continue;
     if (first < 0) first = i;
     last = i;
-    tokens += estimateMessageTokens(messages[i]);
+    tokens += estimateMessageTokens(messages[i], ratio);
   }
   if (first < 0 || last <= first) return null;
   return {
@@ -4114,9 +4158,15 @@ function indexNodeViews(st: CwlState): IndexNodeView[] {
       const closed = g.recoverable();
       const stripped = closed.filter(e => e.level !== 'none');
 
+      const extra = st.systemOverheadTokens > 0
+        ? (LANG === 'it'
+            ? `overhead fisso: ~${st.systemOverheadTokens.toLocaleString()}, ratio: ${st.charTokenRatio.toFixed(1)} c/t`
+            : `fixed overhead: ~${st.systemOverheadTokens.toLocaleString()}, ratio: ${st.charTokenRatio.toFixed(1)} c/t`)
+        : undefined;
+
       const lines = [
         t('statusHeader')(cf.tokenBudget.toLocaleString(), (cf.thresholdRatio * 100).toFixed(0)),
-        t('statusMeasured')(st.lastMeasuredTokens.toLocaleString()),
+        t('statusMeasured')(st.lastMeasuredTokens.toLocaleString(), extra),
         t('statusEpisodes')(g.count, active.length, closed.length, stripped.length),
         t('statusEvictions')(st.totalEvictions, st.totalEvictedTokens.toLocaleString()),
       ];
@@ -5473,12 +5523,49 @@ function indexNodeViews(st: CwlState): IndexNodeView[] {
       st.lastUsageTs = usage.ts;
       const prefix = usage.cacheRead + usage.cacheWrite + usage.input;
       const hit = prefix > 0 ? Math.round((usage.cacheRead / prefix) * 100) : 0;
+      st.providerContextTokens = prefix + usage.output;
+
+      // Online calibration of charTokenRatio and systemOverheadTokens based on real provider numbers
+      let totalMsgChars = 0;
+      for (const m of messages) {
+        try { totalMsgChars += JSON.stringify(m).length; } catch { /* skip */ }
+      }
+
+      if (prefix > 0 && totalMsgChars > 0) {
+        if (st.lastCalibTokens > 0 && prefix > st.lastCalibTokens && totalMsgChars > st.lastCalibChars) {
+          const deltaChars = totalMsgChars - st.lastCalibChars;
+          const deltaTokens = prefix - st.lastCalibTokens;
+          if (deltaTokens >= 300) {
+            const measuredRatio = deltaChars / deltaTokens;
+            if (measuredRatio >= MIN_CHAR_TOKEN_RATIO && measuredRatio <= MAX_CHAR_TOKEN_RATIO) {
+              st.charTokenRatio = Math.round((0.7 * st.charTokenRatio + 0.3 * measuredRatio) * 100) / 100;
+            }
+            st.lastCalibChars = totalMsgChars;
+            st.lastCalibTokens = prefix;
+          }
+        } else if (st.lastCalibTokens === 0) {
+          st.lastCalibChars = totalMsgChars;
+          st.lastCalibTokens = prefix;
+        }
+
+        const estimatedMsgTokens = Math.ceil(totalMsgChars / st.charTokenRatio);
+        st.systemOverheadTokens = Math.max(0, prefix - estimatedMsgTokens);
+      }
+
       debugLog(cf,
         `CACHE read=${usage.cacheRead} write=${usage.cacheWrite} input=${usage.input}`
         + ` output=${usage.output} hit=${hit}% after=${st.lastEvent}`
-        + ` since-compress=${st.turnsSinceCompress}`);
+        + ` since-compress=${st.turnsSinceCompress}`
+        + ` ratio=${st.charTokenRatio.toFixed(2)} overhead=${st.systemOverheadTokens}t`);
       // Charged once: the event explains THIS row and no other.
       st.lastEvent = 'none';
+    }
+
+    const ctxUsage = typeof (ctx as unknown as { getContextUsage?: () => { tokens: number; contextWindow: number; percent: number } }).getContextUsage === 'function'
+      ? (ctx as unknown as { getContextUsage: () => { tokens: number; contextWindow: number; percent: number } }).getContextUsage()
+      : null;
+    if (ctxUsage && typeof ctxUsage.tokens === 'number' && ctxUsage.tokens > 0) {
+      st.providerContextTokens = ctxUsage.tokens;
     }
 
     // Diagnostic, and free: it only reads a field, it does not hash. It answers
@@ -5515,9 +5602,11 @@ function indexNodeViews(st: CwlState): IndexNodeView[] {
     // 1. Measure the real context
     let currentTokens = 0;
     for (const m of messages) {
-      currentTokens += estimateMessageTokens(m);
+      currentTokens += estimateMessageTokens(m, st.charTokenRatio);
     }
-    st.lastMeasuredTokens = currentTokens;
+    st.lastMeasuredTokens = st.providerContextTokens > 0
+      ? Math.max(currentTokens, st.providerContextTokens)
+      : currentTokens + st.systemOverheadTokens;
 
     const trigger = cf.tokenBudget * cf.thresholdRatio;
 
@@ -5627,7 +5716,10 @@ function indexNodeViews(st: CwlState): IndexNodeView[] {
     };
 
     const finish = (list: AgentMessage[]): { messages: AgentMessage[] } => {
-      const after = list.reduce((s: number, m: AgentMessage) => s + estimateMessageTokens(m), 0);
+      const msgTokens = list.reduce((s: number, m: AgentMessage) => s + estimateMessageTokens(m, st.charTokenRatio), 0);
+      const after = st.providerContextTokens > 0
+        ? Math.max(msgTokens, st.providerContextTokens)
+        : msgTokens + st.systemOverheadTokens;
       st.lastMeasuredTokens = after;
       persistIfUsed();
       if (after <= trigger) {
@@ -5667,22 +5759,15 @@ function indexNodeViews(st: CwlState): IndexNodeView[] {
       });
       const startH = st.rangeStartHash;
       const endH = st.rangeEndHash;
-      // The stored pair IS the actionable signal: `storeRange` recomputes it in THIS
-      // hook, on the list the agent is looking at, and `cwl_compress_range` refuses
-      // exactly when it is null. A second check "are the endpoints still in the
-      // list?" was added here and REMOVED: it hashed the list AFTER other passes had
-      // rewritten message text, so it answered "no" for ranges that were perfectly
-      // compressible. MEASURED in a live session: `RANGE 230465aa40ce..7eefbf7783e6
-      // (~73584t)` in the log, the very same turn `GATE withheld: the stored range
-      // endpoints are no longer in the list`, and compression stopped for hours
-      // while the warning blamed the agent. An address is a hash of the TEXT: any
-      // rewrite between the two reads makes the comparison lie.
-      const canCompress = startH !== null && endH !== null;
+      // Option B: canCompress is true only if start/end exist AND there is actual material (rangeTokens > 0)
+      const canCompress = startH !== null && endH !== null && st.rangeTokens > 0;
       if (!canClose && !canCompress) {
         const why =
           activeEps.length > 0
             ? 'the only open episode(s) begin at the end of the list: closing them frees nothing'
-            : 'no episode is open and no range is stored';
+            : (st.systemOverheadTokens > 0 && msgTokens <= trigger
+              ? `context ${after}t is over trigger ${Math.round(trigger)}t due to incompressible system overhead (~${st.systemOverheadTokens}t): history (~${msgTokens}t) is within limits`
+              : 'no episode is open and no compressible range is available (remaining history is inside safety floor or already compressed)');
         if (st.gateWithheld !== why) {
           st.gateWithheld = why;
           debugLog(cf, `GATE withheld: ${why} — the demand would ask for something no call can do`);
@@ -5912,7 +5997,7 @@ function indexNodeViews(st: CwlState): IndexNodeView[] {
         // resolve, or `covered` would be empty and the same region would be
         // offered again.
         const protTurns = st.forceAllNext ? 0 : cf.protectedTurns;
-        const nextRange = compressibleRange(messages, st.spans, protTurns);
+        const nextRange = compressibleRange(messages, st.spans, protTurns, st.charTokenRatio);
         storeRange(st, cf, nextRange, messages);
         rangeStoredBySpans = true;
 
@@ -5927,7 +6012,7 @@ function indexNodeViews(st: CwlState): IndexNodeView[] {
         // `CONTEXT`, ZERO `no safe candidate` — 133k tokens against a 68k trigger,
         // one episode with evictable content, and the extension did nothing at
         // all. Returning is right only when the spans ALREADY did the job.
-        const afterSpans = applied.kept.reduce((s: number, m: AgentMessage) => s + estimateMessageTokens(m), 0);
+        const afterSpans = applied.kept.reduce((s: number, m: AgentMessage) => s + estimateMessageTokens(m, st.charTokenRatio), 0);
         if (afterSpans <= trigger) return finish(applied.kept);
         debugLog(cf, `SPANS applied (${afterSpans}t) still above trigger ${Math.round(trigger)}t: the episode pass and the fallback still run`);
         // Fall through on the COMPRESSED list, not the original one: `applySpans`
@@ -5944,27 +6029,30 @@ function indexNodeViews(st: CwlState): IndexNodeView[] {
         // end. Either way `kept` IS the list to show — and the measured tokens must
         // follow it, or the trigger check below reads the pre-injection count.
         messages = applied.kept;
-        currentTokens = applied.kept.reduce((s: number, m: AgentMessage) => s + estimateMessageTokens(m), 0);
+        currentTokens = applied.kept.reduce((s: number, m: AgentMessage) => s + estimateMessageTokens(m, st.charTokenRatio), 0);
       }
     }
 
+    const totalContext = st.lastMeasuredTokens;
     if (currentTokens <= trigger) {
       if (st.forceAllNext && !rangeStoredBySpans) {
-        const range = compressibleRange(messages, st.spans, 0);
+        const range = compressibleRange(messages, st.spans, 0, st.charTokenRatio);
         storeRange(st, cf, range, messages, currentTokens, trigger);
       }
-      // Under budget: nothing to compact and nothing to ask for. This is also the
-      // ONLY way the gate closes — by effect, never by a confirmation token.
-      st.overBudgetSince = -1;
-      st.gateArmedTurn = -1;
-      debugLog(cf, `CONTEXT ${currentTokens}t under threshold ${Math.round(trigger)}t: no eviction`);
-      // The demand from the previous call must still be removed even here.
-      // AND the state is persisted even here: this exit does NOT go through `finish`, which
-      // is where the other save lives, and by now the turn may have pruned spans (writing
-      // graveyards) or resolved one for the first time (writing stable ids). A save that
-      // depends on WHICH exit the turn took is a save that can be skipped in silence —
-      // measured: the file kept the pre-prune snapshot while the memory had the grave, so
-      // `cwl_open` could not find what it had just written.
+      if (totalContext > trigger && st.systemOverheadTokens > 0) {
+        // Option B: total context exceeds trigger only because of incompressible system overhead.
+        // History is within limits: nothing to evict, and gate must be withheld.
+        const why = `context ${totalContext}t is over trigger ${Math.round(trigger)}t due to incompressible system overhead (~${st.systemOverheadTokens}t): history (~${currentTokens}t) is within limits`;
+        if (st.gateWithheld !== why) {
+          st.gateWithheld = why;
+          debugLog(cf, `GATE withheld: ${why}`);
+        }
+      } else {
+        // Truly under budget: nothing to compact and nothing to ask for.
+        st.overBudgetSince = -1;
+        st.gateArmedTurn = -1;
+        debugLog(cf, `CONTEXT ${currentTokens}t under threshold ${Math.round(trigger)}t: no eviction`);
+      }
       persistIfUsed();
       return (droppedGate || st.forceAllNext || demand !== null) ? { messages } : undefined;
     }
@@ -5977,7 +6065,7 @@ function indexNodeViews(st: CwlState): IndexNodeView[] {
     // Addresses of the largest range the agent may ask to compress. Recomputed
     // here because this hook is the only place that sees the real message list.
     if (!rangeStoredBySpans) {
-      const range = compressibleRange(messages, st.spans, protTurns);
+      const range = compressibleRange(messages, st.spans, protTurns, st.charTokenRatio);
       storeRange(st, cf, range, messages, currentTokens, trigger);
     }
 
