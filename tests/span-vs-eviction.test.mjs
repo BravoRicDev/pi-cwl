@@ -5,10 +5,10 @@
  * `if (st.spans.length > 0)`, when at least one span applies
  * (`applied.applied > 0`) the hook renews the range address and does
  * `return finish(applied.kept)`. Everything below — the safety
- * floor, `reasoningFallback` (~2493) and `runEvictionPass` (~2524) — becomes
+ * floor and `runEvictionPass` (~2524) — becomes
  * UNREACHABLE. And `applied.applied > 0` is true on EVERY turn as long as one span
  * resolves, because the span must be re-applied every time: so ONE SPAN IN THE STATE
- * SWITCHES OFF EVICTION AND FALLBACK FOR THE REST OF THE SESSION.
+ * SWITCHES OFF EVICTION FOR THE REST OF THE SESSION.
  *
  * The evidence was in the log of a real session (after the 2026-09-30 reload):
  *   `SPANS re-applied: 3, nothing new to count`
@@ -135,7 +135,7 @@ test('with a live span that re-applies, the evictable episode is still evicted',
     assert.ok(
       !contains(out, 'INSIDE-1') || !contains(out, 'INSIDE-2'),
       'the context is above the trigger with an evictable episode, the span re-applied, and the content of ' +
-      'the episode is still there: the span branch returned BEFORE `runEvictionPass` and `reasoningFallback`, ' +
+      'the episode is still there: the span branch returned BEFORE `runEvictionPass`, ' +
       'so a single span in the state switches off eviction for the rest of the session',
     );
   } finally { home.restore(); sandbox.cleanup(); }

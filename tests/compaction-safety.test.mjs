@@ -1,16 +1,7 @@
 /**
- * Level A: the safety net that really closes the context.
- *
- * Why it exists. Cutting the reasoning blocks ran ONLY when the episode graph
- * was EMPTY (`if (g.isEmpty)`). Measured: in a real context the assistant's
- * thinking blocks are 43% of the content (~280k tokens out of
- * 650k). So, as soon as the agent opened ONE episode, for the rest of the session
- * the biggest and safest part to remove became untouchable.
- *
- * The two regressions below are complementary:
- *
- *  1. with an episode present, the thinking OUTSIDE an episode must disappear;
- *  2. the last N user turns must NEVER be touched.
+ * Historical reasoning stays intact until explicit block compression.
+ * No global fallback may rewrite messages outside annotated episodes,
+ * even above budget. The range tool must remain available independently.
  */
 import assert from 'node:assert/strict';
 import test from 'node:test';
@@ -44,7 +35,7 @@ const thinking = (tag) => ({
 });
 const hasThinking = (m) => Array.isArray(m?.content) && m.content.some((b) => b?.type === 'thinking');
 
-test('with an episode present, the reasoning blocks OUTSIDE an episode are removed', async () => {
+test('with an episode present, outside reasoning remains unchanged without a global fallback', async () => {
   const { sandbox, home, tools, hooks, ctx } = await boot(baseConfig());
   try {
     // An episode exists: it is exactly the condition that used to switch the net off.
@@ -64,8 +55,9 @@ test('with an episode present, the reasoning blocks OUTSIDE an episode are remov
 
     const res = await hooks.get('context')({ messages }, ctx);
     const out = (res && res.messages) || messages;
-    assert.equal(out.filter(hasThinking).length, 0,
-      'the outside-episode thinking survived: the safety net does not run with an episode present');
+    assert.equal(out.filter(hasThinking).length, 3,
+      'a global fallback rewrote reasoning outside the episode');
+    assert.deepEqual(out.filter(hasThinking), messages.filter(hasThinking));
   } finally { home.restore(); sandbox.cleanup(); }
 });
 
@@ -83,8 +75,8 @@ test('the safety window: the last N user turns are not touched', async () => {
     const out = (res && res.messages) || messages;
 
     const survivors = out.filter(hasThinking).map((m) => m.content[0].thinking.slice(0, m.content[0].thinking.indexOf(':')));
-    // The first turns (outside the window) get cleaned up; the last N do not.
-    assert.ok(!survivors.includes('t1'), 'the oldest turn had to be cleaned up');
+    // Neither old nor protected turns are rewritten by a global fallback.
+    assert.ok(survivors.includes('t1'), 'old reasoning must remain intact until block compression');
     for (let i = 12 - N + 1; i <= 12; i++) {
       assert.ok(survivors.includes(`t${i}`), `turn ${i} is inside the safety window and had not to be touched`);
     }
@@ -92,7 +84,7 @@ test('the safety window: the last N user turns are not touched', async () => {
   } finally { home.restore(); sandbox.cleanup(); }
 });
 
-test('without a window (protectedTurns=0) no thinking is left', async () => {
+test('without a window, reasoning remains intact until explicit block compression', async () => {
   const { sandbox, home, hooks, ctx } = await boot(baseConfig({ protectedTurns: 0 }));
   try {
     const messages = [];
@@ -102,12 +94,13 @@ test('without a window (protectedTurns=0) no thinking is left', async () => {
     }
     const res = await hooks.get('context')({ messages }, ctx);
     const out = (res && res.messages) || messages;
-    assert.equal(out.filter(hasThinking).length, 0);
+    assert.equal(out.filter(hasThinking).length, 12);
+    assert.deepEqual(out, messages);
   } finally { home.restore(); sandbox.cleanup(); }
 });
 
 test('a conversation shorter than the window releases ONLY the oldest part', async () => {
-  const { sandbox, home, hooks, ctx } = await boot(baseConfig({ protectedTurns: 10 }));
+  const { sandbox, home, tools, hooks, ctx } = await boot(baseConfig({ protectedTurns: 10 }));
   try {
     // 3 turns, window of 10: the window would cover EVERYTHING. But a window that
     // covers everything is no longer a window: it is the reason the context
@@ -126,8 +119,14 @@ test('a conversation shorter than the window releases ONLY the oldest part', asy
     const res = await hooks.get('context')({ messages }, ctx);
     const out = (res && res.messages) || messages;
     const left = out.filter(hasThinking).length;
-    assert.ok(left < 3, 'the oldest part had to be released: without this the context never closes');
-    assert.ok(left >= 1, 'the most recent turn must not be touched');
+    assert.equal(left, 3, 'the hook must not rewrite historical thinking');
+    const compressed = await tools.get('cwl_compress_range').execute('compress-old', {
+      summary: 'Historical work summary', micro: 'Earlier work, available in full through the leaf.',
+    }, undefined, undefined, ctx);
+    assert.equal(compressed.details.ok, true, 'block compression must remain available without fallback');
+    const applied = await hooks.get('context')({ messages }, ctx);
+    assert.ok((applied?.messages ?? messages).filter(hasThinking).length < 3,
+      'the explicit leaf must replace older reasoning');
     assert.equal(out.filter((m) => m.role === 'user').length, 3, 'the user turns are inviolable');
   } finally { home.restore(); sandbox.cleanup(); }
 });

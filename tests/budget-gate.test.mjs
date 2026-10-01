@@ -214,6 +214,12 @@ test('an episode that BEGINS at the end of the list is not worth closing, and th
     // the same defect one level down.
     assert.match(logOf(sandbox), /GATE withheld: the only open episode\(s\) begin at the end of the list/,
       'the withheld demand was not explained in the log');
+    // A demand that was never DELIVERED is not a failure of the agent. Before this
+    // check the attempt counter moved anyway — `turn_end` looked only at its own
+    // static predicate — and after three turns the gate gave up with "unanswered for
+    // 3 turns" on a request the agent had never seen.
+    assert.doesNotMatch(logOf(sandbox), /GATE dropped/,
+      'the gate gave up on a demand it never delivered');
   } finally { home.restore(); sandbox.cleanup(); }
 });
 

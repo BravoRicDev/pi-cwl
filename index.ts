@@ -133,7 +133,6 @@ type CwlMessages = {
   statusActive: (list: string) => string;
   statusStripped: (list: string) => string;
   /** UI notice when falling back to the global reasoning strip. */
-  fallbackNotice: (changed: number, from: number, to: number) => string;
   /** UI notice after an eviction pass. */
   evictionNotice: (dropped: number, truncated: number, from: string, to: string) => string;
   /** Strings of the cwl_compress tool. */
@@ -328,8 +327,6 @@ const I18N: Record<Lang, CwlMessages> = {
     statusMeasured: (tokens) => `Measured context tokens: ~${tokens}`,
     statusActive: (list) => `Active: ${list}`,
     statusStripped: (list) => `Stripped: ${list}`,
-    fallbackNotice: (changed, from, to) => `CWL: no episode annotated, reasoning blocks reduced in ${changed} messages ` +
-      `(${from} -> ${to} tokens). Use \`delimiter\` for graded eviction.`,
     evictionNotice: (dropped, truncated, from, to) => `CWL: ${dropped} evicted, ${truncated} reduced (${from} -> ${to} tokens).`,
     compressMissingParams: 'startHash, endHash and summary are all required.',
     compressRevoked: (start, end) => `Span ${start}..${end} restored to full text.`,
@@ -554,8 +551,6 @@ const I18N: Record<Lang, CwlMessages> = {
     statusMeasured: (tokens) => `Token contesto misurati: ~${tokens}`,
     statusActive: (list) => `Attivi: ${list}`,
     statusStripped: (list) => `Stripped: ${list}`,
-    fallbackNotice: (changed, from, to) => `CWL: nessun episodio annotato, ridotti i blocchi di reasoning in ${changed} messaggi ` +
-      `(${from} -> ${to} token). Usa \`delimiter\` per un'eviction graduata.`,
     evictionNotice: (dropped, truncated, from, to) => `CWL: ${dropped} evictati, ${truncated} ridotti (${from} -> ${to} token).`,
     compressMissingParams: 'startHash, endHash e summary sono tutti obbligatori.',
     compressRevoked: (start, end) => `Span ${start}..${end} ripristinato al testo integrale.`,
@@ -1211,6 +1206,13 @@ interface CwlState {
   /** Turn of the last failed gate, used for the cooldown. */
   lastGateViolationTurn: number;
   /**
+   * Whether the demand was APPENDED to the context in this turn. `turn_end` counts an
+   * attempt only when this is true: a turn where the demand was withheld is not a
+   * failure of the agent, and charging it as one is how the gate gave up on a request
+   * it had never delivered.
+   */
+  demandShown: boolean;
+  /**
    * Why the demand was withheld the last time it was impossible, or '' when the
    * last check found something doable. Not bookkeeping for its own sake: the
    * silence of a withheld demand proved nothing once, and a diagnosis died on it.
@@ -1287,6 +1289,7 @@ function newState(): CwlState {
     gateAttempts: 0,
     lastGateViolationTurn: -1,
     gateWithheld: '',
+    demandShown: false,
     rangeStartHash: null,
     rangeEndHash: null,
     lastUsageTs: 0,
@@ -2069,33 +2072,6 @@ function storeRange(
   debugLog(cf, `RANGE ${range
     ? `${range.startHash}..${range.endHash} (~${range.tokens}t)`
     : 'none'} | ${messages.length} msgs, ${tokens}t vs trigger ${Math.round(trig)}t, ${st.spans.length} span(s)`);
-}
-
-function globalReasoningStrip(
-  messages: AgentMessage[],
-  floor: number = messages.length,
-): { kept: AgentMessage[]; changed: number } | null {
-  const kept: AgentMessage[] = [];
-  let changed = 0;
-  for (let i = 0; i < messages.length; i++) {
-    const msg = messages[i];
-    // The safety window is never touched, whatever is inside it.
-    if (i >= floor) { kept.push(msg); continue; }
-    // SAFETY: read-only field probe (role/content); the union does not expose them.
-    const m = msg as unknown as RealMessage;
-    if (m.role === 'assistant' && Array.isArray(m.content)) {
-      const hasThinking = (m.content as RealContentBlock[]).some(
-        (b) => b && b.type === 'thinking',
-      );
-      if (hasThinking) {
-        changed++;
-        kept.push(stripToolResult(msg, 'reasoning'));
-        continue;
-      }
-    }
-    kept.push(msg);
-  }
-  return changed > 0 ? { kept, changed } : null;
 }
 
 /**
@@ -4858,7 +4834,7 @@ function indexNodeViews(st: CwlState): IndexNodeView[] {
     // number it is about.
     // `let`, not `const`: the span branch below REASSIGNS it to the COMPRESSED
     // list when the spans did not bring the context back under the trigger, so
-    // that the rest of the hook (trigger check, `reasoningFallback`,
+    // that the rest of the hook (trigger check, block compression,
     // `runEvictionPass`) runs on the list the agent will really see. Every
     // index-based decision below — the episode ranges and `safetyFloor` — is
     // resolved against whatever list this variable holds, so the two must never
@@ -5072,20 +5048,22 @@ function indexNodeViews(st: CwlState): IndexNodeView[] {
       });
       const startH = st.rangeStartHash;
       const endH = st.rangeEndHash;
-      let canCompress = false;
-      if (startH !== null && endH !== null) {
-        // SAFETY: `addressOf` is a pure function of the message; hashing the list
-        // is the same cost `locateSpans` already pays once per turn.
-        const addrs = new Set(list.map((m) => addressOf(m)));
-        canCompress = addrs.has(startH) && addrs.has(endH);
-      }
+      // The stored pair IS the actionable signal: `storeRange` recomputes it in THIS
+      // hook, on the list the agent is looking at, and `cwl_compress_range` refuses
+      // exactly when it is null. A second check "are the endpoints still in the
+      // list?" was added here and REMOVED: it hashed the list AFTER other passes had
+      // rewritten message text, so it answered "no" for ranges that were perfectly
+      // compressible. MEASURED in a live session: `RANGE 230465aa40ce..7eefbf7783e6
+      // (~73584t)` in the log, the very same turn `GATE withheld: the stored range
+      // endpoints are no longer in the list`, and compression stopped for hours
+      // while the warning blamed the agent. An address is a hash of the TEXT: any
+      // rewrite between the two reads makes the comparison lie.
+      const canCompress = startH !== null && endH !== null;
       if (!canClose && !canCompress) {
         const why =
           activeEps.length > 0
             ? 'the only open episode(s) begin at the end of the list: closing them frees nothing'
-            : startH !== null || endH !== null
-              ? 'the stored range endpoints are no longer in the list'
-              : 'no episode is open and no range is stored';
+            : 'no episode is open and no range is stored';
         if (st.gateWithheld !== why) {
           st.gateWithheld = why;
           debugLog(cf, `GATE withheld: ${why} — the demand would ask for something no call can do`);
@@ -5093,6 +5071,11 @@ function indexNodeViews(st: CwlState): IndexNodeView[] {
         return { messages: list };
       }
       st.gateWithheld = '';
+      // The demand is DELIVERED now, and that is the only thing that makes a turn
+      // count as an attempt: `turn_end` reads this flag. Without it the gate charged
+      // the agent for turns in which the request was never shown — measured: it gave
+      // up with "unanswered for 3 turns" right after a withheld turn.
+      st.demandShown = true;
       // SAFETY: Pi accepts the custom role in the context hook although the
       // AgentMessage union does not declare it; the extra keys are its contract.
       return {
@@ -5285,7 +5268,7 @@ function indexNodeViews(st: CwlState): IndexNodeView[] {
         // the hook off for good: `applied.applied > 0` is true on EVERY turn
         // while one span resolves (a span must be re-applied every time, or the
         // provider gets the uncompressed history back), so returning here made
-        // the trigger check, `reasoningFallback` and `runEvictionPass`
+        // the trigger check, block compression and `runEvictionPass`
         // unreachable for the rest of the session. MEASURED on a real session:
         // `SPANS re-applied: 3, nothing new to count` + `RANGE none | 178 msgs,
         // 133852t vs trigger 68000t` on every turn, with ZERO `EVICTION`, ZERO
@@ -5333,54 +5316,17 @@ function indexNodeViews(st: CwlState): IndexNodeView[] {
       storeRange(st, cf, range, messages, currentTokens, trigger);
     }
 
-    /**
-     * Level A — the safety net: strip reasoning blocks, ahead of the safety
-     * window.
-     *
-     * It runs whenever we are still over budget AFTER the episode pass, not only
-     * when the graph is empty. The old `if (g.isEmpty)` gate meant that as soon
-     * as ONE episode existed, the biggest and safest reclaim available was
-     * disabled for the whole session: MEASURED on a real context, assistant
-     * thinking blocks are 43% of it (280k of 650k tokens), and in a controlled
-     * probe all 4 thinking blocks outside an episode survived while the same 4
-     * were removed when no episode existed.
-     */
-    const reasoningFallback = (list: AgentMessage[]): AgentMessage[] | null => {
-      // Honour the level switch. The old fallback called the strip unguarded, so
-      // `stripReasoning: false` did not actually turn it off; that mattered little
-      // when the fallback only ran in a graph with no episodes, and matters a lot
-      // now that it is the main path. With the level off, the safety net is off:
-      // the operator's switch has to mean something.
-      if (!levelEnabled(cf, 'reasoning')) return null;
-      const floor = protectedFromIndex(list, cf.protectedTurns);
-      const out = globalReasoningStrip(list, floor);
-      if (!out) return null;
-      const before = list.reduce((s: number, m: AgentMessage) => s + estimateMessageTokens(m), 0);
-      const after = out.kept.reduce((s: number, m: AgentMessage) => s + estimateMessageTokens(m), 0);
-      st.totalEvictions++;
-      st.totalEvictedTokens += Math.max(0, before - after);
-      debugLog(cf, `FALLBACK reasoning-strip: ${out.changed} messages, ${before}t -> ${after}t`);
-      if (ctx?.hasUI) {
-        ctx.ui.notify(t('fallbackNotice')(out.changed, before, after), 'info');
-      }
-      return out.kept;
-    };
-
-    // No episodes at all: episodes are the targeted path, so the safety net is
-    // the only one left.
+    // No episodes at all: with no episodes, we do not perform global reasoning
+    // strips on live messages because modifying historical turns destroys the
+    // provider's prefix cache across the entire conversation.
     if (g.isEmpty) {
-      const stripped = reasoningFallback(messages);
-      if (stripped) return finish(stripped);
-      debugLog(cf, 'CONTEXT above threshold but no episode AND no reasoning strip possible');
+      debugLog(cf, 'CONTEXT above threshold but no episode: context untouched (reasoning fallback disabled for cache preservation)');
       return finish(messages);
     }
 
     // 2. Deterministic policy: compute what to evict and at which level
     const actions = runEvictionPass(cf, g, currentTokens, trigger, messages);
     if (actions.length === 0) {
-      // No episode is safe to touch: the safety net still is.
-      const stripped = reasoningFallback(messages);
-      if (stripped) return finish(stripped);
       debugLog(cf, `CONTEXT ${currentTokens}t above threshold but no safe candidate: context untouched`);
       return finish(messages);
     }
@@ -5542,9 +5488,7 @@ function indexNodeViews(st: CwlState): IndexNodeView[] {
     });
 
     if (dropped === 0 && truncated === 0) {
-      // Nothing in the episodes was reducible: the safety net is still there.
-      const stripped = reasoningFallback(messages);
-      if (stripped) return finish(stripped);
+      // No reducible episode: leave history unchanged and offer block compression.
       debugLog(cf, 'EVICTION: no message actually reducible, context left untouched');
       return finish(messages);
     }
@@ -5620,12 +5564,8 @@ function indexNodeViews(st: CwlState): IndexNodeView[] {
       );
     }
 
-    // Still over budget after the episode pass: the safety net closes the gap in
-    // the SAME turn instead of waiting for the episode pass to run dry.
-    if (afterTokens > trigger) {
-      const stripped = reasoningFallback(kept);
-      if (stripped) return finish(stripped);
-    }
+    // Do not rewrite unrelated historical reasoning. Explicit block compression
+    // owns that reduction; changing an older message may invalidate its suffix.
 
     return finish(kept);
   });
@@ -5662,16 +5602,24 @@ function indexNodeViews(st: CwlState): IndexNodeView[] {
           st.gateAttempts = 0;
           debugLog(cf, `GATE armed at turn ${st.turns} (over budget since turn ${st.overBudgetSince})`);
         } else if (st.gateArmedTurn < st.turns) {
-          st.gateAttempts += 1;
-          if (st.gateAttempts >= GATE_MAX_ATTEMPTS) {
-            st.lastGateViolationTurn = st.turns;
-            st.gateArmedTurn = -1;
-            debugLog(cf, `GATE dropped after ${GATE_MAX_ATTEMPTS} attempts; cooldown ${GATE_COOLDOWN_TURNS} turns`);
-            if (ctx?.hasUI) ctx.ui.notify(t('gateGiveUp')(GATE_MAX_ATTEMPTS), 'warning');
+          // ONE attempt = one turn in which the demand was really SHOWN and went
+          // unanswered. Counting the turn regardless is what produced "unanswered for
+          // 3 turns" immediately after a turn in which the gate had withheld the
+          // demand: the agent was blamed for ignoring a request it never received.
+          if (st.demandShown) {
+            st.gateAttempts += 1;
+            if (st.gateAttempts >= GATE_MAX_ATTEMPTS) {
+              st.lastGateViolationTurn = st.turns;
+              st.gateArmedTurn = -1;
+              debugLog(cf, `GATE dropped after ${GATE_MAX_ATTEMPTS} attempts; cooldown ${GATE_COOLDOWN_TURNS} turns`);
+              if (ctx?.hasUI) ctx.ui.notify(t('gateGiveUp')(GATE_MAX_ATTEMPTS), 'warning');
+            }
           }
         }
       }
     }
+    // Spent by the turn that just ended, whether or not it counted as an attempt.
+    st.demandShown = false;
 
     // Persist the DECISIONS (episode graph + traced compressions) at the end of
     // every turn. They cannot be recomputed from the transcript, so a crash or
