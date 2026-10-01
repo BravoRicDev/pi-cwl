@@ -345,7 +345,7 @@ const I18N: Record<Lang, CwlMessages> = {
     oldSupersededHead: (count) => `--- Syntheses this one replaced (${count}, newest first): open one with cwl_open("<id>.s1") — cwl_old overwrites the synthesis instead of extending it, so these are kept readable rather than lost ---`,
     oldSupersededLine: (id, chars) => `- ${id}: ${chars} chars`,
     oldSupersededPage: (id, chars, text) => `[CWL superseded synthesis ${id} — ${chars} chars. This is a synthesis that the CURRENT one of the pit replaced; cwl_old overwrites instead of extending, so the archive keeps the text it would otherwise have erased. Nothing else refers to it.]\n\n${text}`,
-    indexDue: (young, need) => `[CWL INDEX] ${young} node(s) of the index are due to merge (a merge starts at ${need}). Call cwl_old with the merge summary: your synthesis replaces the micros of the oldest nodes, and their leaves stay readable with cwl_open.`,
+    indexDue: (young, need) => `[CWL INDEX] ${young} node(s) of the index are due to merge (a merge starts at ${need}). Call cwl_old with the merge summary: your synthesis replaces the content of the oldest nodes — their topics' descriptions and their labels — and their leaves stay readable with cwl_open.`,
     topicDue: (id, leaves, microChars, needChars) => `[CWL TOPIC] the buffer (${id}) holds ${leaves} leaf/leaves, and their micros are ${microChars} characters — enough for the ${needChars} a topic must free. Open a topic NOW with cwl_group: pass those leaves, a name, and a description that already covers their FUTURE use, and one description then stands for all of them. This is the last moment it is possible: a leaf that enters a node can never be moved again, and the window closes with it.`,
     leavesDue: (missing, ids) => `[CWL INDEX] ${missing} leaf/leaves still have their BODY in the context and wait for a micro: ${ids} — call cwl_micro with the id and a micro of ~1.200 characters (≈300 tokens, ~200 words). The body leaves the context, the micro stands for it, and only then can the leaf enter a node. And while you label them: leaves that belong together can be grouped into a TOPIC with cwl_group — one description then stands for all of them, their labels leave the context, and the topic counts as a node like any other. Do it NOW, while those leaves still have their BODY in the context: once a leaf is inside a node it cannot be moved any more, and the window closes. It is the cheapest saving you can make.`,
     openOriginal: (id, tokens, body) => `[CWL leaf ${id} — its SUMMARY was dropped when the state pruned it, so here is the ORIGINAL from the append-only transcript (~${tokens} tokens, in full).]\n\n${body}`,
@@ -402,7 +402,7 @@ const I18N: Record<Lang, CwlMessages> = {
       microId: 'Id of the leaf to absorb, as it appears in the compression notice.',
       microText: 'The micro-summary that REPLACES the body in the context. The body is NOT touched: cwl_open still returns all of it. Write the pieces that matter; ~1.200 characters (≈300 tokens) is the size this design is built for — and the ceiling is measured: going over it is said in the result.',
       oldDesc: 'Writes the RIASSUNTONE and merges the oldest young nodes into the old node: their micros leave the context and the synthesis stands for all of them. The nodes and their leaves stay readable — cwl_open pages through them.',
-      oldText: 'The synthesis (merge summary) that replaces the micros of the merged nodes in the context. Write WHOLE PIECES: it is what the agent will see instead of them. It must cover the ORDINARY nodes you absorb — the description of any TOPIC node you absorb is glued to your text word for word, so do NOT rewrite what a topic already says. If the pit already holds a synthesis, cwl_open shows it: CARRY IT FORWARD, concatenated — a merge REPLACES the pit synthesis, it does not add to it.',
+      oldText: 'The synthesis (merge summary) that replaces, in the context, the content of the merged nodes: the descriptions of their TOPIC nodes and the labels of their ordinary ones — in short, what would otherwise be injected. Write WHOLE PIECES: it is what the agent will see instead of them, so SUMMARISE that content; do not list it, and do not glue it in. If the pit already holds a synthesis, cwl_open shows it: CARRY IT FORWARD — a merge REPLACES the pit synthesis, it does not add to it. If the pit content ends up SHORTER than your synthesis, the nodes enter the context as they are, in chronological order, and your text is not paid.',
       groupDesc: 'Groups leaves into a TOPIC node, which is born COLLAPSED: the name and the description you write now stand for its leaves in the index from this moment on, so the description must already cover the FUTURE use of the topic. Leaves can be taken from the buffer (the last node, attached to the leaves still open) and — unless `groupBeyondBuffer` is off — from any ORDINARY node: the leaves of an ordinary node are still in the head as micros, so the window does not close when the round ends. They must be a CHRONOLOGICAL BLOCK, because the topic is one block in the index: the nodes in between may be taken whole, and what the involved nodes keep is re-partitioned around the topic. A TOPIC is never a source — its description stands for its leaves. When the topic already exists, pass `node` and the description is NOT rewritten — that is what makes adding leaves later free.',
       groupLeaves: 'Ids of the leaves to group or move: the buffer\'s, the loose ones, and — unless `groupBeyondBuffer` is off — the leaves of ordinary nodes. Each must already carry a micro, and they must be consecutive in time.',
       groupNodes: 'Ids of NODES to absorb into the topic: a topic can CONTAIN other topics. Containment only goes BACKWARD in time (a node absorbs only nodes that come after it), and the buffer is never absorbed. The absorbed node keeps its leaves and its description and stays readable with cwl_open: what changes is that its block is no longer injected, because the parent description stands for it.',
@@ -523,7 +523,7 @@ const I18N: Record<Lang, CwlMessages> = {
     oldSupersededHead: (count) => `--- Sintesi sostituite da questa (${count}, dalla piu' recente): aprine una con cwl_open("<id>.s1") — cwl_old sostituisce la sintesi invece di estenderla, quindi queste restano leggibili invece di andare perse ---`,
     oldSupersededLine: (id, chars) => `- ${id}: ${chars} caratteri`,
     oldSupersededPage: (id, chars, text) => `[CWL sintesi sostituita ${id} — ${chars} caratteri. E' una sintesi che quella ATTUALE del pozzo ha sostituito; cwl_old sostituisce invece di estendere, quindi l'archivio tiene il testo che altrimenti avrebbe cancellato. Nient'altro la referenzia.]\n\n${text}`,
-    indexDue: (young, need) => `[CWL INDICE] ${young} nodo/i dell'indice sono da accorpare (si accorpa da ${need} in su). Chiama cwl_old col riassuntone: la tua sintesi sostituisce i micro dei nodi piu' vecchi, e le loro foglie restano leggibili con cwl_open.`,
+    indexDue: (young, need) => `[CWL INDICE] ${young} nodo/i dell'indice sono da accorpare (si accorpa da ${need} in su). Chiama cwl_old col riassuntone: la tua sintesi sostituisce il contenuto dei nodi piu' vecchi — le descrizioni dei loro topic e i micro dei loro nodi sparsi — e le loro foglie restano leggibili con cwl_open.`,
     topicDue: (id, leaves, microChars, needChars) => `[CWL TOPIC] il buffer (${id}) tiene ${leaves} foglia/e, e i loro micro sono ${microChars} caratteri — abbastanza per i ${needChars} che un topic deve liberare. Apri un topic ADESSO con cwl_group: passa quelle foglie, un nome e una descrizione che copra gia' il loro uso FUTURO, e una descrizione sola sta per tutte. E' l'ultimo momento in cui si puo': una foglia che entra in un nodo non si sposta piu', e la finestra si chiude con lei.`,
     leavesDue: (missing, ids) => `[CWL INDICE] ${missing} foglia/e hanno ancora il CORPO nel contesto e aspettano un micro: ${ids} — chiama cwl_micro con l'id e un micro di ~1.200 caratteri (≈300 token, ~200 parole). Il corpo esce dal contesto, il micro lo rappresenta, e solo allora la foglia puo' entrare in un nodo. E mentre le etichetti: le foglie che vanno insieme si possono raggruppare in un TOPIC con cwl_group — una descrizione sola sta per tutte, le loro etichette escono dal contesto, e il topic conta come nodo come tutti gli altri. Fallo ADESSO, finche' quelle foglie hanno ancora il CORPO nel contesto: una volta entrata in un nodo, una foglia non si sposta piu' e la finestra si chiude. E' il risparmio piu' economico che hai.`,
     openOriginal: (id, tokens, body) => `[CWL foglia ${id} — il RIASSUNTO e' andato perso quando lo stato l'ha potato, quindi ecco l'ORIGINALE dal transcript append-only (~${tokens} token, per intero).]\n\n${body}`,
@@ -576,7 +576,7 @@ const I18N: Record<Lang, CwlMessages> = {
       microId: "Id della foglia da assorbire, come appare nell'avviso di compressione.",
       microText: "Il micro-riassunto che SOSTITUISCE il corpo nel contesto. Il corpo NON viene toccato: cwl_open lo restituisce ancora tutto. Scrivi i pezzi che contano; ~1.200 caratteri (≈300 token) e' la misura per cui questo design e' costruito — e il tetto e' misurato: sfondarlo viene detto nel risultato.",
       oldDesc: 'Scrive il RIASSUNTONE e accorpa i nodi giovani piu\' vecchi nel nodo vecchio: i loro micro escono dal contesto e la sintesi sta per tutti. I nodi e le loro foglie restano leggibili — cwl_open li pagina.',
-      oldText: 'La sintesi (riassuntone) che sostituisce i micro dei nodi accorpati nel contesto. Scrivi PEZZI INTERI: e\' quello che l\'agente vedra\' al posto loro. Deve coprire i nodi ORDINARI che accorpi — la descrizione dei nodi TOPIC che accorpi viene incollata al tuo testo parola per parola, quindi NON riscrivere cio\' che un topic dice gia\'. Se il pozzo ha gia\' una sintesi, cwl_open la mostra: PORTALA AVANTI, concatenata — un accorpamento la SOSTITUISCE, non ci si aggiunge.',
+      oldText: 'La sintesi (riassuntone) che sostituisce nel contesto il contenuto dei nodi accorpati: le descrizioni dei loro nodi TOPIC e i micro dei loro nodi sparsi — insomma, quello che altrimenti verrebbe iniettato. Scrivi PEZZI INTERI: e\' quello che l\'agente vedra\' al posto loro, quindi RIASSUMI quel contenuto; non elencarlo e non incollarlo. Se il pozzo ha gia\' una sintesi, cwl_open la mostra: PORTALA AVANTI — un accorpamento la SOSTITUISCE, non ci si aggiunge. Se il contenuto del pozzo risulta piu\' corto della tua sintesi, nel contesto entrano i nodi cosi\' come sono, in ordine cronologico, e il tuo testo non si paga.',
       groupDesc: 'Raggruppa le foglie in un nodo TOPIC, che nasce GIA\' COLLASSATO: il nome e la descrizione che scrivi adesso stanno per le sue foglie nell\'indice da questo momento, quindi la descrizione deve coprire GIA\' l\'uso futuro del topic. Si possono raggruppare o spostare le foglie del buffer (l\'ultimo nodo, attaccato alle foglie ancora aperte) e — se `groupBeyondBuffer` e\' attivo — quelle di qualsiasi nodo ORDINARIO: le foglie di un nodo ordinario sono ancora in testa come micro, quindi la finestra non si chiude a fine round. Devono essere un BLOCCO CRONOLOGICO, perche\' il topic e\' un blocco solo nell\'indice: i nodi in mezzo si possono prendere interi, e cio\' che i nodi coinvolti tengono viene ripartito attorno al topic. Un TOPIC non e\' mai una sorgente — la sua descrizione sta per le sue foglie. Quando il topic esiste gia\', passa `node` e la descrizione NON viene riscritta: e\' questo che rende gratis l\'aggiunta di foglie.',
       groupLeaves: 'Id delle foglie da raggruppare o spostare: quelle del buffer, quelle sciolte e — se `groupBeyondBuffer` e\' attivo — quelle dei nodi ordinari. Ognuna deve gia\' avere un micro, e devono essere consecutive nel tempo.',
       groupNodes: 'Id dei NODI da assorbire nel topic: un topic puo\' CONTENERE altri topic. Il contenimento va SOLO all\'indietro nel tempo (un nodo assorbe solo nodi che stanno dopo di lui) e il buffer non si assorbe mai. Il nodo assorbito tiene le sue foglie e la sua descrizione e resta leggibile con cwl_open: cambia solo che il suo blocco non viene piu\' iniettato, perche\' la descrizione del genitore sta per lui.',
@@ -3851,30 +3851,32 @@ export default function (pi: ExtensionAPI) {
         at: Date.now(),
       };
       pit.nodes.push(...absorbed.map((nd) => nd.id));
-      // The descriptions of the TOPIC nodes absorbed here are concatenated VERBATIM: they were
-      // written to cover the future use of their topic, they are immutable, and re-describing
-      // them through an LLM would pay twice for the same content and could drift from what the
-      // topic still says. The agent's own synthesis covers the ORDINARY nodes.
-      const appended = absorbed
-        .filter((nd) => nd.description)
-        .map((nd) => `[topic "${nd.name ?? nd.id}"] ${nd.description}`);
+      // The synthesis is the agent's text ALONE. It used to carry the absorbed topics'
+      // descriptions concatenated verbatim, on the argument that re-describing immutable text
+      // through an LLM pays twice and can drift. That argument was right about the risk and wrong
+      // about the cost: MEASURED, it made the pit's block 9.899 characters against 4.441 of
+      // content — the archive cost 2.2 times what it held — and no synthesis could ever be
+      // shorter than the descriptions it contained, so `cwl_old` could never actually compress.
+      // The rule the operator gave: a merge SUMMARISES the descriptions, it does not append
+      // pieces. Nothing is lost: a description that leaves the head is whole on its topic page,
+      // and the pit's own content comes back into the head as it is — chronological, no LLM —
+      // whenever it is shorter than the synthesis (see `pitView`).
       // Keep what this merge REPLACES: `cwl_old` overwrites the synthesis, so for a rewrite
       // that does not carry the previous text forward the pit page would have been the only
       // place it ever lived. Newest first, bounded (see SUPERSEDED_KEEP).
       if (pit.summary) pit.superseded = [pit.summary, ...(pit.superseded ?? [])].slice(0, SUPERSEDED_KEEP);
-      pit.summary = appended.length > 0 ? `${text}\n\n${appended.join('\n\n')}` : text;
+      pit.summary = text;
       pit.at = Date.now();
       st.oldNode = pit;
       saveState(key, st);
       const tokens = estimateTokens(text);
-      debugLog(cf, `OLD ${pit.id}: absorbed ${absorbed.length} node(s), ${ids.length} leaf/leaves; ${freedChars} chars leave the head${appended.length > 0 ? `, ${appended.length} topic description(s) concatenated` : ''} -> a synthesis of ${tokens}t`);
+      debugLog(cf, `OLD ${pit.id}: absorbed ${absorbed.length} node(s), ${ids.length} leaf/leaves; ${freedChars} chars leave the head -> a synthesis of ${tokens}t`);
       return {
         content: [{
           type: 'text',
-          text: t('oldNodeSet')(pit.id, absorbed.length, ids.length, freedChars, tokens)
-            + (appended.length > 0 ? t('oldTopicsConcatenated')(appended.length, appended.join('\n\n').length) : ''),
+          text: t('oldNodeSet')(pit.id, absorbed.length, ids.length, freedChars, tokens),
         }],
-        details: { ok: true, id: pit.id, nodes: absorbed.length, leaves: ids.length, microChars, freedChars, topicsConcatenated: appended.length, tokens },
+        details: { ok: true, id: pit.id, nodes: absorbed.length, leaves: ids.length, microChars, freedChars, tokens },
       };
     },
   });

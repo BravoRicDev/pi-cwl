@@ -363,7 +363,6 @@ test('a topic inside the old node keeps receiving leaves, and only there is its 
     assert.equal(born.details.ok, true, `the topic was not born: ${JSON.stringify(born.details)}`);
     const merged = await tools.get('cwl_old').execute('t', { text: 'MERGE-SUMMARY: the legacy material.' }, undefined, undefined, ctx);
     assert.equal(merged.details.ok, true, `the merge was refused: ${JSON.stringify(merged.details)}`);
-    assert.equal(merged.details.topicsConcatenated, 1, 'the immutable description was not glued to the pit synthesis');
 
     // The topic is inside the pit now, and a leaf from the frontier may still join it.
     const extra = await oneMoreLeaf(sandbox, hooks, ctx, tools, 40);
@@ -374,11 +373,13 @@ test('a topic inside the old node keeps receiving leaves, and only there is its 
     assert.equal(added.details.inPit, true, 'the tool does not know the topic is in the pit');
     assert.equal(added.details.descriptionUpdated, true, 'the description was not rewritten');
 
-    // And the context does NOT move: what stands for the topic in the head is the pit's
-    // synthesis, frozen when it was written. The living copy is on the topic's own page.
+    // And the context does NOT move: the head injects the SHORTER of the two candidates. Here it
+    // is the synthesis — the topic's description, wrapped as `cwl_old` would wrap it, is longer
+    // than the synthesis — so what stands for the pit is the synthesis, frozen when it was
+    // written. The living copy of the description is on the topic's own page.
     const messages = await hook(hooks, ctx, conversation(1, 60));
     const joined = messages.map((m) => String(m.content ?? '')).join('\n');
-    assert.ok(joined.includes('FIRST-DESCRIPTION'), 'the pit synthesis lost what it was written with');
+    assert.ok(joined.includes('MERGE-SUMMARY'), 'the pit synthesis did not stand for the merged nodes');
     assert.ok(!joined.includes('SECOND-DESCRIPTION'), 'rewriting the description MOVED the context');
     const page = await openPage(tools, ctx, born.details.id);
     assert.ok(page.includes('SECOND-DESCRIPTION'), `the living copy is not on the topic page: ${page.slice(0, 240)}`);
