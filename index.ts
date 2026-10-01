@@ -196,6 +196,12 @@ type CwlMessages = {
   /** The old node: the synthesis that replaces the micros, and what it has merged. */
   oldNodeSet: (id: string, nodes: number, leaves: number, microChars: number, tokens: number) => string;
   oldNotDue: (young: number, need: number) => string;
+  /** A DRY RUN: what a merge WOULD do, with the numbers, and nothing recorded. */
+  oldDryRun: (pass: boolean, destination: string, nodes: number, leaves: number, freedChars: number, needChars: number) => string;
+  /** A DRY RUN for `cwl_group` when it would ADD leaves to a topic that already exists. */
+  groupDryRunAdd: (id: string, name: string, leaves: number, nodes: number, microChars: number, needChars: number) => string;
+  /** A DRY RUN for `cwl_group` when it would BORN a new topic. */
+  groupDryRunNew: (id: string, name: string, leaves: number, nodes: number, microChars: number, needChars: number) => string;
   oldHead: (id: string, nodes: number, tokens: number) => string;
   /** Said when the block below is the DESCRIPTIONS rather than the synthesis, so the agent knows
    *  where the narrative went. See `PitView.body`. */
@@ -240,6 +246,8 @@ type CwlMessages = {
     microText: string;
     oldDesc: string;
     oldText: string;
+    oldDryRun: string;
+    groupDryRun: string;
     compressRangeDesc: string; compressRangeSummary: string; compressMicro: string;
     compressCovered: (start: string, end: string) => string;
     microOver: (where: string, chars: number, ceiling: number) => string;
@@ -264,6 +272,7 @@ type CwlMessages = {
     mapLine: (id: string, kind: string, name: string, leaves: number, children: number, chars: number) => string;
     mapLeaves: (ids: string) => string;
     nodeDesc: string; nodeId: string; nodeSnippet: string;
+    nodeLimit: string; nodeCursor: string; pendingLimit: string; pendingCursor: string;
     nodeHeader: (id: string, kind: string, name: string, leaves: number, chars: number) => string;
     nodeLeaf: (id: string, micro: string) => string;
     nodeChild: (ids: string) => string;
@@ -272,6 +281,10 @@ type CwlMessages = {
     pendingHeader: (nodes: number, leaves: number, chars: string, need: string) => string;
     pendingLine: (id: string, kind: string, leaves: number, chars: number) => string;
     pendingEmpty: string;
+    pendingPitHeader: (nodes: number, leaves: number) => string;
+    pendingPitLine: (id: string, leaves: number) => string;
+    pendingPitHint: string;
+    pageInfo: (shown: number, total: number, next: string) => string;
   };
 };
 
@@ -364,6 +377,9 @@ const I18N: Record<Lang, CwlMessages> = {
     nodePage: (id, count, tokens, body) => `[CWL node ${id} — ${count} leaf/leaves, ~${tokens} tokens. Each micro below points to a leaf: cwl_open("<leaf id>") returns its WHOLE body.]\n\n${body}`,
     oldNodeSet: (id, nodes, leaves, microChars, tokens) => `Old node ${id}: merged ${nodes} node(s), ${leaves} leaf/leaves (${microChars} chars of micros) into a synthesis of ~${tokens} tokens. They stay readable: cwl_open("${id}") lists the nodes inside.`,
     oldNotDue: (young, need) => `No merge: ${young} young node(s), the merge starts at ${need}. Nothing was recorded.`,
+    oldDryRun: (pass, destination, nodes, leaves, freedChars, needChars) => `DRY RUN, nothing was recorded. Destination: ${destination}. It would merge ${nodes} node(s) and ${leaves} leaf/leaves, freeing ${freedChars} characters; the merge needs ${needChars}. Verdict: ${pass ? 'it would go through' : 'it would be REFUSED'}.`,
+    groupDryRunAdd: (id, name, leaves, nodes, microChars, needChars) => `DRY RUN, nothing was recorded. Topic ${id} "${name}" would receive ${leaves} leaf/leaves and ${nodes} node(s); it holds ${microChars} characters of labels against a floor of ${needChars}.`,
+    groupDryRunNew: (id, name, leaves, nodes, microChars, needChars) => `DRY RUN, nothing was recorded. A new topic would be born as ${id} "${name}", taking ${leaves} leaf/leaves and ${nodes} node(s); it holds ${microChars} characters of labels against a floor of ${needChars}.`,
     oldHead: (id, nodes, tokens) => `[CWL OLD NODE ${id} — ${nodes} older node(s) merged behind this synthesis (~${tokens} tokens). Their micros left the context; cwl_open("${id}") pages through them, leaf by leaf.]\n\n`,
     oldHeadDescriptions: () => `[CWL OLD NODE — what follows is NOT the merge synthesis but the descriptions of the topics it holds, which are shorter. The synthesis is whole on the pit page: cwl_open on the node id above.]\n\n`,
     oldPage: (id, nodes, tokens, body) => `[CWL old node ${id} — ${nodes} node(s) inside, ~${tokens} tokens. The synthesis first, then one line per node with its SHAPE; cwl_open("<node id>") opens one, and its leaves open in full.]\n\n${body}`,
@@ -436,6 +452,8 @@ const I18N: Record<Lang, CwlMessages> = {
       groupName: 'Short name of the new topic, written ONCE: it is part of the index prefix, so it never changes. e.g. "login-otp".',
       groupText: 'Description of the new topic, written ONCE: it must already cover the future use of the topic, because it is what replaces the labels of its leaves in the index and it is never rewritten WHILE THE TOPIC IS OUTSIDE THE OLD NODE. The one exception: a topic that is already inside the old node may have its description rewritten, because there it no longer touches the index. Mandatory when creating.',
       groupPit: 'Catalogue these leaves INSIDE the old node instead of creating a topic at the frontier: every leaf must already be in the pit (a leaf at the frontier is refused), the minimum is 3 leaves, and there is no size guard, because the pit synthesis is left exactly as it is and nothing in the index moves. A pit topic is a way to NAME material that is already archived, not a way to save tokens. To put order in an archive that ALREADY exists, pass the id of a pit topic as `node` together with `pit: true`: the leaves move into it and its description may be rewritten. A node left empty is dropped, and every leaf has to end up somewhere: the pit synthesis is never touched either way.',
+      oldDryRun: 'Preview the merge without doing it: dryRun: true reports the destination, the nodes and leaves involved, what would leave the context and what the merge needs, and records NOTHING.',
+      groupDryRun: 'Preview the grouping without doing it: dryRun: true reports the destination, the leaves and nodes involved, the label characters against the floor, and records NOTHING. The validations run exactly as in a real call, so a dry run also tells you which refusal you would hit.',
       recallEpisodeFull: 'false (default) returns a truncated preview; true returns the whole episode.',
       compressRangeDesc: 'Compresses the OLDEST usable range of the conversation into your summary. YOU DO NOT pick the range and you do not need any hash: the extension already computed the address and holds it. Call it when an eviction marker or the budget demand tells you to compact, and write a summary good enough to keep working without re-reading the originals. Nothing inside the protected window is touched.',
       compressRangeSummary: 'The summary that REPLACES the compressed range. Write WHOLE PIECES, not a digest: it must be enough to keep working without re-reading them. Include paths, file names, function names, numeric values, and what you decided and why.',
@@ -471,6 +489,10 @@ const I18N: Record<Lang, CwlMessages> = {
       mapLeaves: (ids) => `  leaves: ${ids}`,
       nodeDesc: 'One node of the CWL index in full: metadata, the whole description, the nodes it holds, and its leaves as ID plus the first line of the label. Works on ANY node: a topic, a legacy node, the buffer, the pit.',
       nodeId: 'The node id, as shown by cwl_map or cwl_status.',
+      nodeLimit: 'How many leaves to show (default: all). Use it with cursor to walk a long topic without pulling all of it into the context.',
+      nodeCursor: 'Where to start: the nextCursor of the previous page (default: 0).',
+      pendingLimit: 'How many nodes to show (default: all). Use it with cursor.',
+      pendingCursor: 'Where to start: the nextCursor of the previous page (default: 0).',
       nodeSnippet: 'cwl_node: one CWL node in full, with the IDs of its leaves',
       nodeHeader: (id, kind, name, leaves, chars) => `${id} │ ${kind}${name ? ` "${name}"` : ''} │ ${leaves} leaf/leaves │ ${chars} chars`,
       nodeLeaf: (id, micro) => `  ${id} │ ${micro}`,
@@ -481,6 +503,10 @@ const I18N: Record<Lang, CwlMessages> = {
       pendingHeader: (nodes, leaves, chars, need) => `${nodes} node(s) still to order, ${leaves} leaf/leaves, ${chars} chars (a topic needs ~${need})`,
       pendingLine: (id, kind, leaves, chars) => `${id} │ ${kind} │ ${leaves} leaf/leaves │ ${chars} chars`,
       pendingEmpty: 'Nothing left to order: every leaf is inside a topic.',
+      pendingPitHeader: (nodes, leaves) => `Already in the archive and still without a topic of their own: ${nodes} node(s), ${leaves} leaf/leaves.`,
+      pendingPitLine: (id, leaves) => `  ${id} │ ${leaves} leaf/leaves`,
+      pendingPitHint: 'To give these a name, call cwl_group with pit: true (and node: <an existing pit topic> to move them into one): nothing in the index moves and no synthesis is written, so there is no size guard — the minimum is 3 leaves.',
+      pageInfo: (shown, total, next) => `  ... ${shown} of ${total} shown. Continue with cursor: ${next}`,
     },
   },
   it: {
@@ -571,6 +597,9 @@ const I18N: Record<Lang, CwlMessages> = {
     nodePage: (id, count, tokens, body) => `[CWL nodo ${id} — ${count} foglia/e, ~${tokens} token. Ogni micro qui sotto punta a una foglia: cwl_open("<id foglia>") ne restituisce il corpo INTERO.]\n\n${body}`,
     oldNodeSet: (id, nodes, leaves, microChars, tokens) => `Nodo vecchio ${id}: accorpati ${nodes} nodo/i, ${leaves} foglia/e (${microChars} caratteri di micro) in una sintesi di ~${tokens} token. Restano leggibili: cwl_open("${id}") elenca i nodi dentro.`,
     oldNotDue: (young, need) => `Nessun accorpamento: ${young} nodo/i giovane/i, si accorpa da ${need} in su. Non e' stato registrato niente.`,
+    oldDryRun: (pass, destination, nodes, leaves, freedChars, needChars) => `PROVA, non e' stato registrato niente. Destinazione: ${destination}. Accorperebbe ${nodes} nodo/i e ${leaves} foglia/e, liberando ${freedChars} caratteri; l'accorpamento ne richiede ${needChars}. Esito: ${pass ? 'passerebbe' : 'sarebbe RIFIUTATO'}.`,
+    groupDryRunAdd: (id, name, leaves, nodes, microChars, needChars) => `PROVA, non e' stato registrato niente. Il topic ${id} "${name}" riceverebbe ${leaves} foglia/e e ${nodes} nodo/i; tiene ${microChars} caratteri di etichette contro una soglia di ${needChars}.`,
+    groupDryRunNew: (id, name, leaves, nodes, microChars, needChars) => `PROVA, non e' stato registrato niente. Nascerebbe un topic nuovo come ${id} "${name}", prendendo ${leaves} foglia/e e ${nodes} nodo/i; tiene ${microChars} caratteri di etichette contro una soglia di ${needChars}.`,
     oldHead: (id, nodes, tokens) => `[CWL NODO VECCHIO ${id} — ${nodes} nodo/i piu' vecchi accorpati dietro questa sintesi (~${tokens} token). I loro micro sono usciti dal contesto; cwl_open("${id}") li pagina, foglia per foglia.]\n\n`,
     oldHeadDescriptions: () => `[CWL NODO VECCHIO — quello che segue NON e' la sintesi del riassuntone ma le descrizioni dei topic che tiene, che sono piu' corte. La sintesi e' intera nella pagina del pozzo: cwl_open sull'id del nodo qui sopra.]\n\n`,
     oldPage: (id, nodes, tokens, body) => `[CWL nodo vecchio ${id} — ${nodes} nodo/i dentro, ~${tokens} token. Prima la sintesi, poi una riga per nodo con la sua FORMA; cwl_open("<id nodo>") ne apre uno, e le sue foglie si aprono intere.]\n\n${body}`,
@@ -639,6 +668,8 @@ const I18N: Record<Lang, CwlMessages> = {
       groupName: 'Nome breve del topic nuovo, scritto UNA VOLTA: fa parte del prefisso dell\'indice, quindi non cambia mai. Es. "login-otp".',
       groupText: 'Descrizione del topic nuovo, scritta UNA VOLTA: deve coprire gia\' l\'uso futuro del topic, perche\' e\' quello che sostituisce le etichette delle sue foglie nell\'indice e non viene mai riscritta FINCHE\' IL TOPIC E\' FUORI DAL NODO VECCHIO. Unica eccezione: un topic gia\' dentro il nodo vecchio puo\' avere la descrizione riscritta, perche\' li\' non tocca piu\' l\'indice. Obbligatoria alla creazione.',
       groupPit: 'Cataloga queste foglie DENTRO il nodo vecchio invece di creare un topic sulla frontiera: ogni foglia deve essere gia\' nel pozzo (una foglia sulla frontiera viene rifiutata), il minimo sono 3 foglie, e non c\'e\' guard di dimensione, perche\' la sintesi del pozzo resta esattamente com\'e\' e nell\'indice non si muove niente. Un topic nel pozzo serve a DARE UN NOME a materiale gia\' archiviato, non a risparmiare token. Per mettere ordine in un archivio che esiste GIA\', passa l\'id di un topic del pozzo come `node` insieme a `pit: true`: le foglie si spostano dentro di esso e la sua descrizione si puo\' riscrivere. Un nodo lasciato vuoto viene eliminato, e ogni foglia deve finire da qualche parte: la sintesi del pozzo in nessuno dei due casi viene toccata.',
+      oldDryRun: 'Anteprima dell\'accorpamento senza farlo: dryRun: true riporta la destinazione, i nodi e le foglie coinvolte, cosa uscirebbe dal contesto e cosa serve all\'accorpamento, e NON registra niente.',
+      groupDryRun: 'Anteprima del raggruppamento senza farlo: dryRun: true riporta la destinazione, le foglie e i nodi coinvolti, i caratteri di etichette contro la soglia, e NON registra niente. Le validazioni girano esattamente come in una chiamata vera, quindi la prova dice anche quale rifiuto incontreresti.',
       recallEpisodeFull: 'false (default) restituisce un estratto troncato; true restituisce l\'episodio intero.',
       compressRangeDesc: "Comprime nel tuo riassunto l'intervallo PIU' VECCHIO utilizzabile della conversazione. NON scegli tu l'intervallo e non ti serve nessun hash: l'estensione ha gia' calcolato e tiene l'indirizzo. Chiamalo quando un marker di eviction o la richiesta di budget ti dicono di compattare, e scrivi un riassunto che basti a lavorare senza rileggere gli originali. Nulla dentro la finestra protetta viene toccato.",
       compressRangeSummary: "Il riassunto che SOSTITUISCE l'intervallo compresso. Scrivi PEZZI INTERI, non un sommario: deve bastare a lavorare senza rileggere. Includi path, nomi di file, nomi di funzione, valori numerici e cosa hai scelto e perche'.",
@@ -674,6 +705,10 @@ const I18N: Record<Lang, CwlMessages> = {
       mapLeaves: (ids) => `  foglie: ${ids}`,
       nodeDesc: 'Un nodo dell\'indice CWL per intero: metadati, descrizione completa, i nodi che contiene, e le sue foglie come ID piu\' la prima riga dell\'etichetta. Funziona su QUALSIASI nodo: un topic, un nodo legacy, il buffer, il pozzo.',
       nodeId: 'L\'id del nodo, come lo mostrano cwl_map o cwl_status.',
+      nodeLimit: 'Quante foglie mostrare (default: tutte). Usalo con cursor per scorrere un topic lungo senza tirarlo tutto nel contesto.',
+      nodeCursor: 'Da dove partire: il nextCursor della pagina precedente (default: 0).',
+      pendingLimit: 'Quanti nodi mostrare (default: tutti). Usalo con cursor.',
+      pendingCursor: 'Da dove partire: il nextCursor della pagina precedente (default: 0).',
       nodeSnippet: 'cwl_node: un nodo CWL per intero, con gli ID delle sue foglie',
       nodeHeader: (id, kind, name, leaves, chars) => `${id} \u2502 ${kind}${name ? ` "${name}"` : ''} \u2502 ${leaves} foglia/e \u2502 ${chars} caratteri`,
       nodeLeaf: (id, micro) => `  ${id} \u2502 ${micro}`,
@@ -684,6 +719,10 @@ const I18N: Record<Lang, CwlMessages> = {
       pendingHeader: (nodes, leaves, chars, need) => `${nodes} nodo/i ancora da ordinare, ${leaves} foglia/e, ${chars} caratteri (un topic ne serve ~${need})`,
       pendingLine: (id, kind, leaves, chars) => `${id} \u2502 ${kind} \u2502 ${leaves} foglia/e \u2502 ${chars} caratteri`,
       pendingEmpty: 'Non resta niente da ordinare: ogni foglia \u00e8 dentro un topic.',
+      pendingPitHeader: (nodes, leaves) => `Gia' nel pozzo e ancora senza un topic proprio: ${nodes} nodo/i, ${leaves} foglia/e.`,
+      pendingPitLine: (id, leaves) => `  ${id} \u2502 ${leaves} foglia/e`,
+      pendingPitHint: 'Per dargli un nome chiama cwl_group con pit: true (e node: <un topic del pozzo> per spostarle dentro): nell\'indice non si muove niente e non si scrive nessuna sintesi, quindi non c\'e\' guard di dimensione — il minimo sono 3 foglie.',
+      pageInfo: (shown, total, next) => `  ... ${shown} di ${total} mostrate. Continua con cursor: ${next}`,
     },
   },
 } satisfies Record<Lang, CwlMessages>;
@@ -3971,6 +4010,7 @@ function indexNodeViews(st: CwlState): IndexNodeView[] {
     description: t('tools').oldDesc,
     parameters: Type.Object({
       text: Type.String({ description: t('tools').oldText }),
+      dryRun: Type.Optional(Type.Boolean({ description: t('tools').oldDryRun })),
     }),
     async execute(_toolCallId, params, _signal, _onUpdate, ctx) {
       const key = sessionKey(ctx);
@@ -3989,7 +4029,12 @@ function indexNodeViews(st: CwlState): IndexNodeView[] {
       if (young.length === 0) {
         return {
           content: [{ type: 'text', text: t('oldNotDue')(young.length, cf.mergeNodesAt) }],
-          details: { ok: false, error: 'not-due', young: young.length, mergeNodesAt: cf.mergeNodesAt },
+          details: {
+            ok: false, error: 'not-due', code: 'no-young-nodes',
+            young: young.length, mergeNodesAt: cf.mergeNodesAt,
+            constraint: { young: young.length, mergeNodesAt: cf.mergeNodesAt },
+            allowed: ['group-leaves-into-a-topic', 'wait-for-more-nodes'],
+          },
         };
       }
       // WHEN the index is due (young >= mergeNodesAt) the NEWEST young node stays out: it
@@ -4019,11 +4064,38 @@ function indexNodeViews(st: CwlState): IndexNodeView[] {
       // so it leaves as well. Summing the micros of a topic's leaves would count again what had
       // already gone, and would make the guard approve a merge that frees nothing.
       const { freedChars, needChars, synthesisChars } = budget;
+      // #2 — THE DRY RUN, placed HERE on purpose: after the budget is measured and before
+      // anything is written. A dry run that could only report a merge it would approve would
+      // be half useful — the case worth predicting is the one that gets REFUSED, because that
+      // is the one that costs a second call today. Nothing above this line mutates the state
+      // (`mergeBudget` only measures), so there is no snapshot to put back.
+      if (params.dryRun === true) {
+        return {
+          content: [{
+            type: 'text',
+            text: t('oldDryRun')(
+              freedChars >= needChars,
+              st.oldNode?.id ?? 'a new pit',
+              absorbed.length, ids.length, freedChars, needChars,
+            ),
+          }],
+          details: {
+            ok: true, dryRun: true, wouldProceed: freedChars >= needChars,
+            destination: st.oldNode?.id ?? null, nodes: absorbed.map((nd) => nd.id),
+            leaves: ids.length, microChars, freedChars, needChars, synthesisChars,
+          },
+        };
+      }
       if (freedChars < needChars) {
         debugLog(cf, `OLD not-due: ${ids.length} leaf/leaves would leave ${freedChars} chars, need ${needChars} (synthesis ~${synthesisChars}, ratio ${cf.mergeMinRatio}, floor ${cf.mergeMinChars})`);
         return {
           content: [{ type: 'text', text: t('oldTooSmall')(ids.length, freedChars, needChars) }],
-          details: { ok: false, error: 'too-small', leaves: ids.length, microChars, freedChars, needChars, synthesisChars },
+          details: {
+            ok: false, error: 'too-small', code: 'synthesis-too-expensive',
+            leaves: ids.length, microChars, freedChars, needChars, synthesisChars,
+            constraint: { freedChars, needChars, synthesisChars, ratio: cf.mergeMinRatio, floor: cf.mergeMinChars },
+            allowed: ['write-a-shorter-synthesis', 'merge-more-nodes', 'lower-mergeMinRatio', 'lower-mergeMinChars'],
+          },
         };
       }
       const pit: OldNode = st.oldNode ?? {
@@ -4097,6 +4169,7 @@ function indexNodeViews(st: CwlState): IndexNodeView[] {
       name: Type.Optional(Type.String({ description: t('tools').groupName })),
       description: Type.Optional(Type.String({ description: t('tools').groupText })),
       pit: Type.Optional(Type.Boolean({ description: t('tools').groupPit })),
+      dryRun: Type.Optional(Type.Boolean({ description: t('tools').groupDryRun })),
     }),
     async execute(_toolCallId, params, _signal, _onUpdate, ctx) {
       const key = sessionKey(ctx);
@@ -4104,9 +4177,41 @@ function indexNodeViews(st: CwlState): IndexNodeView[] {
       const cf = getConfig(key);
       refreshNodes(st, cf);
 
-      const refuse = (why: string, detail: string) => ({
+      // #2 — THE DRY RUN. `dryRun: true` runs EVERY validation and every decision of a real
+      // call — so the prediction is the real one, refusals included — and then puts the state
+      // back. The snapshot is taken HERE, right after `refreshNodes` has normalised the nodes,
+      // so putting it back cannot undo work that a real call would have done anyway. It holds
+      // ONLY the two plain-data fields this tool can mutate (`nodes` and `oldNode`): a JSON
+      // round trip of the whole state would flatten `graph`, which is an instance and is not
+      // touched here. The state is the LIVE object the next tool call reads (`getState` caches
+      // it in a map), so putting it back is not optional: a dry run that left a trace would be
+      // worse than no dry run at all.
+      const dry = params.dryRun === true;
+      const snapshot = dry
+        ? {
+            nodes: JSON.parse(JSON.stringify(st.nodes)) as SpanNode[],
+            oldNode: st.oldNode ? (JSON.parse(JSON.stringify(st.oldNode)) as OldNode) : null,
+          }
+        : null;
+      const restore = (): void => {
+        if (!snapshot) return;
+        st.nodes = snapshot.nodes;
+        st.oldNode = snapshot.oldNode;
+      };
+
+      // #6 — STRUCTURED ERRORS. A refusal already carried `why` and `detail` as prose; a caller
+      // that has to FIX its call needs the pieces, not the sentence: the CODE of the refusal,
+      // the IDs involved, the CONSTRAINT that was violated and the values that would be
+      // ALLOWED. All machine-readable, no semantic interpretation. The old fields stay exactly
+      // where they were, so nothing that already reads them changes.
+      const refuse = (why: string, detail: string, extra?: { ids?: string[]; constraint?: Record<string, unknown>; allowed?: string[] }) => ({
         content: [{ type: 'text' as const, text: t('groupRefused')(why, detail) }],
-        details: { ok: false, error: 'group-refused', why, detail },
+        details: {
+          ok: false, error: 'group-refused', code: why, why, detail,
+          ids: extra?.ids ?? [],
+          ...(extra?.constraint ? { constraint: extra.constraint } : {}),
+          ...(extra?.allowed ? { allowed: extra.allowed } : {}),
+        },
       });
 
       const byId = new Map(st.spans.map((s) => [idOfSpan(s), s]));
@@ -4121,8 +4226,8 @@ function indexNodeViews(st: CwlState): IndexNodeView[] {
 
       for (const id of ids) {
         const leaf = byId.get(id);
-        if (!leaf) return refuse('unknown-leaf', id);
-        if (!leaf.micro) return refuse('leaf-without-micro', id);
+        if (!leaf) return refuse('unknown-leaf', id, { ids: [id], allowed: ['cwl_map', 'cwl_find', 'cwl_pending'] });
+        if (!leaf.micro) return refuse('leaf-without-micro', id, { ids: [id], allowed: ['cwl_micro'] });
         const owner = nodeOf(id);
         // TWO OPPOSITE OPERATIONS, one tool. At the frontier a topic collates leaves that are
         // still open, and the pit is off limits for it. Inside the pit it is the other way
@@ -4130,16 +4235,16 @@ function indexNodeViews(st: CwlState): IndexNodeView[] {
         // this only gives them a name — and the buffer rule does not apply, because nothing in
         // the index is moving. A pit topic is a catalogue entry, not a saving.
         if (wantPit) {
-          if (!owner || !inPit.has(owner.id)) return refuse('leaf-not-in-the-pit', `${id} (${owner ? owner.id : 'loose'})`);
+          if (!owner || !inPit.has(owner.id)) return refuse('leaf-not-in-the-pit', `${id} (${owner ? owner.id : 'loose'})`, { ids: [id], constraint: { owner: owner ? owner.id : null, pit: true }, allowed: ['cwl_old', 'pit:false'] });
           continue;
         }
-        if (owner && inPit.has(owner.id)) return refuse('leaf-in-the-pit', `${id} (${owner.id})`);
+        if (owner && inPit.has(owner.id)) return refuse('leaf-in-the-pit', `${id} (${owner.id})`, { ids: [id], constraint: { owner: owner.id, pit: true }, allowed: ['pit:true'] });
         if (owner && owner !== buffer) {
-          if (!cf.groupBeyondBuffer) return refuse('leaf-not-in-the-buffer', `${id} (${owner.id})`);
+          if (!cf.groupBeyondBuffer) return refuse('leaf-not-in-the-buffer', `${id} (${owner.id})`, { ids: [id], constraint: { owner: owner.id, buffer: buffer ? buffer.id : null }, allowed: ['groupBeyondBuffer'] });
           // A TOPIC is never a source. Its leaves are NOT in the head — one description stands
           // for all of them — so taking one out would make that description a lie about what
           // the topic holds, and the leaf would come back into the head as a micro.
-          if (owner.description) return refuse('leaf-in-a-topic', `${id} (${owner.id})`);
+          if (owner.description) return refuse('leaf-in-a-topic', `${id} (${owner.id})`, { ids: [id], constraint: { owner: owner.id, hasDescription: true }, allowed: ['pick-leaves-of-a-node-with-no-description'] });
         }
       }
       // THE TOPIC IS ONE BLOCK IN A CHRONOLOGICAL INDEX, so its leaves must be a chronological
@@ -4160,7 +4265,7 @@ function indexNodeViews(st: CwlState): IndexNodeView[] {
       };
       if (cf.groupBeyondBuffer && !wantPit && !params.node) {
         const broken = contiguity([]);
-        if (broken) return refuse('leaves-not-contiguous', broken);
+        if (broken) return refuse('leaves-not-contiguous', broken, { ids: uniqueIds, constraint: { contiguity: broken }, allowed: ['pick-leaves-that-are-consecutive-in-time'] });
       }
 
       if (params.node) {
@@ -4207,6 +4312,26 @@ function indexNodeViews(st: CwlState): IndexNodeView[] {
           const kids = new Set(target.children ?? []);
           for (const child of absorbed) kids.add(child.id);
           target.children = [...kids];
+        }
+        // #2 — THE DRY RUN. Every validation of this branch has already run, so the
+        // prediction is the real one, refusals included. Nothing is written and the state is
+        // put back from the snapshot taken at the top.
+        if (dry) {
+          const floor = Math.max(Math.round(cf.mergeMinRatio * MERGE_SYNTHESIS_CHARS), cf.mergeMinChars);
+          const labelChars = ids.reduce((n, leafId) => n + (byId.get(leafId)?.micro?.length ?? 0), 0);
+          restore();
+          return {
+            content: [{
+              type: 'text' as const,
+              text: t('groupDryRunAdd')(target.id, target.name ?? target.id, ids.length, absorbed.length, labelChars, floor),
+            }],
+            details: {
+              ok: true, dryRun: true, id: target.id, name: target.name, wouldAdd: ids.length,
+              wouldAbsorb: absorbed.map((c) => c.id), leaves: target.leaves.length,
+              inPit: inThePit, descriptionUpdated: Boolean(rewrite),
+              microChars: labelChars, needChars: floor,
+            },
+          };
         }
         saveState(key, st);
         debugLog(cf, `GROUP ${target.id} "${target.name ?? ''}": +${ids.length} leaf/leaves (now ${target.leaves.length})${absorbed.length ? `, +${absorbed.length} node(s) absorbed (${absorbed.map((c) => c.id).join(', ')})` : ''}${inThePit ? ', the node is in the pit' : ''}${rewrite ? `, description rewritten (${rewrite.length} chars)` : ''}`);
@@ -4265,7 +4390,12 @@ function indexNodeViews(st: CwlState): IndexNodeView[] {
         debugLog(cf, `GROUP not-born: ${ids.length} leaf/leaves hold ${microChars} chars, need ${needChars}`);
         return {
           content: [{ type: 'text', text: t('groupTooSmall')(ids.length, microChars, needChars) }],
-          details: { ok: false, error: 'too-small', leaves: ids.length, microChars, needChars },
+          details: {
+            ok: false, error: 'too-small', code: 'labels-too-small',
+            leaves: ids.length, microChars, needChars,
+            ids: uniqueIds, constraint: { microChars, needChars, ratio: cf.mergeMinRatio, floor: cf.mergeMinChars },
+            allowed: ['group-more-leaves', 'lower-mergeMinRatio', 'lower-mergeMinChars'],
+          },
         };
       }
       const base = hashText([...ids, ...nodeIds].join('|'));
@@ -4326,6 +4456,21 @@ function indexNodeViews(st: CwlState): IndexNodeView[] {
         st.nodes.splice(lastPit + 1, 0, node);
       } else {
         st.nodes.splice(insertAt, 0, ...olderNodes, node, ...newerNodes);
+      }
+      // #2 — the dry run for a NEW topic. Everything is decided by now: the id it would get,
+      // where it would land, what it would take. The state is put back and nothing is written.
+      if (dry) {
+        restore();
+        return {
+          content: [{
+            type: 'text' as const,
+            text: t('groupDryRunNew')(id, name, uniqueIds.length, absorbedNew.length, microChars, needChars),
+          }],
+          details: {
+            ok: true, dryRun: true, id, name, leaves: uniqueIds.length,
+            absorb: absorbedNew.map((c) => c.id), microChars, needChars, pit: wantPit,
+          },
+        };
       }
       saveState(key, st);
       debugLog(cf, `GROUP ${id} "${name}": born ${wantPit ? 'INSIDE the pit' : 'at the frontier'} with ${ids.length} leaf/leaves, ${microChars} chars of micros, description of ${description.length} chars`);
@@ -5292,6 +5437,22 @@ function indexNodeViews(st: CwlState): IndexNodeView[] {
     },
   });
 
+  /**
+   * A PAGE of a list, for the tools that can return a long one. `limit` is 0 or absent by
+   * default, and THAT is the point: the default does not truncate, so nothing that called
+   * these tools before sees a different answer. `cursor` is a plain offset — deterministic,
+   * and it survives the list changing under it because the caller also gets the total.
+   */
+  function paginate<T>(items: T[], limit: unknown, cursor: unknown): { page: T[]; total: number; next: number | null } {
+    const total = items.length;
+    const start = Math.max(0, Math.floor(Number(cursor) || 0));
+    const lim = Math.max(0, Math.floor(Number(limit) || 0));
+    if (lim === 0) return { page: items.slice(start), total, next: null };
+    const page = items.slice(start, start + lim);
+    const next = start + page.length < total ? start + page.length : null;
+    return { page, total, next };
+  }
+
   pi.registerTool({
     name: 'cwl_node',
     label: 'CWL Node',
@@ -5299,6 +5460,8 @@ function indexNodeViews(st: CwlState): IndexNodeView[] {
     promptSnippet: t('consult').nodeSnippet,
     parameters: Type.Object({
       id: Type.String({ description: t('consult').nodeId }),
+      limit: Type.Optional(Type.Number({ description: t('consult').nodeLimit })),
+      cursor: Type.Optional(Type.Number({ description: t('consult').nodeCursor })),
     }),
     async execute(_toolCallId, params, _signal, _onUpdate, ctx) {
       const key = sessionKey(ctx);
@@ -5313,14 +5476,20 @@ function indexNodeViews(st: CwlState): IndexNodeView[] {
       const lines = [t('consult').nodeHeader(nd.id, nd.kind, nd.name ?? '', nd.leaves.length, nd.chars)];
       if (nd.description) lines.push(nd.description);
       if (nd.children.length > 0) lines.push(t('consult').nodeChild(nd.children.join(' ')));
-      for (const id of nd.leaves) {
+      const page = paginate(nd.leaves, params.limit, params.cursor);
+      for (const id of page.page) {
         const v = leaves.get(id);
         lines.push(t('consult').nodeLeaf(id, v?.micro ? firstLine(v.micro) : '(no label yet)'));
       }
+      if (page.next !== null) lines.push(t('consult').pageInfo(page.page.length, page.total, String(page.next)));
       debugLog(cf, `NODE ${nd.id} kind=${nd.kind} leaves=${nd.leaves.length} chars=${nd.chars}`);
       return {
         content: [{ type: 'text', text: lines.join('\n') }],
-        details: { ok: true, id: nd.id, kind: nd.kind, leaves: nd.leaves.length, chars: nd.chars, leafIds: nd.leaves, children: nd.children },
+        details: {
+          ok: true, id: nd.id, kind: nd.kind, leaves: nd.leaves.length, chars: nd.chars,
+          leafIds: nd.leaves, children: nd.children,
+          shownIds: page.page, shown: page.page.length, total: page.total, nextCursor: page.next,
+        },
       };
     },
   });
@@ -5330,8 +5499,11 @@ function indexNodeViews(st: CwlState): IndexNodeView[] {
     label: 'CWL Pending',
     description: t('consult').pendingDesc,
     promptSnippet: t('consult').pendingSnippet,
-    parameters: Type.Object({}),
-    async execute(_toolCallId, _params, _signal, _onUpdate, ctx) {
+    parameters: Type.Object({
+      limit: Type.Optional(Type.Number({ description: t('consult').pendingLimit })),
+      cursor: Type.Optional(Type.Number({ description: t('consult').pendingCursor })),
+    }),
+    async execute(_toolCallId, params, _signal, _onUpdate, ctx) {
       const key = sessionKey(ctx);
       const st = getState(key);
       const cf = getConfig(key);
@@ -5342,18 +5514,49 @@ function indexNodeViews(st: CwlState): IndexNodeView[] {
       const need = Math.max(Math.round(cf.mergeMinRatio * MERGE_SYNTHESIS_CHARS), cf.mergeMinChars);
       const totalLeaves = open.reduce((n, nd) => n + nd.leaves.length, 0);
       const totalChars = open.reduce((n, nd) => n + nd.chars, 0);
+      // #3 — WHERE THE LEAVES ARE, because it decides WHICH operation to use and the two are
+      // not interchangeable. The list below is the FRONTIER: `cwl_group` without `pit` takes
+      // those leaves and BORNS a topic, which moves the index and pays the size guard. What
+      // this section names is the PIT: leaves already archived and still unnamed, which
+      // `pit: true` catalogues WITHOUT moving anything and WITHOUT a size guard. Saying which
+      // is which is the whole point: an agent that does not know where a leaf sits spends a
+      // call finding out, and the refusal it gets back does not say what to do instead.
+      const pitRoots = st.oldNode?.nodes ?? [];
+      const pitAll = new Set<string>([...pitRoots, ...(pitRoots.length > 0 ? containedNodes(st, pitRoots) : [])]);
+      const pitOrdinary = st.nodes.filter((nd) => pitAll.has(nd.id) && !nd.description);
+      const pitLeaves = pitOrdinary.reduce((n, nd) => n + nd.leaves.length, 0);
+      const pitLines: string[] = pitOrdinary.length > 0
+        ? [
+            t('consult').pendingPitHeader(pitOrdinary.length, pitLeaves),
+            ...pitOrdinary.map((nd) => t('consult').pendingPitLine(nd.id, nd.leaves.length)),
+            t('consult').pendingPitHint,
+          ]
+        : [];
       if (open.length === 0) {
-        return { content: [{ type: 'text', text: t('consult').pendingEmpty }], details: { ok: true, nodes: 0, leaves: 0, chars: 0, need } };
+        return {
+          content: [{ type: 'text', text: [t('consult').pendingEmpty, ...pitLines].join('\n') }],
+          details: { ok: true, nodes: 0, leaves: 0, chars: 0, need, pit: pitOrdinary.map((nd) => nd.id) },
+        };
       }
       const lines = [t('consult').pendingHeader(open.length, totalLeaves, totalChars.toLocaleString(), need.toLocaleString())];
-      for (const nd of open) {
+      // #4 — the page. `limit` absent means ALL of it, so the answer is what it always was.
+      const page = paginate(open, params.limit, params.cursor);
+      for (const nd of page.page) {
         lines.push(t('consult').pendingLine(nd.id, nd.kind, nd.leaves.length, nd.chars));
         lines.push(t('consult').mapLeaves(nd.leaves.join(' ')));
       }
+      if (page.next !== null) lines.push(t('consult').pageInfo(page.page.length, page.total, String(page.next)));
+      lines.push(...pitLines);
       debugLog(cf, `PENDING nodes=${open.length} leaves=${totalLeaves} chars=${totalChars} need=${need}`);
       return {
         content: [{ type: 'text', text: lines.join('\n') }],
-        details: { ok: true, nodes: open.length, leaves: totalLeaves, chars: totalChars, need, enough: totalChars >= need, ids: open.map((nd) => nd.id) },
+        details: {
+          ok: true, nodes: open.length, leaves: totalLeaves, chars: totalChars, need,
+          enough: totalChars >= need, ids: open.map((nd) => nd.id),
+          total: page.total, shown: page.page.length, nextCursor: page.next,
+          shownIds: page.page.map((nd) => nd.id),
+          pit: pitOrdinary.map((nd) => nd.id),
+        },
       };
     },
   });
