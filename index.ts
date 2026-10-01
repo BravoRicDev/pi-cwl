@@ -2543,7 +2543,7 @@ function indexShape(
     youngPlain.length,
     youngPlain.reduce((n, nd) => n + nd.leaves.length, 0),
     looseIds.size,
-    Math.round(headChars / 4).toLocaleString(),
+    Math.round(headChars / (st.charTokenRatio || DEFAULT_CHAR_TOKEN_RATIO)).toLocaleString(),
     st.totalEvictions,
     st.totalEvictedTokens.toLocaleString(),
   ];
@@ -6509,7 +6509,7 @@ function indexNodeViews(st: CwlState): IndexNodeView[] {
       }
       const totalLeaves = nodes.reduce((n, nd) => n + nd.leaves.length, 0);
       const headChars = nodes.reduce((n, nd) => n + nd.chars, 0);
-      const lines = [t('consult').mapHeader(nodes.length, totalLeaves, Math.round(headChars / 4).toLocaleString())];
+      const lines = [t('consult').mapHeader(nodes.length, totalLeaves, Math.round(headChars / (st.charTokenRatio || DEFAULT_CHAR_TOKEN_RATIO)).toLocaleString())];
       for (const nd of nodes) {
         lines.push(t('consult').mapLine(nd.id, nd.kind, nd.name ?? '', nd.leaves.length, nd.children.length, nd.chars));
         // The leaves are named ONLY where the head already pays for them (a node with
