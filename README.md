@@ -249,8 +249,9 @@ disponibile e accetta un `micro` opzionale: l'etichetta che rappresenterà la fo
 **`cwl_open`** — riapre una foglia: restituisce il corpo intero, mai troncato, e ne dichiara prima la
 dimensione.
 
-**`cwl_micro`** — sostituisce il corpo di una foglia con un'etichetta breve (tetto: 1.200
-caratteri, ~300 token); un `text` vuoto restituisce il corpo.
+**`cwl_micro`** — sostituisce il corpo di una foglia con un'etichetta breve (obiettivo: ~960
+caratteri, ~240 token; il tetto misurato è 1.400 caratteri, ~350 token); un `text` vuoto
+restituisce il corpo.
 
 **`cwl_old`** — accorpa i nodi giovani più vecchi nel nodo vecchio: il riassunto dei riassunti.
 

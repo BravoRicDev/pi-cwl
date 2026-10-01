@@ -41,8 +41,8 @@ test('a non-numeric thresholdRatio does not produce NaN and falls back on the de
   try {
     const { text, details } = await status(tools, ctx);
     assert.doesNotMatch(text, /NaN/, 'the budget must never render NaN');
-    assert.match(text, /threshold: 85%/, 'an invalid threshold must fall back on the default 0.85');
-    assert.equal(details.budget, 80000, 'the budget must stay at the default 80k');
+    assert.match(text, /threshold: 100%/, 'an invalid threshold must fall back on the default 1');
+    assert.equal(details.budget, 100000, 'the budget must stay at the default 100k');
   } finally { cleanup(); }
 });
 
@@ -50,7 +50,7 @@ test('an out-of-range thresholdRatio does not silently disable eviction', async 
   const { tools, ctx, cleanup } = await loadWithConfig({ thresholdRatio: 5 }, 'cfg-range');
   try {
     const { text } = await status(tools, ctx);
-    assert.match(text, /threshold: 85%/, 'a threshold > 1 must fall back on the default');
+    assert.match(text, /threshold: 100%/, 'a threshold > 1 must fall back on the default');
   } finally { cleanup(); }
 });
 
@@ -59,7 +59,7 @@ test('a non-numeric tokenBudget falls back on the default', async () => {
   try {
     const { text, details } = await status(tools, ctx);
     assert.doesNotMatch(text, /NaN/);
-    assert.equal(details.budget, 80000, 'an invalid budget must fall back on the default 80k');
+    assert.equal(details.budget, 100000, 'an invalid budget must fall back on the default 100k');
   } finally { cleanup(); }
 });
 

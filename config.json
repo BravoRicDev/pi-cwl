@@ -1,6 +1,6 @@
 {
-  "tokenBudget": 80000,
-  "thresholdRatio": 0.85,
+  "tokenBudget": 100000,
+  "thresholdRatio": 1,
   "levels": {
     "stripReasoning": true,
     "stripBulkOutput": true,
