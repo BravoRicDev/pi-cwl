@@ -1211,6 +1211,12 @@ interface CwlState {
   /** Turn of the last failed gate, used for the cooldown. */
   lastGateViolationTurn: number;
   /**
+   * Why the demand was withheld the last time it was impossible, or '' when the
+   * last check found something doable. Not bookkeeping for its own sake: the
+   * silence of a withheld demand proved nothing once, and a diagnosis died on it.
+   */
+  gateWithheld: string;
+  /**
    * Endpoints of the largest range `cwl_compress_range` may compress right now,
    * recomputed on every context hook. Deliberately NOT persisted: they describe
    * the CURRENT message list, and a stale pair reloaded in another process would
@@ -1280,6 +1286,7 @@ function newState(): CwlState {
     gateArmedTurn: -1,
     gateAttempts: 0,
     lastGateViolationTurn: -1,
+    gateWithheld: '',
     rangeStartHash: null,
     rangeEndHash: null,
     lastUsageTs: 0,
@@ -1388,6 +1395,8 @@ interface PersistedState {
   gateAttempts?: number;
   lastGateViolationTurn?: number;
   /** Optional on load: a state written before this field existed has none. */
+  gateWithheld?: string;
+  /** Optional on load: a state written before this field existed has none. */
   looseFrom?: number;
 }
 
@@ -1425,6 +1434,7 @@ function saveState(key: string, st: CwlState): void {
       gateArmedTurn: st.gateArmedTurn,
       gateAttempts: st.gateAttempts,
       lastGateViolationTurn: st.lastGateViolationTurn,
+      gateWithheld: st.gateWithheld,
     };
     // Atomic write: a crash mid-write must not leave a truncated file that then
     // fails to parse on resume and silently loses the whole state.
@@ -1469,6 +1479,7 @@ function loadPersistedState(key: string): CwlState | null {
     st.gateArmedTurn = typeof data.gateArmedTurn === 'number' ? data.gateArmedTurn : -1;
     st.gateAttempts = typeof data.gateAttempts === 'number' ? data.gateAttempts : 0;
     st.lastGateViolationTurn = typeof data.lastGateViolationTurn === 'number' ? data.lastGateViolationTurn : -1;
+    st.gateWithheld = typeof data.gateWithheld === 'string' ? data.gateWithheld : '';
     if (Array.isArray(data.knownHashes)) {
       st.knownHashes = new Set(data.knownHashes.filter((h): h is string => typeof h === 'string'));
     }
@@ -1676,10 +1687,12 @@ const LEVEL_CONFIG_KEY: Record<StripLevel, keyof CwlConfig['levels'] | null> = {
  * rather than read, which is the difference between a measurement and an
  * assumption.
  */
-function episodeRanges(
-  messages: AgentMessage[],
-  episodes: Episode[],
-): Map<string, { from: number; to: number; deduced: boolean }> {
+/**
+ * Position of every tool call result in the list, by call id. Episode anchors ARE
+ * tool calls, so this map is what turns an anchor into a position — one
+ * implementation for every reader, because two copies of it drift.
+ */
+function toolCallPositions(messages: AgentMessage[]): Map<string, number> {
   const posByToolCallId = new Map<string, number>();
   messages.forEach((m, i) => {
     // SAFETY: toolCallId exists on the real tool-result messages; the public
@@ -1687,6 +1700,14 @@ function episodeRanges(
     const id = (m as unknown as RealMessage).toolCallId;
     if (typeof id === 'string') posByToolCallId.set(id, i);
   });
+  return posByToolCallId;
+}
+
+function episodeRanges(
+  messages: AgentMessage[],
+  episodes: Episode[],
+): Map<string, { from: number; to: number; deduced: boolean }> {
+  const posByToolCallId = toolCallPositions(messages);
   const out = new Map<string, { from: number; to: number; deduced: boolean }>();
   for (const ep of episodes) {
     const to = ep.endToolCallId !== null ? posByToolCallId.get(ep.endToolCallId) : undefined;
@@ -5024,13 +5045,54 @@ function indexNodeViews(st: CwlState): IndexNodeView[] {
       if (st.overBudgetSince < 0) st.overBudgetSince = st.turns;
       declareFloor(list, after);
       if (!cf.gate || st.gateArmedTurn < 0) return { messages: list };
-      // Only demand what the extension can actually deliver. In a real session the
-      // gate asked to compact while ALL four episodes were already closed and
-      // cwl_compress_range answered "nothing left to compress": it demanded the
-      // impossible once per turn, burning the very context it was trying to save.
-      const canClose = st.graph.active().length > 0;
-      const canCompress = st.rangeStartHash !== null;
-      if (!canClose && !canCompress) return { messages: list };
+      // Only demand what the extension can actually deliver — and MEASURE it on
+      // THIS list instead of trusting the state: an ask no call can satisfy costs
+      // the agent a turn, distracts it and dirties the context. Two ways to be
+      // impossible, both seen in a live session:
+      //  - an ACTIVE episode whose anchors the native compaction took: MEASURED as
+      //    "EPISODES unlocatable: 4 of 4". Ending it frees nothing, because the
+      //    eviction cannot locate the content it would remove;
+      //  - a stored RANGE whose endpoints are no longer in the list the agent will
+      //    see: the leaf would be born and pruned right after ("SPANS pruned"), so
+      //    the call would answer ok and free nothing.
+      // `turn_end` arms the gate on the static pair and that is enough: withholding
+      // here leaves it armed, so the demand fires as soon as it is doable.
+      const activeEps = st.graph.active();
+      // Closing an OPEN episode is judged by its ANCHOR, not by `episodeRanges`:
+      // that function resolves closed episodes (it needs the end anchor, which an
+      // open one does not have yet) and would call every open episode impossible.
+      // Two things make the ask useless: an episode begun at the very end of the
+      // list (closing it would save nothing — `to <= from`), and no material at all.
+      // A LOST start anchor is not a reason to stay silent: closing it makes the
+      // range deduced from 0, which the eviction can act on.
+      const anchors = activeEps.length > 0 ? toolCallPositions(list) : null;
+      const canClose = activeEps.some((ep) => {
+        const from = anchors?.get(ep.startToolCallId);
+        return from === undefined ? list.length >= 2 : from < list.length - 1;
+      });
+      const startH = st.rangeStartHash;
+      const endH = st.rangeEndHash;
+      let canCompress = false;
+      if (startH !== null && endH !== null) {
+        // SAFETY: `addressOf` is a pure function of the message; hashing the list
+        // is the same cost `locateSpans` already pays once per turn.
+        const addrs = new Set(list.map((m) => addressOf(m)));
+        canCompress = addrs.has(startH) && addrs.has(endH);
+      }
+      if (!canClose && !canCompress) {
+        const why =
+          activeEps.length > 0
+            ? 'the only open episode(s) begin at the end of the list: closing them frees nothing'
+            : startH !== null || endH !== null
+              ? 'the stored range endpoints are no longer in the list'
+              : 'no episode is open and no range is stored';
+        if (st.gateWithheld !== why) {
+          st.gateWithheld = why;
+          debugLog(cf, `GATE withheld: ${why} — the demand would ask for something no call can do`);
+        }
+        return { messages: list };
+      }
+      st.gateWithheld = '';
       // SAFETY: Pi accepts the custom role in the context hook although the
       // AgentMessage union does not declare it; the extra keys are its contract.
       return {
