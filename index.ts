@@ -2672,6 +2672,19 @@ interface CompressedSpan {
   opens?: number;
   lastOpen?: number;
   /**
+   * A leaf that came from ANOTHER transcript (an adopted/forked memory) and can therefore
+   * never resolve here: its anchors belong to a session this one does not have.
+   *
+   * It is not a DEAD leaf, and the difference is the whole point. A dead leaf lost its
+   * anchors IN THIS session: the summary is a cache of an original that is still in the
+   * append-only transcript, so dropping it is safe (that is what `st.graves` is for). An
+   * ARCHIVED leaf has no original anywhere this session can reach — the summary IS the only
+   * copy. Pruning it would not free dead weight, it would DELETE the memory.
+   *
+   * So it is skipped by `locateSpans` (neither resolved nor dead) and it is never pruned.
+   */
+  archived?: boolean;
+  /**
    * The STABLE IDS of the two anchors: `stableIdOf` of the messages they point at.
    *
    * Kept because they are the only thing that can find this range again in the
@@ -3039,6 +3052,11 @@ function locateSpans(
   const dead: CompressedSpan[] = [];
   const resolved = spans
     .map((sp) => {
+      // An ARCHIVED leaf belongs to another transcript: it can never resolve here, and it
+      // must never be counted as dead either — `dead` is what the caller prunes, and
+      // pruning an archived leaf would delete the only copy of its summary. Skipped before
+      // the lookup so it is neither. See `CompressedSpan.archived`.
+      if (sp.archived) return null;
       const from = findPos(sp.startHash);
       const to = findPos(sp.endHash);
       // Both endpoints gone: the history this span replaced is not in the list
@@ -3169,7 +3187,66 @@ function applySpans(
 
   const { resolved, dead, overlapped } = locateSpans(messages, spans);
 
-  if (resolved.length === 0) return { kept: out(messages), applied: 0, saved: 0, newApplied: 0, newSaved: 0, pairDropped: 0, pairStripped: 0, insideOut: [], dead, overlapped: 0 };
+  // THE INHERITED MEMORY. An adopted memory (see `cwl_adopt`) came from ANOTHER transcript,
+  // so its leaves never resolve here — `locateSpans` skips them — and the blocks that normally
+  // stand where the compressed content used to be have nowhere to stand. Without this they
+  // would be invisible: the memory would live on disk and never reach the model. They are
+  // injected AT THE TOP, chronological order (the pit first, then the topics, then the leaves
+  // no topic holds): a prefix that changes only when an event changes it, which is the position
+  // the cache prefers. Claim 0, because nothing is removed HERE, so the fixed point the normal
+  // path iterates is already at its answer.
+  const inherited: AgentMessage[] = [];
+  /** The leaves that resolved HERE: a block that has one of them has a place to stand. */
+  const resolvedIds = new Set(resolved.map((r) => idOfSpan(r.sp)));
+  /** The pit already injected at the top: the loop must not inject it a second time. */
+  const pitDoneAtTop = pit !== null && ![...pit.leaves].some((id) => resolvedIds.has(id));
+  /** The same, one flag per TOPIC node. */
+  const topicsDoneAtTop = new Set<string>();
+  {
+    const covered = new Set<string>(topics.keys());
+    if (pit) {
+      for (const id of pit.leaves) covered.add(id);
+      // A block goes to the top ONLY when it has no resolvable leaf: with no inherited
+      // material at all every block has one, so nothing is prepended and the behaviour of a
+      // normal session is untouched.
+      if (pitDoneAtTop) inherited.push({
+        role: 'custom',
+        customType: 'cwl-compressed',
+        content: t('oldHead')(pit.id, pit.nodes, 0) + (pit.mode === 'descriptions' ? t('oldHeadDescriptions')() : '') + pit.body,
+        display: false,
+        timestamp: pit.at,
+      } as unknown as AgentMessage);
+    }
+    for (const tv of topics.values()) {
+      if (topicsDoneAtTop.has(tv.node.id)) continue;
+      if (tv.node.leaves.some((id) => resolvedIds.has(id))) continue;
+      topicsDoneAtTop.add(tv.node.id);
+      const standsFor = tv.node.leaves.length + tv.heldLeaves;
+      inherited.push({
+        role: 'custom',
+        customType: 'cwl-compressed',
+        content: t('topicHead')(tv.node.name ?? tv.node.id, standsFor, 0)
+          + (tv.heldNodes ? t('topicHolds')(tv.heldNodes, tv.heldLeaves) : '')
+          + String(tv.node.description ?? ''),
+        display: false,
+        timestamp: tv.node.at,
+      } as unknown as AgentMessage);
+    }
+    for (const sp of spans) {
+      if (!sp.archived) continue;
+      const id = idOfSpan(sp);
+      if (covered.has(id)) continue;
+      inherited.push({
+        role: 'custom',
+        customType: 'cwl-compressed',
+        content: t('compressedNotice')(sp.startHash, sp.endHash, 0, id) + (sp.micro ?? sp.summary),
+        display: false,
+        timestamp: sp.at,
+      } as unknown as AgentMessage);
+    }
+  }
+
+  if (resolved.length === 0) return { kept: out([...inherited, ...messages]), applied: 0, saved: 0, newApplied: 0, newSaved: 0, pairDropped: 0, pairStripped: 0, insideOut: [], dead, overlapped: 0 };
 
   const replaced = new Set<number>();
   const injected: (AgentMessage | null)[] = [];
@@ -3177,9 +3254,9 @@ function applySpans(
   let newSaved = 0;
   let newApplied = 0;
   /** The pit injects ONE block, at its first leaf: the others inject nothing at all. */
-  let pitBlockDone = false;
+  let pitBlockDone = pitDoneAtTop;
   /** The same, one flag per TOPIC node: one description where its first leaf used to be. */
-  const topicDone = new Set<string>();
+  const topicDone = topicsDoneAtTop;
 
   /**
    * Inside a span these roles are NOT replaced by the summary: the operator's own
@@ -3320,7 +3397,7 @@ function applySpans(
     injected.push(injectedMsg);
   }
 
-  const kept: AgentMessage[] = [];
+  const kept: AgentMessage[] = [...inherited];
   // Recorded here, where the positions are BORN: everything this loop pushes
   // because of a span (its summary, and whatever survives inside it) becomes a
   // position the floor report can read later instead of trying to guess it.
