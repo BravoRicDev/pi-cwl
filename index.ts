@@ -204,6 +204,8 @@ type CwlMessages = {
   oldDryRun: (pass: boolean, destination: string, nodes: number, leaves: number, freedChars: number, needChars: number) => string;
   /** A DRY RUN for `cwl_group` when it would ADD leaves to a topic that already exists. */
   groupDryRunAdd: (id: string, name: string, leaves: number, nodes: number, microChars: number, needChars: number) => string;
+  /** #7 — the batch: all the groups validated first, then all applied, or none. */
+  groupManyDone: (groups: number, already: number, leaves: number, nodes: number) => string;
   /** A DRY RUN for `cwl_group` when it would BORN a new topic. */
   groupDryRunNew: (id: string, name: string, leaves: number, nodes: number, microChars: number, needChars: number) => string;
   oldHead: (id: string, nodes: number, tokens: number) => string;
@@ -252,6 +254,8 @@ type CwlMessages = {
     oldText: string;
     oldDryRun: string;
     groupDryRun: string;
+    groupManyDesc: string;
+    groupGroups: string;
     compressRangeDesc: string; compressRangeSummary: string; compressMicro: string;
     compressCovered: (start: string, end: string) => string;
     microOver: (where: string, chars: number, ceiling: number) => string;
@@ -385,6 +389,7 @@ const I18N: Record<Lang, CwlMessages> = {
     oldNodeSet: (id, nodes, leaves, microChars, tokens) => `Old node ${id}: merged ${nodes} node(s), ${leaves} leaf/leaves (${microChars} chars of micros) into a synthesis of ~${tokens} tokens. They stay readable: cwl_open("${id}") lists the nodes inside.`,
     oldNotDue: (young, need) => `No merge: ${young} young node(s), the merge starts at ${need}. Nothing was recorded.`,
     oldDryRun: (pass, destination, nodes, leaves, freedChars, needChars) => `DRY RUN, nothing was recorded. Destination: ${destination}. It would merge ${nodes} node(s) and ${leaves} leaf/leaves, freeing ${freedChars} characters; the merge needs ${needChars}. Verdict: ${pass ? 'it would go through' : 'it would be REFUSED'}.`,
+    groupManyDone: (groups, already, leaves, nodes) => `Batch of ${groups} group(s): ${groups - already} applied, ${already} already satisfied (nothing to do), ${leaves} leaf/leaves moved and ${nodes} node(s) absorbed. Validated ALL of them before touching anything, so nothing was applied half way.`,
     groupDryRunAdd: (id, name, leaves, nodes, microChars, needChars) => `DRY RUN, nothing was recorded. Topic ${id} "${name}" would receive ${leaves} leaf/leaves and ${nodes} node(s); it holds ${microChars} characters of labels against a floor of ${needChars}.`,
     groupDryRunNew: (id, name, leaves, nodes, microChars, needChars) => `DRY RUN, nothing was recorded. A new topic would be born as ${id} "${name}", taking ${leaves} leaf/leaves and ${nodes} node(s); it holds ${microChars} characters of labels against a floor of ${needChars}.`,
     oldHead: (id, nodes, tokens) => `[CWL OLD NODE ${id} — ${nodes} older node(s) merged behind this synthesis (~${tokens} tokens). Their micros left the context; cwl_open("${id}") pages through them, leaf by leaf.]\n\n`,
@@ -461,6 +466,8 @@ const I18N: Record<Lang, CwlMessages> = {
       groupPit: 'Catalogue these leaves INSIDE the old node instead of creating a topic at the frontier: every leaf must already be in the pit (a leaf at the frontier is refused), the minimum is 3 leaves, and there is no size guard, because the pit synthesis is left exactly as it is and nothing in the index moves. A pit topic is a way to NAME material that is already archived, not a way to save tokens. To put order in an archive that ALREADY exists, pass the id of a pit topic as `node` together with `pit: true`: the leaves move into it and its description may be rewritten. A node left empty is dropped, and every leaf has to end up somewhere: the pit synthesis is never touched either way.',
       oldDryRun: 'Preview the merge without doing it: dryRun: true reports the destination, the nodes and leaves involved, what would leave the context and what the merge needs, and records NOTHING.',
       groupDryRun: 'Preview the grouping without doing it: dryRun: true reports the destination, the leaves and nodes involved, the label characters against the floor, and records NOTHING. The validations run exactly as in a real call, so a dry run also tells you which refusal you would hit.',
+      groupManyDesc: 'Apply SEVERAL groupings as ONE operation: every group is validated first (with the same code path as a single call), and only if they all pass is anything applied. All or nothing, and idempotent: repeating the same request does not duplicate, because a topic born from a set of leaves gets an id derived from those leaves, so the second request finds it already satisfied and says so.',
+      groupGroups: 'The groups to apply, in order. Each one takes the same fields as a single call: leaves, nodes, node, name, description, pit.',
       recallEpisodeFull: 'false (default) returns a truncated preview; true returns the whole episode.',
       compressRangeDesc: 'Compresses the OLDEST usable range of the conversation into your summary. YOU DO NOT pick the range and you do not need any hash: the extension already computed the address and holds it. Call it when an eviction marker or the budget demand tells you to compact, and write a summary good enough to keep working without re-reading the originals. Nothing inside the protected window is touched.',
       compressRangeSummary: 'The summary that REPLACES the compressed range. Write WHOLE PIECES, not a digest: it must be enough to keep working without re-reading them. Include paths, file names, function names, numeric values, and what you decided and why.',
@@ -608,6 +615,7 @@ const I18N: Record<Lang, CwlMessages> = {
     oldNodeSet: (id, nodes, leaves, microChars, tokens) => `Nodo vecchio ${id}: accorpati ${nodes} nodo/i, ${leaves} foglia/e (${microChars} caratteri di micro) in una sintesi di ~${tokens} token. Restano leggibili: cwl_open("${id}") elenca i nodi dentro.`,
     oldNotDue: (young, need) => `Nessun accorpamento: ${young} nodo/i giovane/i, si accorpa da ${need} in su. Non e' stato registrato niente.`,
     oldDryRun: (pass, destination, nodes, leaves, freedChars, needChars) => `PROVA, non e' stato registrato niente. Destinazione: ${destination}. Accorperebbe ${nodes} nodo/i e ${leaves} foglia/e, liberando ${freedChars} caratteri; l'accorpamento ne richiede ${needChars}. Esito: ${pass ? 'passerebbe' : 'sarebbe RIFIUTATO'}.`,
+    groupManyDone: (groups, already, leaves, nodes) => `Lotto di ${groups} gruppo/i: ${groups - already} applicati, ${already} gia' soddisfatti (niente da fare), ${leaves} foglia/e spostate e ${nodes} nodo/i assorbiti. Validati TUTTI prima di toccare qualcosa, quindi niente e' stato applicato a meta'.`,
     groupDryRunAdd: (id, name, leaves, nodes, microChars, needChars) => `PROVA, non e' stato registrato niente. Il topic ${id} "${name}" riceverebbe ${leaves} foglia/e e ${nodes} nodo/i; tiene ${microChars} caratteri di etichette contro una soglia di ${needChars}.`,
     groupDryRunNew: (id, name, leaves, nodes, microChars, needChars) => `PROVA, non e' stato registrato niente. Nascerebbe un topic nuovo come ${id} "${name}", prendendo ${leaves} foglia/e e ${nodes} nodo/i; tiene ${microChars} caratteri di etichette contro una soglia di ${needChars}.`,
     oldHead: (id, nodes, tokens) => `[CWL NODO VECCHIO ${id} — ${nodes} nodo/i piu' vecchi accorpati dietro questa sintesi (~${tokens} token). I loro micro sono usciti dal contesto; cwl_open("${id}") li pagina, foglia per foglia.]\n\n`,
@@ -680,6 +688,8 @@ const I18N: Record<Lang, CwlMessages> = {
       groupPit: 'Cataloga queste foglie DENTRO il nodo vecchio invece di creare un topic sulla frontiera: ogni foglia deve essere gia\' nel pozzo (una foglia sulla frontiera viene rifiutata), il minimo sono 3 foglie, e non c\'e\' guard di dimensione, perche\' la sintesi del pozzo resta esattamente com\'e\' e nell\'indice non si muove niente. Un topic nel pozzo serve a DARE UN NOME a materiale gia\' archiviato, non a risparmiare token. Per mettere ordine in un archivio che esiste GIA\', passa l\'id di un topic del pozzo come `node` insieme a `pit: true`: le foglie si spostano dentro di esso e la sua descrizione si puo\' riscrivere. Un nodo lasciato vuoto viene eliminato, e ogni foglia deve finire da qualche parte: la sintesi del pozzo in nessuno dei due casi viene toccata.',
       oldDryRun: 'Anteprima dell\'accorpamento senza farlo: dryRun: true riporta la destinazione, i nodi e le foglie coinvolte, cosa uscirebbe dal contesto e cosa serve all\'accorpamento, e NON registra niente.',
       groupDryRun: 'Anteprima del raggruppamento senza farlo: dryRun: true riporta la destinazione, le foglie e i nodi coinvolti, i caratteri di etichette contro la soglia, e NON registra niente. Le validazioni girano esattamente come in una chiamata vera, quindi la prova dice anche quale rifiuto incontreresti.',
+      groupManyDesc: 'Applica PIU\' raggruppamenti come UNA sola operazione: ogni gruppo viene validato prima (con lo stesso percorso di codice di una chiamata singola), e solo se passano tutti si applica qualcosa. Tutto o niente, e idempotente: ripetere la stessa richiesta non duplica, perche\' un topic nato da un insieme di foglie prende un id derivato da quelle foglie, quindi la seconda richiesta lo trova gia\' soddisfatto e lo dice.',
+      groupGroups: 'I gruppi da applicare, in ordine. Ognuno prende gli stessi campi di una chiamata singola: leaves, nodes, node, name, description, pit.',
       recallEpisodeFull: 'false (default) restituisce un estratto troncato; true restituisce l\'episodio intero.',
       compressRangeDesc: "Comprime nel tuo riassunto l'intervallo PIU' VECCHIO utilizzabile della conversazione. NON scegli tu l'intervallo e non ti serve nessun hash: l'estensione ha gia' calcolato e tiene l'indirizzo. Chiamalo quando un marker di eviction o la richiesta di budget ti dicono di compattare, e scrivi un riassunto che basti a lavorare senza rileggere gli originali. Nulla dentro la finestra protetta viene toccato.",
       compressRangeSummary: "Il riassunto che SOSTITUISCE l'intervallo compresso. Scrivi PEZZI INTERI, non un sommario: deve bastare a lavorare senza rileggere. Includi path, nomi di file, nomi di funzione, valori numerici e cosa hai scelto e perche'.",
@@ -4187,6 +4197,17 @@ function indexNodeViews(st: CwlState): IndexNodeView[] {
    * The micros are NOT deleted. They are what the state knows about the leaves; the head
    * simply stops showing them, because the description of the topic stands in their place.
    */
+  // #7 — the batch reuses THIS tool's execute, so the validations and the mutations live in
+  // ONE place and cannot drift apart. The reference is assigned right after the registration
+  // and read only at call time, so it is never null when the batch uses it.
+  // #7 — the batch reuses THIS tool's own execute, so the validations and the mutations live in
+  // ONE place and cannot drift apart. The reference is taken from a NAMED function expression
+  // (`execute: async function executeGroup(...)`), and that detail is the whole trick: a method
+  // shorthand has no name to refer to, and pulling the object literal out into a `const` to get
+  // one DESTROYS its contextual type — MEASURED, that produced eleven TS7006 errors, turned
+  // `params` into `any` and collapsed the inference of every return value in the tool.
+  let groupExec: ((...args: unknown[]) => Promise<{ content: Array<{ type: string; text: string }>; details: Record<string, unknown> }>) | null = null;
+
   pi.registerTool({
     name: 'cwl_group',
     label: 'CWL Group',
@@ -4199,8 +4220,17 @@ function indexNodeViews(st: CwlState): IndexNodeView[] {
       description: Type.Optional(Type.String({ description: t('tools').groupText })),
       pit: Type.Optional(Type.Boolean({ description: t('tools').groupPit })),
       dryRun: Type.Optional(Type.Boolean({ description: t('tools').groupDryRun })),
+      groups: Type.Optional(Type.Array(Type.Object({
+        leaves: Type.Optional(Type.Array(Type.String())),
+        nodes: Type.Optional(Type.Array(Type.String())),
+        node: Type.Optional(Type.String()),
+        name: Type.Optional(Type.String()),
+        description: Type.Optional(Type.String()),
+        pit: Type.Optional(Type.Boolean()),
+      }), { description: t('tools').groupGroups })),
     }),
-    async execute(_toolCallId, params, _signal, _onUpdate, ctx) {
+    execute: async function executeGroup(_toolCallId, params, _signal, _onUpdate, ctx) {
+      groupExec = executeGroup as unknown as typeof groupExec;
       const key = sessionKey(ctx);
       const st = getState(key);
       const cf = getConfig(key);
@@ -4242,6 +4272,86 @@ function indexNodeViews(st: CwlState): IndexNodeView[] {
           ...(extra?.allowed ? { allowed: extra.allowed } : {}),
         },
       });
+
+      // #7 — THE BATCH: several groupings as ONE operation. All or nothing, and idempotent.
+      //
+      // The validator is the DRY RUN OF THIS SAME TOOL, and that is the whole design: there is
+      // one code path, so the batch cannot disagree with a single call. Phase 1 runs every group
+      // with `dryRun: true` and mutates NOTHING; only if all of them pass does phase 2 apply
+      // them. A batch that validated as it applied would leave a half-built index behind on the
+      // first refusal, which is the failure this exists to prevent.
+      if (Array.isArray(params.groups)) {
+        const groups = params.groups as Array<Record<string, unknown>>;
+        if (groups.length === 0) return refuse('no-groups', '', { allowed: ['pass-at-least-one-group'] });
+        if (!groupExec) return refuse('batch-unavailable', '', { allowed: ['call-cwl_group-one-group-at-a-time'] });
+        const plans: Array<{ group: Record<string, unknown>; already: string | null }> = [];
+        // IDEMPOTENCE, and it is DETERMINISTIC: a topic born from a set of leaves gets an id
+        // DERIVED from those leaves, so repeating the same request computes the same id. If a
+        // node with that id already holds them, the request is ALREADY SATISFIED and re-applying
+        // it would be the duplicate this rule forbids. Same for `node: <target>`: if every leaf
+        // is already inside the target, there is nothing left to move.
+        const satisfiedBy = (group: Record<string, unknown>, dry: Record<string, unknown>): string | null => {
+          const leaves = Array.isArray(group.leaves) ? (group.leaves as string[]) : [];
+          if (leaves.length === 0) return null;
+          // WHERE TO LOOK. A dry run that PASSED names the destination in `id`. A dry run that
+          // FAILED does not — and the failure that means "already done" is `leaf-in-a-topic`,
+          // which names the topic holding the leaves in its own `constraint.owner`. Without
+          // this second source the idempotence rule would only ever fire on a call that was
+          // going to succeed anyway, which is exactly the case that does not need it.
+          const constraint = dry.constraint && typeof dry.constraint === 'object'
+            ? (dry.constraint as Record<string, unknown>)
+            : {};
+          const owner = typeof constraint.owner === 'string' ? constraint.owner : null;
+          const wanted = typeof group.node === 'string' ? group.node : (owner ?? String(dry.id ?? ''));
+          const target = st.nodes.find((nd) => nd.id === wanted);
+          if (!target) return null;
+          return leaves.every((leafId) => target.leaves.includes(leafId)) ? target.id : null;
+        };
+        for (let i = 0; i < groups.length; i++) {
+          const probe = await groupExec('batch', { ...groups[i], dryRun: true }, _signal, _onUpdate, ctx);
+          if (probe.details.ok === true) {
+            plans.push({ group: groups[i], already: null });
+            continue;
+          }
+          const code = String(probe.details.code ?? probe.details.error ?? 'refused');
+          // ALREADY SATISFIED is not a failure: it is the answer to a request repeated twice,
+          // and the whole point of idempotence is that the second answer is not an error.
+          const done = satisfiedBy(groups[i], probe.details);
+          if (!done) {
+            return refuse('batch-refused', `#${i} (${code})`, {
+              ids: Array.isArray(probe.details.ids) ? (probe.details.ids as string[]) : [],
+              constraint: { index: i, code, detail: probe.details.detail ?? '', group: groups[i] },
+              allowed: Array.isArray(probe.details.allowed) ? (probe.details.allowed as string[]) : [],
+            });
+          }
+          plans.push({ group: groups[i], already: done });
+        }
+        // PHASE 2 — APPLY. Everything passed validation, so this loop has nothing left to
+        // refuse: the only failure it can produce is one a bug would cause. Each group saves its
+        // own state, so even a crash mid-way leaves a consistent prefix rather than a torn one.
+        let movedLeaves = 0;
+        let movedNodes = 0;
+        let alreadyCount = 0;
+        for (let i = 0; i < plans.length; i++) {
+          if (plans[i].already) { alreadyCount += 1; continue; }
+          const res = await groupExec('batch', { ...plans[i].group, dryRun: false }, _signal, _onUpdate, ctx);
+          if (res.details.ok !== true) {
+            return refuse('batch-partial', `#${i}`, {
+              constraint: { index: i, applied: i, code: res.details.code ?? res.details.error ?? 'refused' },
+              allowed: ['call-cwl_group-one-group-at-a-time-to-finish-it'],
+            });
+          }
+          movedLeaves += Number(res.details.added ?? res.details.leaves ?? 0);
+          movedNodes += Array.isArray(res.details.absorbed) ? res.details.absorbed.length : 0;
+        }
+        return {
+          content: [{ type: 'text', text: t('groupManyDone')(groups.length, alreadyCount, movedLeaves, movedNodes) }],
+          details: {
+            ok: true, groups: groups.length, applied: plans.length - alreadyCount,
+            already: alreadyCount, leaves: movedLeaves, nodes: movedNodes,
+          },
+        };
+      }
 
       const byId = new Map(st.spans.map((s) => [idOfSpan(s), s]));
       const nodeOf = (id: string): SpanNode | undefined => st.nodes.find((nd) => nd.leaves.includes(id));

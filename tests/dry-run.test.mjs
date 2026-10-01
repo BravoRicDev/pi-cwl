@@ -312,3 +312,69 @@ test('cwl_status lists the leaf ids only when asked', async () => {
     home.restore();
   }
 });
+
+// ---------------------------------------------------------------------------
+// #7 — the batch is ALL OR NOTHING, and idempotent
+// ---------------------------------------------------------------------------
+
+test('a batch validates every group before applying any of them', async () => {
+  const { sandbox, home, tools, hooks, ctx } = await boot();
+  try {
+    const ids = await makeLeaves(sandbox, tools, hooks, ctx, 6);
+    const before = stateOf(sandbox);
+
+    // The first group is valid, the second names a leaf that does not exist. A batch that
+    // validated as it applied would leave the first topic behind — the torn index this exists
+    // to prevent.
+    const bad = await call(tools, 'cwl_group', {
+      groups: [
+        { leaves: ids.slice(0, 3), name: 'first', description: 'the first three' },
+        { leaves: ['sp-00000000'], name: 'second', description: 'a leaf that is not there' },
+      ],
+    }, ctx);
+    assert.equal(bad.details.ok, false, 'a batch with an invalid group went through');
+    assert.equal(bad.details.code, 'batch-refused', 'the batch did not say it refused as a batch');
+    assert.equal(bad.details.constraint.index, 1, 'the batch blamed the wrong group');
+    assert.equal(bad.details.constraint.code, 'unknown-leaf', 'the inner refusal is not reported');
+    assert.deepEqual(stateOf(sandbox), before, 'the batch applied a valid group before refusing the invalid one');
+
+    // The same request with both groups valid: both are applied, in order.
+    const good = await call(tools, 'cwl_group', {
+      groups: [
+        { leaves: ids.slice(0, 3), name: 'first', description: 'the first three' },
+        { leaves: ids.slice(3), name: 'second', description: 'the last three' },
+      ],
+    }, ctx);
+    assert.equal(good.details.ok, true, `the valid batch failed: ${JSON.stringify(good.details)}`);
+    assert.equal(good.details.applied, 2, 'not every group was applied');
+    assert.equal(good.details.already, 0, 'the batch invented an already-satisfied group');
+    assert.equal(stateOf(sandbox).nodes.filter((nd) => nd.description).length, 2, 'the two topics were not both created');
+  } finally {
+    home.restore();
+  }
+});
+
+test('repeating a batch does not duplicate: it says the work is already done', async () => {
+  const { sandbox, home, tools, hooks, ctx } = await boot();
+  try {
+    const ids = await makeLeaves(sandbox, tools, hooks, ctx, 4);
+    const groups = [{ leaves: ids, name: 'round-one', description: 'the first round' }];
+
+    const first = await call(tools, 'cwl_group', { groups }, ctx);
+    assert.equal(first.details.ok, true, `the first batch failed: ${JSON.stringify(first.details)}`);
+    assert.equal(first.details.applied, 1, 'the first batch applied nothing');
+    const topicsAfterFirst = stateOf(sandbox).nodes.filter((nd) => nd.description).length;
+    assert.equal(topicsAfterFirst, 1, 'the first batch did not create the topic');
+
+    // The second call finds the leaves ALREADY inside a topic, which a single call would refuse
+    // with `leaf-in-a-topic`. In a batch that is not an error: it is the answer to a request
+    // repeated twice, and it must not create a duplicate.
+    const again = await call(tools, 'cwl_group', { groups }, ctx);
+    assert.equal(again.details.ok, true, `the repeated batch failed: ${JSON.stringify(again.details)}`);
+    assert.equal(again.details.already, 1, 'the repeated batch did not recognise the work as done');
+    assert.equal(again.details.applied, 0, 'the repeated batch applied the group a second time');
+    assert.equal(stateOf(sandbox).nodes.filter((nd) => nd.description).length, topicsAfterFirst, 'the repeated batch created a duplicate topic');
+  } finally {
+    home.restore();
+  }
+});
