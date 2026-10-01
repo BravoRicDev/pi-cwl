@@ -2257,6 +2257,12 @@ interface PitView {
   otherChars: number;
   /** The leaves it stands for. */
   leaves: Set<string>;
+  /**
+   * When the pit was born. It travels in the view so the injected block can carry a STATIC
+   * trace of its own event instead of `Date.now()`: the block sits in the middle of the list,
+   * and a value regenerated per turn would make it differ from itself.
+   */
+  at: number;
 }
 
 /** Builds the view above from the state. See `PitView` for why the summary gates it. */
@@ -2297,6 +2303,7 @@ function pitView(st: CwlState): PitView | null {
     mode: useInternal ? 'descriptions' : 'synthesis',
     otherChars: useInternal ? pit.summary.length : internal.length,
     leaves,
+    at: pit.at,
   };
 }
 
@@ -3213,7 +3220,13 @@ function applySpans(
         customType: 'cwl-compressed',
         content: t('oldHead')(pit.id, pit.nodes, claim) + (pit.mode === 'descriptions' ? t('oldHeadDescriptions')() : '') + pit.body,
         display: false,
-        timestamp: Date.now(),
+        // STATIC TRACE: the time of the EVENT that created this block, never `Date.now()`.
+        // This block sits in the MIDDLE of the list, so a value that changes per turn makes
+        // the block differ from itself and invalidates every cached token after it. The
+        // provider payload carries only `role` + `content` (measured on both builders), so a
+        // drifting timestamp does not break the cache TODAY — but the trace of an event must
+        // say when the event happened, not when the turn was rendered.
+        timestamp: pit.at,
       } as unknown as AgentMessage);
       let gainPit = Math.max(0, removed - estimateMessageTokens(buildPit(0)));
       for (let k = 0; k < 3; k++) {
@@ -3260,7 +3273,8 @@ function applySpans(
         customType: 'cwl-compressed',
         content: topicText(claim),
         display: false,
-        timestamp: Date.now(),
+        // STATIC TRACE: the node's own birth, for the same reason as the pit block above.
+        timestamp: topic.node.at,
       } as unknown as AgentMessage);
       let gainTopic = estimateTokens(topicText(0));
       for (let i = 0; i < 8; i++) {
@@ -3280,7 +3294,8 @@ function applySpans(
       customType: 'cwl-compressed',
       content: t('compressedNotice')(sp.startHash, sp.endHash, claim, idOfSpan(sp)) + (sp.micro ?? sp.summary),
       display: false,
-      timestamp: Date.now(),
+      // STATIC TRACE: the leaf's own birth, for the same reason as the pit block above.
+      timestamp: sp.at,
     } as unknown as AgentMessage);
     // The saving is what is removed MINUS what takes its place, and what takes its
     // place is the WHOLE injected message: the wrapper the agent keeps reading
@@ -5449,7 +5464,11 @@ function indexNodeViews(st: CwlState): IndexNodeView[] {
             customType: 'cwl-evicted',
             content: t('evictedEpisode')(ep.name, ep.description),
             display: false,
-            timestamp: Date.now(),
+            // STATIC TRACE: the marker stands where the episode's content used to be, so it
+            // is re-pushed at every pass; `ep.openedAt` is when the episode opened, and it
+            // does not move. `Date.now()` would have made the same marker a different message
+            // on every turn.
+            timestamp: ep.openedAt,
           } as unknown as AgentMessage);
         }
         dropped++;
