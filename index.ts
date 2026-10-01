@@ -1218,8 +1218,40 @@ interface CwlState {
    */
   rangeStartHash: string | null;
   rangeEndHash: string | null;
+  /**
+   * Timestamp of the last assistant message whose `usage` was already logged. The
+   * context hook runs once per REQUEST, so a tool loop would log the same request
+   * many times: the timestamp is what makes the row one per request.
+   */
+  lastUsageTs: number;
+  /**
+   * The event the NEXT request follows: `new-leaf` when a range was just applied,
+   * `pit-rewritten` when the merge rewrote the pit, `none` otherwise. It is what a
+   * CACHE row needs to be chargeable: without it, a write is a number without a
+   * cause.
+   */
+  lastEvent: string;
+  /**
+   * Turns since the last leaf was written. A cache miss is the PRICE of that leaf,
+   * and the price only means something next to how often we paid it.
+   */
+  turnsSinceCompress: number;
   /** Tokens held by that range: shown in the status and in the demand. */
   rangeTokens: number;
+  /**
+   * The FIRST loose leaf: an index into `st.spans`. The loose set is everything from
+   * here to the end, and this number only ever GROWS — that monotonicity is the whole
+   * point. Before it, "loose" was `spans.slice(-looseLeaves)`, a window that follows
+   * the tail: a leaf that left it could walk back IN as soon as four newer leaves
+   * existed, which would put its body back in the context and pay for it twice.
+   *
+   * It is also where batching lives. Closing a leaf in micro is not a write: it is this
+   * frontier moving. Advancing it by ONE per new leaf closes one leaf at a time — one
+   * invalidation each. Advancing it so that only the newest `LOOSE_AFTER_BATCH` stay
+   * open closes several at once, and the invalidation is already paid by the leaf that
+   * was just written, so the closing itself is FREE.
+   */
+  looseFrom: number;
 }
 
 function newState(): CwlState {
@@ -1250,7 +1282,13 @@ function newState(): CwlState {
     lastGateViolationTurn: -1,
     rangeStartHash: null,
     rangeEndHash: null,
+    lastUsageTs: 0,
+    lastEvent: 'none',
+    turnsSinceCompress: -1,
     rangeTokens: 0,
+    // 0 = every span is loose. A state restored from disk clamps it (see
+    // `loadPersistedState`); a fresh state has no spans, so 0 is the honest value.
+    looseFrom: 0,
   };
 }
 
@@ -1349,6 +1387,8 @@ interface PersistedState {
   gateArmedTurn?: number;
   gateAttempts?: number;
   lastGateViolationTurn?: number;
+  /** Optional on load: a state written before this field existed has none. */
+  looseFrom?: number;
 }
 
 const STATE_VERSION = 1;
@@ -1371,6 +1411,7 @@ function saveState(key: string, st: CwlState): void {
       savedAt: Date.now(),
       graph: { episodes: st.graph.all },
       spans: st.spans,
+      looseFrom: st.looseFrom,
       graves: st.graves.slice(-GRAVE_MAX),
       oldNode: st.oldNode,
       nodes: st.nodes,
@@ -1403,6 +1444,13 @@ function loadPersistedState(key: string): CwlState | null {
     const st = newState();
     st.graph = EpisodeGraph.fromJSON(data.graph);
     st.spans = Array.isArray(data.spans) ? (data.spans as CompressedSpan[]) : [];
+    // The frontier only ever GROWS, and a state written before this field existed has
+    // none. Defaulting to the OLD rule's boundary is what keeps an upgrade from
+    // opening every leaf body at once (and paying to cache it). `DEFAULT_CONFIG` is
+    // read rather than a literal so the boundary and the config cannot drift.
+    st.looseFrom = typeof data.looseFrom === 'number'
+      ? Math.max(0, Math.min(data.looseFrom, st.spans.length))
+      : Math.max(0, st.spans.length - DEFAULT_CONFIG.looseLeaves);
     st.graves = Array.isArray(data.graves) ? (data.graves as Grave[]) : [];
     st.oldNode = data.oldNode && typeof data.oldNode.id === 'string' ? data.oldNode : null;
     // Restore the node structure BEFORE anything rebuilds it: `refreshNodes` keeps the nodes
@@ -1894,6 +1942,46 @@ function protectedFromIndex(messages: AgentMessage[], turns: number): number {
  * it. The division that does work: the extension picks the addresses, the model
  * writes the summary — the only part only the model can do.
  */
+/**
+ * What the LAST request paid for the PREFIX, read from the assistant message it
+ * produced. `usage` is not declared on the message union, so this is a read-only
+ * field probe like the ones already used for `role` and `customType`.
+ *
+ * WHY IT MATTERS: the provider's prompt cache is a PREFIX cache. Every leaf this
+ * extension writes lands where the compressed content used to be, and a merge
+ * lands at the very FRONT of the conversation: both invalidate everything AFTER
+ * them, and the next request pays a cache WRITE where it used to pay a READ.
+ * Nothing in this extension could see that cost, so the whole design rested on a
+ * bet nobody was measuring. This is the INSTRUMENT, not a fix: it changes no
+ * behaviour and no message.
+ *
+ * The scan goes BACKWARD and stops at the first assistant message that carries a
+ * usage, because the newest one is not guaranteed to have it. A stale row cannot
+ * be logged twice in a row: the caller dedupes on `ts`.
+ */
+function lastUsageOf(messages: AgentMessage[]): {
+  ts: number; cacheRead: number; cacheWrite: number; input: number; output: number;
+} | null {
+  const num = (v: unknown): number => (typeof v === 'number' && Number.isFinite(v) ? v : 0);
+  for (let i = messages.length - 1; i >= 0; i--) {
+    // SAFETY: read-only probes on fields the AgentMessage union does not declare.
+    const probe = messages[i] as unknown as { role?: unknown; usage?: unknown; timestamp?: unknown };
+    if (probe.role !== 'assistant') continue;
+    const u = probe.usage as
+      | { cacheRead?: unknown; cacheWrite?: unknown; input?: unknown; output?: unknown }
+      | undefined;
+    if (!u || typeof u !== 'object') continue;
+    return {
+      ts: typeof probe.timestamp === 'number' ? probe.timestamp : 0,
+      cacheRead: num(u.cacheRead),
+      cacheWrite: num(u.cacheWrite),
+      input: num(u.input),
+      output: num(u.output),
+    };
+  }
+  return null;
+}
+
 function compressibleRange(
   messages: AgentMessage[],
   spans: CompressedSpan[],
@@ -2103,7 +2191,7 @@ function indexShape(
   const youngTopics = youngOthers.filter((nd) => Boolean(nd.description));
   const youngPlain = youngOthers.filter((nd) => !nd.description);
   // `slice(-0)` is `slice(0)`: see `refreshNodes`. Zero loose leaves means zero, not all.
-  const looseIds = new Set((cf.looseLeaves > 0 ? st.spans.slice(-cf.looseLeaves) : []).map((s) => idOfSpan(s)));
+  const looseIds = new Set(looseSpansOf(st, cf).map((s) => idOfSpan(s)));
   // The head is what the context PAYS for the index: a topic node costs its ONE
   // description, not the labels of its leaves, and a loose leaf costs its own label (its
   // body is still in the context but the label is injected all the same). Counting only the
@@ -2369,6 +2457,58 @@ function containedNodes(st: CwlState, roots: Iterable<string>): Set<string> {
  * A leaf that left the state (pruned: its anchors are gone) cannot stay in a node,
  * or the node would describe material that no longer exists.
  */
+/**
+ * The leaves whose WHOLE BODY stays in the context: the working set.
+ *
+ * One function, because three copies of the rule used to exist — `indexShape`,
+ * `refreshNodes` and the widget — and a rule duplicated three times is three rules.
+ * They all sliced `-looseLeaves` from the tail, which re-opened a leaf as soon as
+ * enough newer leaves existed.
+ *
+ * `looseLeaves` is the CEILING of the window, not its size: the frontier is what
+ * decides. When a new leaf pushes the count past the ceiling, the caller below jumps
+ * the frontier so that only `LOOSE_AFTER_BATCH` remain — closing three at once, in
+ * the same pass that wrote the leaf, which is what makes it free.
+ */
+const LOOSE_AFTER_BATCH = 2;
+
+/** How many leaves stay open after a batch: never MORE than the ceiling allows. */
+function looseAfterBatch(cf: CwlConfig): number {
+  return Math.max(0, Math.min(LOOSE_AFTER_BATCH, cf.looseLeaves));
+}
+
+function looseSpansOf(st: CwlState, cf: CwlConfig): CompressedSpan[] {
+  if (cf.looseLeaves <= 0) return [];
+  const from = Math.max(0, Math.min(st.looseFrom, st.spans.length));
+  return st.spans.slice(from);
+}
+
+/**
+ * Moves the frontier after a leaf was written, and returns how many leaves that closed.
+ *
+ * WHY IT IS FREE: the leaf that was just written landed where the compressed content
+ * used to be, so the provider is ALREADY going to rewrite everything after that point.
+ * A frontier jump moves no message and inserts nothing: it changes which bodies the
+ * NEXT render includes, in the same pass. Closing one leaf per turn would pay a
+ * separate invalidation for each; closing them together pays nothing extra.
+ */
+function advanceLooseFrontier(st: CwlState, cf: CwlConfig): number {
+  if (cf.looseLeaves <= 0) {
+    st.looseFrom = st.spans.length;
+    return 0;
+  }
+  const open = st.spans.length - st.looseFrom;
+  if (open <= cf.looseLeaves) return 0;
+  // The batch target is capped by the ceiling. `looseLeaves` is a budget the operator
+  // sets, and a batch that left MORE leaves open than that would be this function
+  // overruling the config: measured, with `looseLeaves: 1` it kept 2 open and stole a
+  // leaf from the buffer node, turning a 19-leaf buffer into 18.
+  const keep = looseAfterBatch(cf);
+  const closed = open - keep;
+  st.looseFrom = st.spans.length - keep;
+  return closed;
+}
+
 function refreshNodes(
   st: CwlState,
   cf: CwlConfig,
@@ -2430,7 +2570,7 @@ function refreshNodes(
   const settled = new Set(st.nodes.flatMap((nd) => nd.leaves));
   // `slice(-0)` is `slice(0)`: with `looseLeaves: 0` the whole list would be loose, so no leaf
   // would ever enter a node and the buffer itself would not exist. Zero means zero.
-  const loose = new Set((cf.looseLeaves > 0 ? leaves.slice(-cf.looseLeaves) : []).map((l) => idOfSpan(l)));
+  const loose = new Set(looseSpansOf(st, cf).map((l) => idOfSpan(l)));
   let formed = 0;
   let waiting = 0;
   // WHICH leaves are waiting, not just how many: without the ids the demand can only say
@@ -3713,7 +3853,17 @@ function indexNodeViews(st: CwlState): IndexNodeView[] {
       st.rangeStartHash = null;
       st.rangeEndHash = null;
       st.rangeTokens = 0;
+      // The event the NEXT request follows: this leaf landed where the compressed
+      // content used to be, so everything after it is rewritten and the provider
+      // will pay a cache WRITE instead of a READ. Recorded BEFORE the save, or a
+      // restart would lose the cause while keeping the effect.
+      st.lastEvent = 'new-leaf';
+      st.turnsSinceCompress = 0;
+      // The leaf just written is the SECOND event of this pass: the frontier move rides
+      // on the invalidation it already causes (see `advanceLooseFrontier`).
+      const closed = advanceLooseFrontier(st, cf);
       saveState(key, st);
+      if (closed > 0) debugLog(cf, `LOOSE frontier: ${closed} leaf/leaves closed in the same pass, ${st.spans.length - st.looseFrom} still open`);
       debugLog(cf, `COMPRESS-RANGE applied ${startHash}..${endHash} (~${tokens}t)`);
       return {
         content: [{ type: 'text', text: t('compressRangeApplied')(startHash, endHash, tokens, leafId) + overCeiling(`${startHash}..${endHash}`, microOrUndefined(params.micro), cf) }],
@@ -4173,6 +4323,9 @@ function indexNodeViews(st: CwlState): IndexNodeView[] {
       pit.summary = text;
       pit.at = Date.now();
       st.oldNode = pit;
+      // The merge lands at the very FRONT of the conversation: it invalidates the
+      // whole prefix, not just a suffix, which is why it must be rare and big.
+      st.lastEvent = 'pit-rewritten';
       saveState(key, st);
       const tokens = estimateTokens(text);
       debugLog(cf, `OLD ${pit.id}: absorbed ${absorbed.length} node(s), ${ids.length} leaf/leaves; ${freedChars} chars leave the head -> a synthesis of ${tokens}t`);
@@ -4690,6 +4843,27 @@ function indexNodeViews(st: CwlState): IndexNodeView[] {
     // resolved against whatever list this variable holds, so the two must never
     // disagree.
     let messages: AgentMessage[] = eventMessages.filter((m) => !isGateMessage(m));
+
+    // MEASUREMENT of the cache — the instrument this design never had. The provider
+    // cache is a PREFIX cache, and every leaf written here lands where the
+    // compressed content used to be while a merge lands at the very FRONT: both
+    // invalidate everything after them, and the next request pays a WRITE where it
+    // used to pay a READ. This row charges that cost to the event that caused it,
+    // which is the only way to tell whether batching writes is worth anything.
+    // ONE row per REQUEST: a tool loop calls this hook many times for the same
+    // request, and the timestamp is what tells the calls apart.
+    const usage = lastUsageOf(messages);
+    if (usage && usage.ts !== st.lastUsageTs) {
+      st.lastUsageTs = usage.ts;
+      const prefix = usage.cacheRead + usage.cacheWrite + usage.input;
+      const hit = prefix > 0 ? Math.round((usage.cacheRead / prefix) * 100) : 0;
+      debugLog(cf,
+        `CACHE read=${usage.cacheRead} write=${usage.cacheWrite} input=${usage.input}`
+        + ` output=${usage.output} hit=${hit}% after=${st.lastEvent}`
+        + ` since-compress=${st.turnsSinceCompress}`);
+      // Charged once: the event explains THIS row and no other.
+      st.lastEvent = 'none';
+    }
 
     // Diagnostic, and free: it only reads a field, it does not hash. It answers
     // ONE question without a debug log — do real messages carry a stable id? —
@@ -5403,6 +5577,9 @@ function indexNodeViews(st: CwlState): IndexNodeView[] {
     const cf = getConfig(key);
 
     st.turns += 1;
+    // One more turn at the price the last leaf set. It is `-1` until the first
+    // leaf exists, because "turns since" a thing that never happened is not 0.
+    if (st.turnsSinceCompress >= 0) st.turnsSinceCompress += 1;
 
     // The gate is ARMED here, not in the context hook: arming is a decision about
     // elapsed turns, and the hook must only render the demand for the state it
@@ -5578,7 +5755,7 @@ function indexNodeViews(st: CwlState): IndexNodeView[] {
       // The loose leaves are not nodes, but they ARE part of the index: the head injects
       // their labels, and they are the working set. Naming their ids here is the difference
       // between a map of the NODES and a map of the INDEX.
-      const looseIds = (cf.looseLeaves > 0 ? st.spans.slice(-cf.looseLeaves) : []).map((sp) => idOfSpan(sp));
+      const looseIds = looseSpansOf(st, cf).map((sp) => idOfSpan(sp));
       if (looseIds.length > 0) lines.push(t('consult').mapLeaves(looseIds.join(' ')));
       debugLog(cf, `MAP nodes=${nodes.length} leaves=${totalLeaves}${params.node ? ` node=${params.node}` : ''}`);
       return {

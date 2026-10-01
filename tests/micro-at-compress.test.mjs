@@ -85,7 +85,7 @@ test('the leaf is born with its label, and the body stays whole', async () => {
     }
 
     const leaves = stateOf(sandbox).spans;
-    assert.equal(leaves.length, 7, 'seven leaves are needed: with `looseLeaves` = 5 the last five stay loose');
+    assert.equal(leaves.length, 7, 'seven leaves are needed: with the default ceiling of 4 the fifth push closes a batch of three and leaves two open, so the rest forms the node');
     assert.ok(
       leaves.slice(0, 2).every((f) => f.micro && f.micro.includes('LABEL')),
       'the labels were not saved on the leaf: the parameter arrived and was not written',
@@ -97,8 +97,18 @@ test('the leaf is born with its label, and the body stays whole', async () => {
     const log = logOf(sandbox).slice(before);
 
     // 1. Nobody waits for anything any more: the labels were already there.
-    const row = /NODES: (\d+) node\(s\) \[([^\]]*)\], (\d+) leaf\/leaves waiting/.exec(log);
-    assert.ok(row, `the turn does not declare the nodes: ${log.trim().split('\n').slice(-3).join(' | ')}`);
+    //    The window is the WHOLE log, and the LAST declared row is the one that counts:
+    //    closing leaves in micro is not a separate event any more, it rides on the pass
+    //    that wrote the leaf, so the node forms AT CREATION and not on the turn after.
+    //    Looking only at `log` would have asserted the old TIMING — which is the thing
+    //    the batch changed — instead of the invariant: no leaf waits for a micro.
+    //    The `formed N` part is OPTIONAL and must be tolerated: the pass that closes a
+    //    batch is the same one that creates the buffer, so its row carries `formed 1`.
+    //    A pattern that pretends it is not there reads zero rows and calls a working
+    //    extension broken — measured: the row was in the log, the regex was blind.
+    const rows = [...logOf(sandbox).matchAll(/NODES: (\d+) node\(s\) \[([^\]]*)\](?:, formed \d+)?, (\d+) leaf\/leaves waiting/g)];
+    const row = rows[rows.length - 1];
+    assert.ok(row, `no turn ever declared the nodes: ${log.trim().split('\n').slice(-3).join(' | ')}`);
     assert.equal(
       Number(row[3]),
       0,
@@ -126,6 +136,55 @@ test('the leaf is born with its label, and the body stays whole', async () => {
       !requests.includes('cwl_micro'),
       `the extension still asks for the micros that have already arrived: ${requests.slice(0, 200)}`,
     );
+  } finally {
+    home.restore();
+  }
+});
+
+/**
+ * THE LOOSE FRONTIER IS MONOTONE, AND THE PROMOTION RIDES ON THE WRITE.
+ *
+ * Operator request: *"when we reach the ceiling of open leaves, instead of inserting one and THEN
+ * closing them in micro, close 3 in a single blow, leaving 2"* — plus his rule: *"the promotion
+ * must not be an event, it must be a consequence"*.
+ *
+ * The old window was `spans.slice(-looseLeaves)`: a function of the CURRENT count, so a leaf could
+ * come back into the open window as soon as newer leaves arrived. The frontier replaces it with a
+ * position that only moves forward: a leaf that left the open window never comes back, and the
+ * batch rides on the pass that wrote the leaf instead of being a second invalidation of the head.
+ */
+test('the loose frontier closes in a batch and never reopens', async () => {
+  const { sandbox, home, tools, hooks, ctx } = await boot();
+  try {
+    const seen = [];
+    for (let i = 1; i <= 7; i++) {
+      await hook(hooks, ctx, conversation(1, i + 3));
+      await tools.get('cwl_compress_range').execute(
+        't',
+        { summary: `BODY-${i} ` + 'x'.repeat(300), micro: LABEL(i) },
+        undefined,
+        undefined,
+        ctx,
+      );
+      const st = stateOf(sandbox);
+      seen.push(st.looseFrom);
+      const open = st.spans.length - st.looseFrom;
+      assert.ok(
+        open <= 4,
+        `the frontier left ${open} leaf/leaves open: the ceiling is 4 and the batch must respect it`,
+      );
+    }
+    for (let i = 1; i < seen.length; i++) {
+      assert.ok(
+        seen[i] >= seen[i - 1],
+        `the frontier moved BACKWARDS (${seen.join(',')}): a leaf that had left the open window came back into it`,
+      );
+    }
+    const rows = [...logOf(sandbox).matchAll(/LOOSE frontier: (\d+) leaf\/leaves closed in the same pass, (\d+) still open/g)];
+    assert.ok(rows.length >= 1, 'the batch closed leaves without saying so: no `LOOSE frontier` row');
+    const last = rows[rows.length - 1];
+    assert.equal(Number(last[1]), 3, `the batch must close 3 leaves, not ${last[1]}`);
+    assert.equal(Number(last[2]), 2, `the batch must leave 2 open, not ${last[2]}`);
   } finally {
     home.restore();
   }
