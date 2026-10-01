@@ -152,15 +152,23 @@ test('the old node replaces the micros with the synthesis, and does not lose the
     const pit = acc.details.id;
     assert.match(String(pit), /^old-[0-9a-f]{8}$/, `unexpected pit id: ${pit}`);
 
-    // The next turn: the synthesis is in the context, the merged micros are NOT there anymore.
+    // The next turn: the pit's block is the SHORTER of the two candidates. `cwl_old` writes the
+    // synthesis as the agent's text PLUS the descriptions it absorbs, so the synthesis CONTAINS
+    // them and cannot be shorter: here it is longer than the two labels the pit holds, and what
+    // stays in the context is the labels. The synthesis is not lost — the pit page keeps it whole
+    // (checked below). This is the rule the operator asked for: pay the archive at the size of
+    // its own contents, and switch only when the comparison flips.
     const after = inContext(await hook(hooks, ctx, conversation(1, 12)));
-    assert.ok(after.includes('MERGE-SUMMARY'), 'the synthesis did not enter the context: the leaves went out and nobody stands for them');
     for (const i of [1, 2]) {
       assert.ok(
-        !after.includes(`MICRO-${i}`),
-        `MICRO-${i} is still in the context: the pit's leaves are still injected, so the merge freed nothing`,
+        after.includes(`MICRO-${i}`),
+        `MICRO-${i} left the context although the pit's own content is shorter than the synthesis`,
       );
     }
+    assert.ok(
+      !after.includes('MERGE-SUMMARY'),
+      'the synthesis entered the context although the pit holds shorter descriptions of the same material',
+    );
     // And the YOUNG node no: the present does not enter the pit.
     for (const i of [3, 4, 5]) {
       assert.ok(after.includes(`MICRO-${i}`), `MICRO-${i} vanished from the context: it ended up in the pit together with the past`);

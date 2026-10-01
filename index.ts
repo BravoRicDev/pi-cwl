@@ -195,6 +195,9 @@ type CwlMessages = {
   oldNodeSet: (id: string, nodes: number, leaves: number, microChars: number, tokens: number) => string;
   oldNotDue: (young: number, need: number) => string;
   oldHead: (id: string, nodes: number, tokens: number) => string;
+  /** Said when the block below is the DESCRIPTIONS rather than the synthesis, so the agent knows
+   *  where the narrative went. See `PitView.body`. */
+  oldHeadDescriptions: () => string;
   /** The old-node page: the merge summary and the shape of what it holds. */
   oldPage: (id: string, nodes: number, tokens: number, body: string) => string;
   /** One entry of the old node's catalogue: a topic inside the pit, named and tasted. */
@@ -336,6 +339,7 @@ const I18N: Record<Lang, CwlMessages> = {
     oldNodeSet: (id, nodes, leaves, microChars, tokens) => `Old node ${id}: merged ${nodes} node(s), ${leaves} leaf/leaves (${microChars} chars of micros) into a synthesis of ~${tokens} tokens. They stay readable: cwl_open("${id}") lists the nodes inside.`,
     oldNotDue: (young, need) => `No merge: ${young} young node(s), the merge starts at ${need}. Nothing was recorded.`,
     oldHead: (id, nodes, tokens) => `[CWL OLD NODE ${id} — ${nodes} older node(s) merged behind this synthesis (~${tokens} tokens). Their micros left the context; cwl_open("${id}") pages through them, leaf by leaf.]\n\n`,
+    oldHeadDescriptions: () => `[CWL OLD NODE — what follows is NOT the merge synthesis but the descriptions of the topics it holds, which are shorter. The synthesis is whole on the pit page: cwl_open on the node id above.]\n\n`,
     oldPage: (id, nodes, tokens, body) => `[CWL old node ${id} — ${nodes} node(s) inside, ~${tokens} tokens. The synthesis first, then one line per node with its SHAPE; cwl_open("<node id>") opens one, and its leaves open in full.]\n\n${body}`,
     oldHot: (listed, total) => `--- Most consulted leaves (${listed} of ${total} in the old node; nothing was deleted, this is only the reading order) ---`,
     oldSupersededHead: (count) => `--- Syntheses this one replaced (${count}, newest first): open one with cwl_open("<id>.s1") — cwl_old overwrites the synthesis instead of extending it, so these are kept readable rather than lost ---`,
@@ -513,6 +517,7 @@ const I18N: Record<Lang, CwlMessages> = {
     oldNodeSet: (id, nodes, leaves, microChars, tokens) => `Nodo vecchio ${id}: accorpati ${nodes} nodo/i, ${leaves} foglia/e (${microChars} caratteri di micro) in una sintesi di ~${tokens} token. Restano leggibili: cwl_open("${id}") elenca i nodi dentro.`,
     oldNotDue: (young, need) => `Nessun accorpamento: ${young} nodo/i giovane/i, si accorpa da ${need} in su. Non e' stato registrato niente.`,
     oldHead: (id, nodes, tokens) => `[CWL NODO VECCHIO ${id} — ${nodes} nodo/i piu' vecchi accorpati dietro questa sintesi (~${tokens} token). I loro micro sono usciti dal contesto; cwl_open("${id}") li pagina, foglia per foglia.]\n\n`,
+    oldHeadDescriptions: () => `[CWL NODO VECCHIO — quello che segue NON e' la sintesi del riassuntone ma le descrizioni dei topic che tiene, che sono piu' corte. La sintesi e' intera nella pagina del pozzo: cwl_open sull'id del nodo qui sopra.]\n\n`,
     oldPage: (id, nodes, tokens, body) => `[CWL nodo vecchio ${id} — ${nodes} nodo/i dentro, ~${tokens} token. Prima la sintesi, poi una riga per nodo con la sua FORMA; cwl_open("<id nodo>") ne apre uno, e le sue foglie si aprono intere.]\n\n${body}`,
     oldHot: (listed, total) => `--- Foglie piu' consultate (${listed} di ${total} nel nodo vecchio; niente e' stato cancellato, questo e' solo l'ordine di lettura) ---`,
     oldSupersededHead: (count) => `--- Sintesi sostituite da questa (${count}, dalla piu' recente): aprine una con cwl_open("<id>.s1") — cwl_old sostituisce la sintesi invece di estenderla, quindi queste restano leggibili invece di andare perse ---`,
@@ -1961,7 +1966,7 @@ function indexShape(
   // 17.599 characters counted against 23.057 actually injected, i.e. 76% of the truth, short
   // by ~1.364 token. The operator's eye caught it ("head does not look realistic, it is much
   // more") before any test did.
-  let headChars = st.oldNode?.summary.length ?? 0;
+  let headChars = pitView(st)?.body.length ?? 0;
   for (const nd of st.nodes) {
     if (childIds.has(nd.id) || inPit.has(nd.id)) continue;
     if (nd.description) headChars += nd.description.length;
@@ -2003,6 +2008,20 @@ interface PitView {
   /** How many young nodes are behind the synthesis. */
   nodes: number;
   summary: string;
+  /**
+   * What the head injects for the pit: `summary`, or the descriptions it contains when those
+   * are shorter. `cwl_old` writes the synthesis as the agent's text PLUS every absorbed topic's
+   * description concatenated verbatim, so the synthesis contains the descriptions and can
+   * never be shorter than their sum. MEASURED on the live state: 9.899 characters of synthesis
+   * against 4.441 characters of what the pit holds (3.300 of descriptions, 1.141 of labels) —
+   * the archive cost 2.2 times its own contents. The operator asked for the shorter of the two,
+   * accepting the cache break when the choice flips.
+   */
+  body: string;
+  /** Which of the two `body` is, so the block and the log can say it out loud. */
+  mode: 'synthesis' | 'descriptions';
+  /** The size of the candidate that lost, so the switch can be logged with its numbers. */
+  otherChars: number;
   /** The leaves it stands for. */
   leaves: Set<string>;
 }
@@ -2017,7 +2036,35 @@ function pitView(st: CwlState): PitView | null {
     if (!inPit.has(nd.id)) continue;
     for (const id of nd.leaves) leaves.add(id);
   }
-  return { id: pit.id, nodes: pit.nodes.length, summary: pit.summary, leaves };
+  // The pit's OWN content, put back together the way `cwl_old` wrote it into the synthesis: a
+  // topic's description wrapped exactly as the merge wrapped it, an ordinary node's labels. It
+  // keeps every piece of material the pit holds — only the agent's narrative is left out, and
+  // that one stays whole on the pit page, reachable with `cwl_open` on the pit id.
+  const byId = new Map(st.nodes.map((nd) => [nd.id, nd]));
+  const microOf = new Map(st.spans.map((s) => [idOfSpan(s), s.micro ?? '']));
+  const childIds = new Set(st.nodes.flatMap((nd) => nd.children ?? []));
+  const parts: string[] = [];
+  for (const id of pit.nodes) {
+    const nd = byId.get(id);
+    // A node contained in another injects nothing: its parent's description stands for it.
+    if (!nd || childIds.has(nd.id)) continue;
+    if (nd.description) parts.push(`[topic "${nd.name ?? nd.id}"] ${nd.description}`);
+    else for (const leaf of nd.leaves) {
+      const micro = microOf.get(leaf);
+      if (micro) parts.push(micro);
+    }
+  }
+  const internal = parts.join('\n\n');
+  const useInternal = internal.length > 0 && internal.length < pit.summary.length;
+  return {
+    id: pit.id,
+    nodes: pit.nodes.length,
+    summary: pit.summary,
+    body: useInternal ? internal : pit.summary,
+    mode: useInternal ? 'descriptions' : 'synthesis',
+    otherChars: useInternal ? pit.summary.length : internal.length,
+    leaves,
+  };
 }
 
 /**
@@ -2299,11 +2346,11 @@ function mergeBudget(
   const absorbed = young.length >= cf.mergeNodesAt && young.length > 1
     ? young.slice(0, young.length - 1)
     : young;
-  const freedChars = (st.oldNode?.summary.length ?? 0) + absorbed.reduce((n, nd) => {
+  const freedChars = (pitView(st)?.body.length ?? 0) + absorbed.reduce((n, nd) => {
     if (nd.description) return n + nd.description.length;
     return n + nd.leaves.reduce((m, id) => m + (st.spans.find((s) => idOfSpan(s) === id)?.micro?.length ?? 0), 0);
   }, 0);
-  const synthesisChars = Math.max(st.oldNode?.summary.length ?? 0, MERGE_SYNTHESIS_CHARS);
+  const synthesisChars = Math.max(pitView(st)?.body.length ?? 0, MERGE_SYNTHESIS_CHARS);
   const needChars = Math.max(Math.round(cf.mergeMinRatio * synthesisChars), cf.mergeMinChars);
   return { absorbed, freedChars, needChars, synthesisChars, ok: freedChars >= needChars };
 }
@@ -2879,7 +2926,7 @@ function applySpans(
       const buildPit = (claim: number): AgentMessage => ({
         role: 'custom',
         customType: 'cwl-compressed',
-        content: t('oldHead')(pit.id, pit.nodes, claim) + pit.summary,
+        content: t('oldHead')(pit.id, pit.nodes, claim) + (pit.mode === 'descriptions' ? t('oldHeadDescriptions')() : '') + pit.body,
         display: false,
         timestamp: Date.now(),
       } as unknown as AgentMessage);
