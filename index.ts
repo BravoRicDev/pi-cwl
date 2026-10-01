@@ -232,18 +232,28 @@ type CwlMessages = {
   /** A leaf that was pruned: its summary is lost, the original comes back from the transcript. */
   openOriginal: (id: string, tokens: number, body: string) => string;
   openOriginalLost: (id: string) => string;
+  /** The memories a session can fork, and the fork itself. See `cwl_memories` / `cwl_adopt`. */
+  memoriesEmpty: () => string;
+  memoriesList: (rows: string) => string;
+  memoriesRow: (name: string, leaves: number, nodes: number, pit: string) => string;
+  adoptDone: (name: string, from: string, leaves: number, nodes: number) => string;
+  adoptNotFound: (from: string, names: string) => string;
+  adoptBusy: (name: string) => string;
+  adoptEmpty: (from: string) => string;
+  adoptOtherSession: string;
   /** cwl_micro: the body leaves the context, the micro takes its place. */
   microSet: (id: string, microChars: number, bodyChars: number, shorter: boolean) => string;
   /** Budget gate: the agent-driving channel. */
   gateDemand: (current: string, budget: string, turns: number, canClose: boolean, canCompress: boolean) => string;
   gateGiveUp: (attempts: number) => string;
   /** Texts that end up in the LLM context. */
-  snippets: { delimiter: string; status: string; compress: string; recall: string; recallEpisode: string; compressRange: string };
+  snippets: { delimiter: string; status: string; compress: string; recall: string; recallEpisode: string; compressRange: string; memories: string; adopt: string };
   /** Texts of the autonomous tools. */
   tools: {
     compressDesc: string; compressStart: string; compressEnd: string; compressSummary: string;
     recallDesc: string; recallQuery: string; recallLimit: string;
     recallEpisodeDesc: string; recallEpisodeName: string; recallEpisodeFull: string;
+    memoriesDesc: string; adoptDesc: string; adoptFromDesc: string; adoptAsDesc: string;
     openDesc: string;
     openId: string;
     microDesc: string;
@@ -395,6 +405,14 @@ const I18N: Record<Lang, CwlMessages> = {
     oldHot: (listed, total) => `--- Most consulted leaves (${listed} of ${total} in the old node; nothing was deleted, this is only the reading order) ---`,
     oldSupersededHead: (count) => `--- Syntheses this one replaced (${count}, newest first): open one with cwl_open("<id>.s1") — cwl_old overwrites the synthesis instead of extending it, so these are kept readable rather than lost ---`,
     oldSupersededLine: (id, chars) => `- ${id}: ${chars} chars`,
+    memoriesEmpty: () => 'No CWL memory exists yet.',
+    memoriesList: (rows) => `CWL memories:\n${rows}`,
+    memoriesRow: (name, leaves, nodes, pit) => `- ${name} │ ${leaves} leaf/leaves │ ${nodes} node(s) │ pit: ${pit}`,
+    adoptDone: (name, from, leaves, nodes) => `Memory "${name}" created by forking "${from}": ${leaves} leaf/leaves, ${nodes} node(s) copied as ARCHIVED. They carry no anchors in this session, so they will never be compressed again and never pruned — their summaries are the only copy. Episodes did not travel. The memory is injected at the top of the context from now on.`,
+    adoptNotFound: (from, names) => `No CWL memory matches "${from}". The memories that exist are: ${names}.`,
+    adoptBusy: (name) => `The memory "${name}" is already this session's memory: there is nothing to fork.`,
+    adoptEmpty: (from) => `The memory "${from}" has no leaves: there is nothing to fork.`,
+    adoptOtherSession: 'A memory cannot be adopted while it belongs to a LIVING session: that session keeps writing its own copy and the two would overwrite each other. Close it first, or adopt from a session file path.',
     oldSupersededPage: (id, chars, text) => `[CWL superseded synthesis ${id} — ${chars} chars. This is a synthesis that the CURRENT one of the pit replaced; cwl_old overwrites instead of extending, so the archive keeps the text it would otherwise have erased. Nothing else refers to it.]\n\n${text}`,
     indexDue: (young, need) => `[CWL INDEX] ${young} node(s) of the index are due to merge (a merge starts at ${need}). Call cwl_old with the merge summary: your synthesis replaces the content of the oldest nodes — their topics' descriptions and their labels — and their leaves stay readable with cwl_open.`,
     topicDue: (id, leaves, microChars, needChars) => `[CWL TOPIC] the buffer (${id}) holds ${leaves} leaf/leaves, and their micros are ${microChars} characters — enough for the ${needChars} a topic must free. Open a topic NOW with cwl_group: pass those leaves, a name, and a description that already covers their FUTURE use, and one description then stands for all of them. This is the last moment it is possible: a leaf that enters a node can never be moved again, and the window closes with it.`,
@@ -431,6 +449,8 @@ const I18N: Record<Lang, CwlMessages> = {
     gateGiveUp: (attempts) => `CWL: the compaction demand went unanswered for ${attempts} turns; dropping it for a cooldown.`,
     snippets: {
       delimiter: 'delimiter: marks the boundaries of a CWL episode (expl/act)',
+      memories: 'cwl_memories: the memories that can be adopted, by name',
+      adopt: 'cwl_adopt: forks another memory into this session',
       status: 'cwl_status: CWL context lifecycle status',
       compress: 'cwl_compress: compress a range of messages in the active context',
       recall: 'cwl_recall: retrieve a conversation excerpt by BM25 query',
@@ -466,6 +486,10 @@ const I18N: Record<Lang, CwlMessages> = {
       groupManyDesc: 'Apply SEVERAL groupings as ONE operation: every group is validated first (with the same code path as a single call), and only if they all pass is anything applied. All or nothing, and idempotent: repeating the same request does not duplicate, because a topic born from a set of leaves gets an id derived from those leaves, so the second request finds it already satisfied and says so.',
       groupGroups: 'The groups to apply, in order. Each one takes the same fields as a single call: leaves, nodes, node, name, description, pit.',
       recallEpisodeFull: 'false (default) returns a truncated preview; true returns the whole episode.',
+      memoriesDesc: 'Lists the CWL memories that exist on this machine, by NAME, with their size. A memory is an archive of leaves, nodes and a pit that outlives the session that wrote it. Useful together with cwl_adopt: adopt needs a name.',
+      adoptDesc: 'Forks ANOTHER memory into this session: the leaves, the nodes, the pit and the micros are copied into a NEW memory of its own (the source is never modified). The copied leaves are ARCHIVED — they carry no anchors in this transcript, so they can never be compressed again, they are never pruned, and their summary is the only copy that exists. Episodes do NOT travel: this session starts with an empty episode graph. Give a name with `as` so the fork can be found later.',
+      adoptFromDesc: 'The memory to fork: its NAME as cwl_memories shows it, or the path of a session file.',
+      adoptAsDesc: 'The name to give the new memory. Defaults to the name of the source plus a suffix.',
       compressRangeDesc: 'Compresses the OLDEST usable range of the conversation into your summary. YOU DO NOT pick the range and you do not need any hash: the extension already computed the address and holds it. Call it when an eviction marker or the budget demand tells you to compact, and write a summary good enough to keep working without re-reading the originals. Nothing inside the protected window is touched.',
       compressRangeSummary: 'The summary that REPLACES the compressed range. Write WHOLE PIECES, not a digest: it must be enough to keep working without re-reading them. Include paths, file names, function names, numeric values, and what you decided and why.',
       compressMicro: 'Your LABEL of ~960 characters (≈240 tokens) for this leaf: what it contains, detailed enough that the index can show it instead of the body. Write it HERE, while you have the messages in front of you — the leaf is then ready for a node and nothing will have to ask you for it later. A compression without a label stays valid: the extension will ask for it when the leaf is due to join a node.',
@@ -619,6 +643,14 @@ const I18N: Record<Lang, CwlMessages> = {
     oldHot: (listed, total) => `--- Foglie piu' consultate (${listed} di ${total} nel nodo vecchio; niente e' stato cancellato, questo e' solo l'ordine di lettura) ---`,
     oldSupersededHead: (count) => `--- Sintesi sostituite da questa (${count}, dalla piu' recente): aprine una con cwl_open("<id>.s1") — cwl_old sostituisce la sintesi invece di estenderla, quindi queste restano leggibili invece di andare perse ---`,
     oldSupersededLine: (id, chars) => `- ${id}: ${chars} caratteri`,
+    memoriesEmpty: () => 'Non esiste ancora nessuna memoria CWL.',
+    memoriesList: (rows) => `Memorie CWL:\n${rows}`,
+    memoriesRow: (name, leaves, nodes, pit) => `- ${name} │ ${leaves} foglia/e │ ${nodes} nodo/i │ pozzo: ${pit}`,
+    adoptDone: (name, from, leaves, nodes) => `Memoria "${name}" creata forkando "${from}": ${leaves} foglia/e, ${nodes} nodo/i copiati come ARCHIVIATI. Non hanno ancoraggi in questa sessione, quindi non verranno mai piu\' compresse ne\' potate — i loro riassunti sono l\'unica copia. Gli episodi non sono viaggiati. La memoria viene iniettata in testa al contesto da adesso in poi.`,
+    adoptNotFound: (from, names) => `Nessuna memoria CWL corrisponde a "${from}". Quelle che esistono sono: ${names}.`,
+    adoptBusy: (name) => `La memoria "${name}" e\' gia\' la memoria di questa sessione: non c\'e\' niente da forkare.`,
+    adoptEmpty: (from) => `La memoria "${from}" non ha foglie: non c\'e\' niente da forkare.`,
+    adoptOtherSession: 'Una memoria non si adotta mentre appartiene a una sessione VIVA: quella continua a scrivere la sua copia e le due si sovrascriverebbero. Chiudila prima, oppure adotta dal path del file di sessione.',
     oldSupersededPage: (id, chars, text) => `[CWL sintesi sostituita ${id} — ${chars} caratteri. E' una sintesi che quella ATTUALE del pozzo ha sostituito; cwl_old sostituisce invece di estendere, quindi l'archivio tiene il testo che altrimenti avrebbe cancellato. Nient'altro la referenzia.]\n\n${text}`,
     indexDue: (young, need) => `[CWL INDICE] ${young} nodo/i dell'indice sono da accorpare (si accorpa da ${need} in su). Chiama cwl_old col riassuntone: la tua sintesi sostituisce il contenuto dei nodi piu' vecchi — le descrizioni dei loro topic e i micro dei loro nodi sparsi — e le loro foglie restano leggibili con cwl_open.`,
     topicDue: (id, leaves, microChars, needChars) => `[CWL TOPIC] il buffer (${id}) tiene ${leaves} foglia/e, e i loro micro sono ${microChars} caratteri — abbastanza per i ${needChars} che un topic deve liberare. Apri un topic ADESSO con cwl_group: passa quelle foglie, un nome e una descrizione che copra gia' il loro uso FUTURO, e una descrizione sola sta per tutte. E' l'ultimo momento in cui si puo': una foglia che entra in un nodo non si sposta piu', e la finestra si chiude con lei.`,
@@ -651,6 +683,8 @@ const I18N: Record<Lang, CwlMessages> = {
     gateGiveUp: (attempts) => `CWL: la richiesta di compattazione e' rimasta senza risposta per ${attempts} turni; la tolgo per un cooldown.`,
     snippets: {
       delimiter: 'delimiter: segna i confini di un episodio CWL (expl/act)',
+      memories: 'cwl_memories: le memorie adottabili, per nome',
+      adopt: 'cwl_adopt: fork di un\'altra memoria in questa sessione',
       status: 'cwl_status: stato del context lifecycle CWL',
       compress: 'cwl_compress: comprimi un intervallo di messaggi nel contesto attivo',
       recall: 'cwl_recall: recupera un pezzo di conversazione per query BM25',
@@ -686,6 +720,10 @@ const I18N: Record<Lang, CwlMessages> = {
       groupManyDesc: 'Applica PIU\' raggruppamenti come UNA sola operazione: ogni gruppo viene validato prima (con lo stesso percorso di codice di una chiamata singola), e solo se passano tutti si applica qualcosa. Tutto o niente, e idempotente: ripetere la stessa richiesta non duplica, perche\' un topic nato da un insieme di foglie prende un id derivato da quelle foglie, quindi la seconda richiesta lo trova gia\' soddisfatto e lo dice.',
       groupGroups: 'I gruppi da applicare, in ordine. Ognuno prende gli stessi campi di una chiamata singola: leaves, nodes, node, name, description, pit.',
       recallEpisodeFull: 'false (default) restituisce un estratto troncato; true restituisce l\'episodio intero.',
+      memoriesDesc: 'Elenca le memorie CWL che esistono su questa macchina, per NOME, con la loro dimensione. Una memoria e\' un archivio di foglie, nodi e pozzo che sopravvive alla sessione che l\'ha scritto. Utile insieme a cwl_adopt: l\'adozione vuole un nome.',
+      adoptDesc: 'Fa il fork di UN\'ALTRA memoria dentro questa sessione: foglie, nodi, pozzo e micro vengono copiati in una memoria NUOVA (la sorgente non viene mai modificata). Le foglie copiate sono ARCHIVIATE: non hanno ancoraggi in questo transcript, quindi non verranno mai piu\' compresse ne\' potate, e il loro riassunto e\' l\'unica copia che esiste. Gli episodi NON viaggiano: questa sessione parte con un grafo vuoto. Da\' un nome con `as` per poter ritrovare il fork.',
+      adoptFromDesc: 'La memoria da forkare: il suo NOME come lo mostra cwl_memories, oppure il path di un file di sessione.',
+      adoptAsDesc: 'Il nome da dare alla nuova memoria. Default: il nome della sorgente piu\' un suffisso.',
       compressRangeDesc: "Comprime nel tuo riassunto l'intervallo PIU' VECCHIO utilizzabile della conversazione. NON scegli tu l'intervallo e non ti serve nessun hash: l'estensione ha gia' calcolato e tiene l'indirizzo. Chiamalo quando un marker di eviction o la richiesta di budget ti dicono di compattare, e scrivi un riassunto che basti a lavorare senza rileggere gli originali. Nulla dentro la finestra protetta viene toccato.",
       compressRangeSummary: "Il riassunto che SOSTITUISCE l'intervallo compresso. Scrivi PEZZI INTERI, non un sommario: deve bastare a lavorare senza rileggere. Includi path, nomi di file, nomi di funzione, valori numerici e cosa hai scelto e perche'.",
       compressMicro: "La tua ETICHETTA di ~960 caratteri (≈240 token) per questa foglia: cosa contiene, con dettaglio sufficiente perche' l'indice la possa mostrare al posto del corpo. Scrivila QUI, mentre hai i messaggi davanti — la foglia e' cosi' pronta per un nodo e nessuno dovra' chiedertela dopo. Una compressione senza etichetta resta valida: l'estensione te la chiedera' quando la foglia dovra' entrare in un nodo.",
@@ -1244,6 +1282,18 @@ interface CwlState {
    * and the price only means something next to how often we paid it.
    */
   turnsSinceCompress: number;
+  /**
+   * The NAME of this memory, so a memory can be found and adopted by a human-readable name
+   * instead of a hash of a session path. Optional: a state written before names existed simply
+   * has none, and `defaultMemoryName` derives one when it is saved.
+   */
+  memoryName?: string;
+  /**
+   * The name of the memory this one was ADOPTED from, when it was. A fork carries this so the
+   * two branches can be told apart later; it is a trace, never a link — the fork owns its own
+   * leaves from the moment it is created.
+   */
+  importedFrom?: string;
   /** Tokens held by that range: shown in the status and in the demand. */
   rangeTokens: number;
   /**
@@ -1376,6 +1426,15 @@ interface PersistedState {
   spans: CompressedSpan[];
   /** The graveyard. Optional on load: an older state file simply has none. */
   graves?: Grave[];
+  /** The memory's name, and where it came from when it is a fork. See `CwlState`. */
+  name?: string;
+  importedFrom?: string;
+  /**
+   * The pid of the session that wrote this state. It is what makes adoption safe: a memory
+   * whose owner is STILL ALIVE cannot be forked, because that session keeps saving its own
+   * copy and the two branches would overwrite each other.
+   */
+  ownerPid?: number;
   /** The pit. Persisted because it carries the agent's merge summary, which no rule can recompute. */
   oldNode?: OldNode | null;
   /**
@@ -1410,8 +1469,37 @@ const MAX_PERSISTED_HASHES = 2000;
 const STATE_MAX_AGE_MS = 14 * 24 * 60 * 60 * 1000;
 
 /** One file per session, named by the hash of the key (the key is a path). */
+/**
+ * Is that process still running? Signal 0 asks the kernel without delivering anything.
+ *
+ * It is what makes adoption safe: a stored `ownerPid` that is still alive means the session
+ * that wrote that memory is STILL writing it, and a fork would give two writers to one past.
+ */
+function isPidAlive(pid: number): boolean {
+  if (!Number.isInteger(pid) || pid <= 0) return false;
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
 function statePath(key: string): string {
   return path.join(STATE_DIR, `${createHash('sha256').update(key).digest('hex').slice(0, 32)}.json`);
+}
+
+/**
+ * A readable name for a memory that was never named: the session file without its extension.
+ *
+ * The state is keyed by a PATH, and a path is not something anyone can say out loud; the name
+ * is what makes a memory findable (see `cwl_memories`) and adoptable (see `cwl_adopt`). It is
+ * derived, not invented: a fork names itself after the memory it came from.
+ */
+function defaultMemoryName(key: string): string {
+  const base = key.split(/[\\/]/).pop() ?? key;
+  const clean = base.replace(/\.jsonl$/, '').replace(/[^a-zA-Z0-9._-]/g, '-');
+  return clean.slice(0, 48) || 'memory';
 }
 
 function saveState(key: string, st: CwlState): void {
@@ -1421,6 +1509,9 @@ function saveState(key: string, st: CwlState): void {
       version: STATE_VERSION,
       key,
       savedAt: Date.now(),
+      name: st.memoryName ?? defaultMemoryName(key),
+      importedFrom: st.importedFrom,
+      ownerPid: process.pid,
       graph: { episodes: st.graph.all },
       spans: st.spans,
       looseFrom: st.looseFrom,
@@ -1478,6 +1569,8 @@ function loadPersistedState(key: string): CwlState | null {
     st.lastEvictionTurn = typeof data.lastEvictionTurn === 'number' ? data.lastEvictionTurn : -1;
     st.lastMeasuredTokens = typeof data.lastMeasuredTokens === 'number' ? data.lastMeasuredTokens : 0;
     st.turns = typeof data.turns === 'number' ? data.turns : 0;
+    st.memoryName = typeof data.name === 'string' && data.name ? data.name : undefined;
+    st.importedFrom = typeof data.importedFrom === 'string' && data.importedFrom ? data.importedFrom : undefined;
     st.overBudgetSince = typeof data.overBudgetSince === 'number' ? data.overBudgetSince : -1;
     st.gateArmedTurn = typeof data.gateArmedTurn === 'number' ? data.gateArmedTurn : -1;
     st.gateAttempts = typeof data.gateAttempts === 'number' ? data.gateAttempts : 0;
@@ -4006,6 +4099,136 @@ function indexNodeViews(st: CwlState): IndexNodeView[] {
   });
 
   pi.registerTool({
+    name: 'cwl_memories',
+    label: 'CWL Memories',
+    description: t('tools').memoriesDesc,
+    promptSnippet: t('snippets').memories,
+    parameters: Type.Object({}),
+    async execute(_toolCallId, _params, _signal, _onUpdate, _ctx) {
+      // Reading every state file is the ONE heavy read of the set, and it is deliberate: a
+      // memory is found by NAME, and the name lives inside the file. It is an explicit act,
+      // never a per-turn cost.
+      let files: string[] = [];
+      try { files = fs.readdirSync(STATE_DIR).filter((f) => f.endsWith('.json')); } catch { files = []; }
+      const found: { name: string; leaves: number; nodes: number; pit: string; savedAt: number }[] = [];
+      for (const f of files) {
+        const raw = readFileOrNull(path.join(STATE_DIR, f));
+        if (raw === null) continue;
+        let data: Partial<PersistedState>;
+        try { data = JSON.parse(raw) as Partial<PersistedState>; } catch { continue; }
+        const leaves = Array.isArray(data.spans) ? data.spans.length : 0;
+        const nodes = Array.isArray(data.nodes) ? data.nodes.length : 0;
+        const name = typeof data.name === 'string' && data.name ? data.name : f.replace(/\.json$/, '');
+        const pit = data.oldNode && typeof data.oldNode.id === 'string' ? data.oldNode.id : 'no';
+        const alive = typeof data.ownerPid === 'number' && data.ownerPid !== process.pid && isPidAlive(data.ownerPid);
+        found.push({ name: alive ? `${name} (LIVE)` : name, leaves, nodes, pit, savedAt: typeof data.savedAt === 'number' ? data.savedAt : 0 });
+      }
+      if (found.length === 0) {
+        return { content: [{ type: 'text', text: t('memoriesEmpty')() }], details: { ok: true, memories: 0, names: [] as string[] } };
+      }
+      found.sort((a, b) => b.savedAt - a.savedAt);
+      const rows = found.map((m) => t('memoriesRow')(m.name, m.leaves, m.nodes, m.pit)).join('\n');
+      return {
+        content: [{ type: 'text', text: t('memoriesList')(rows) }],
+        details: { ok: true, memories: found.length, names: found.map((m) => m.name) },
+      };
+    },
+  });
+
+  pi.registerTool({
+    name: 'cwl_adopt',
+    label: 'CWL Adopt',
+    description: t('tools').adoptDesc,
+    promptSnippet: t('snippets').adopt,
+    parameters: Type.Object({
+      from: Type.String({ description: t('tools').adoptFromDesc }),
+      as: Type.Optional(Type.String({ description: t('tools').adoptAsDesc })),
+    }),
+    async execute(_toolCallId, params, _signal, _onUpdate, ctx) {
+      const key = sessionKey(ctx);
+      const st = getState(key);
+      const cf = getConfig(key);
+      const from = String(params.from ?? '').trim();
+      const mine = st.memoryName ?? defaultMemoryName(key);
+
+      /** Every state on disk, parsed once: the name may be any of them. */
+      const all = (): { file: string; data: Partial<PersistedState> }[] => {
+        let files: string[] = [];
+        try { files = fs.readdirSync(STATE_DIR).filter((f) => f.endsWith('.json')); } catch { return []; }
+        const out: { file: string; data: Partial<PersistedState> }[] = [];
+        for (const f of files) {
+          const raw = readFileOrNull(path.join(STATE_DIR, f));
+          if (raw === null) continue;
+          try { out.push({ file: path.join(STATE_DIR, f), data: JSON.parse(raw) as Partial<PersistedState> }); } catch { /* not a state file */ }
+        }
+        return out;
+      };
+      const nameOf = (d: Partial<PersistedState>, file: string): string =>
+        typeof d.name === 'string' && d.name ? d.name : path.basename(file).replace(/\.json$/, '');
+
+      let source = all().find((s) => nameOf(s.data, s.file) === from);
+      if (!source) {
+        // A path is the other way in: a state file, or the session file it belongs to.
+        if (path.isAbsolute(from) && fs.existsSync(from)) {
+          if (from.endsWith('.jsonl')) {
+            const viaSession = loadPersistedState(from);
+            const hit = viaSession ? all().find((s) => nameOf(s.data, s.file) === (viaSession.memoryName ?? '')) : undefined;
+            source = hit;
+          } else {
+            const raw = readFileOrNull(from);
+            if (raw !== null) {
+              try { source = { file: from, data: JSON.parse(raw) as Partial<PersistedState> }; } catch { source = undefined; }
+            }
+          }
+        }
+      }
+      if (!source) {
+        const names = all().map((s) => nameOf(s.data, s.file)).join(', ') || '- none -';
+        return { content: [{ type: 'text', text: t('adoptNotFound')(from, names) }], details: { ok: false, error: 'memory-not-found', from } };
+      }
+      const sourceName = nameOf(source.data, source.file);
+      if (sourceName === mine) {
+        return { content: [{ type: 'text', text: t('adoptBusy')(mine) }], details: { ok: false, error: 'already-this-memory', name: mine } };
+      }
+      // A memory whose owner is still alive keeps writing its own copy: forking it would give
+      // two writers to one past, and the two branches would erase each other.
+      const aliveOwner = typeof source.data.ownerPid === 'number' && source.data.ownerPid !== process.pid
+        && isPidAlive(source.data.ownerPid) && source.file !== statePath(key);
+      if (aliveOwner) {
+        return { content: [{ type: 'text', text: t('adoptOtherSession') }], details: { ok: false, error: 'memory-in-use', from: sourceName, pid: source.data.ownerPid } };
+      }
+      const leaves = Array.isArray(source.data.spans) ? source.data.spans : [];
+      if (leaves.length === 0) {
+        return { content: [{ type: 'text', text: t('adoptEmpty')(sourceName) }], details: { ok: false, error: 'memory-empty', from: sourceName } };
+      }
+
+      // THE FORK. The leaves are copied and marked ARCHIVED: they carry anchors of another
+      // transcript, so `locateSpans` skips them (never resolved, never dead) and the pruning
+      // can never touch them — the summary IS the copy that exists from here on. The usage
+      // counters are dropped on purpose: how often a leaf was opened is the history of a
+      // session that is not this one.
+      st.spans = leaves.map((sp) => ({ ...sp, archived: true, counted: true, opens: undefined, lastOpen: undefined }));
+      st.nodes = Array.isArray(source.data.nodes) ? source.data.nodes : [];
+      st.oldNode = source.data.oldNode ?? null;
+      st.looseFrom = Math.max(0, st.spans.length - DEFAULT_CONFIG.looseLeaves);
+      // The graveyard points at a transcript this session does not have, and the episodes are
+      // positions in the old message list: neither travels.
+      st.graves = [];
+      st.graph = new EpisodeGraph();
+      st.totalEvictions = 0;
+      st.totalEvictedTokens = 0;
+      st.memoryName = params.as && String(params.as).trim() ? String(params.as).trim() : `${sourceName}--fork`;
+      st.importedFrom = sourceName;
+      saveState(key, st);
+      debugLog(cf, `ADOPT: forked "${sourceName}" into "${st.memoryName}" — ${st.spans.length} leaf/leaves ARCHIVED, ${st.nodes.length} node(s), pit ${st.oldNode ? st.oldNode.id : 'none'}; episodes did not travel`);
+      return {
+        content: [{ type: 'text', text: t('adoptDone')(st.memoryName, sourceName, st.spans.length, st.nodes.length) }],
+        details: { ok: true, name: st.memoryName, from: sourceName, leaves: st.spans.length, nodes: st.nodes.length, pit: st.oldNode ? st.oldNode.id : null },
+      };
+    },
+  });
+
+  pi.registerTool({
     name: 'cwl_recall_episode',
     label: 'CWL Recall Episode',
     description:
@@ -5377,6 +5600,14 @@ function indexNodeViews(st: CwlState): IndexNodeView[] {
         messages = applied.kept;
         spanInside = { set: new Set(applied.insideOut), len: applied.kept.length };
         currentTokens = afterSpans;
+      } else if (applied.kept.length !== messages.length) {
+        // Nothing resolved, and the list still grew: the only two ways are the INHERITED
+        // memory (an adopted fork has no resolvable leaves, so `applied.applied` stays 0
+        // while `kept` carries its blocks at the top) and the index demand riding at the
+        // end. Either way `kept` IS the list to show — and the measured tokens must
+        // follow it, or the trigger check below reads the pre-injection count.
+        messages = applied.kept;
+        currentTokens = applied.kept.reduce((s: number, m: AgentMessage) => s + estimateMessageTokens(m), 0);
       }
     }
 
