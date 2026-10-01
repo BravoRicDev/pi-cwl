@@ -151,6 +151,8 @@ type CwlMessages = {
   statusSpans: (n: number) => string;
   /** The names of the topics, so the catalogue is reachable without opening every node. */
   statusTopics: (n: number, names: string) => string;
+  /** Ids of the nodes that are NOT topics (the pit, the buffer): the two an agent needs most. */
+  statusIds: (ids: string) => string;
   /** A merge that would free less than it costs: refused, with the numbers said. */
   oldTooSmall: (leaves: number, microChars: number, needChars: number) => string;
   /** The index shape in one line: the TUI widget and `cwl_status` show the same one. */
@@ -248,6 +250,29 @@ type CwlMessages = {
     delimiterDesc: string; action: string; name: string; type: string;
     dependencies: string; description: string; statusDesc: string;
   };
+  /**
+   * The CONSULTATION tools: the index is findable instead of guessable. Every ID
+   * an agent needs must be reachable from here, or it will be hunted by trial.
+   */
+  consult: {
+    findDesc: string; findQuery: string; findScope: string; findLimit: string; findSnippet: string;
+    findFound: (n: number, query: string, body: string) => string;
+    findNoMatch: (query: string) => string;
+    findNotLoaded: string;
+    mapDesc: string; mapNode: string; mapSnippet: string;
+    mapHeader: (nodes: number, leaves: number, chars: string) => string;
+    mapLine: (id: string, kind: string, name: string, leaves: number, children: number, chars: number) => string;
+    mapLeaves: (ids: string) => string;
+    nodeDesc: string; nodeId: string; nodeSnippet: string;
+    nodeHeader: (id: string, kind: string, name: string, leaves: number, chars: number) => string;
+    nodeLeaf: (id: string, micro: string) => string;
+    nodeChild: (ids: string) => string;
+    nodeNotFound: (id: string) => string;
+    pendingDesc: string; pendingSnippet: string;
+    pendingHeader: (nodes: number, leaves: number, chars: string, need: string) => string;
+    pendingLine: (id: string, kind: string, leaves: number, chars: number) => string;
+    pendingEmpty: string;
+  };
 };
 
 const I18N: Record<Lang, CwlMessages> = {
@@ -296,6 +321,7 @@ const I18N: Record<Lang, CwlMessages> = {
     statusAddresses: (eligible, withId) => `Addresses: ${withId}/${eligible} endpoint messages carry a stable id`,
     statusSpans: (n) => `Compressed spans held: ${n}`,
     statusTopics: (n, names) => `Topics (${n}): ${names}`,
+    statusIds: (ids) => `Node ids: ${ids}`,
     oldTopicLine: (id, name, shape, taste) => `- ${id} \u00b7 TOPIC "${name}": ${shape} \u2014 ${taste}`,
     oldTooSmall: (leaves, microChars, needChars) =>
       `\n\nNothing was recorded: the ${leaves} leaf/leaves that would leave the context hold ${microChars} characters, and a merge must free at least ${needChars}. A merge COSTS a synthesis: the pit's summary is rewritten, so what leaves has to be worth more than what replaces it. Compress more first, or merge when the nodes are full.`,
@@ -428,6 +454,34 @@ const I18N: Record<Lang, CwlMessages> = {
       description: 'Marks the boundaries of a CWL episode. Types: "expl" (exploration: searches, reads, orientation — the content is not needed after the inference) and "act" (action: writes, edits, executions — persistent effects, first candidate for eviction). When you open an "act", declare the explorations it depends on. When you close an "expl", give the description of what you learned: it is the only content that survives eviction.',
       statusDesc: 'Shows the context lifecycle status: budget, active/closed episodes, evictions performed.',
     },
+    consult: {
+      findDesc: 'Searches the CWL memories and the transcript by keywords and returns the IDs. Use it BEFORE opening anything: a memory is found, not guessed. scope="index" (default) searches the labels of the leaves and the descriptions of the topics; scope="transcript" searches the conversation; scope="both" searches everything.',
+      findQuery: 'Keywords of what you remember: a topic, a decision, a file name.',
+      findScope: '"index" (labels and topic descriptions), "transcript" (the conversation), or "both".',
+      findLimit: 'How many results (default 8, max 50).',
+      findSnippet: 'cwl_find: find a memory or a message by keywords and get its ID (use before cwl_open)',
+      findFound: (n, query, body) => `${n} result(s) for "${query}":\n${body}`,
+      findNoMatch: (query) => `No result for "${query}". Try fewer or different words: labels are written in the language of the work.`,
+      findNotLoaded: 'The recall index is not loaded in this session yet.',
+      mapDesc: 'The map of the CWL index WITH the IDs: every node, its kind (pit, topic, buffer, legacy), how many leaves and children it holds, and what it costs in the head. Leaf IDs are listed only for the OPEN nodes (the buffer and the loose leaves); for a topic, read its leaves with cwl_node.',
+      mapNode: 'Optional node id: show only that subtree. Without it, the whole index.',
+      mapSnippet: 'cwl_map: the map of the CWL index with the node IDs',
+      mapHeader: (nodes, leaves, chars) => `${nodes} node(s), ${leaves} leaf/leaves, head ~${chars}t`,
+      mapLine: (id, kind, name, leaves, children, chars) => `${id} │ ${kind}${name ? ` "${name}"` : ''} │ ${leaves} leaf/leaves${children > 0 ? ` │ holds ${children} node(s)` : ''} │ ${chars} chars`,
+      mapLeaves: (ids) => `  leaves: ${ids}`,
+      nodeDesc: 'One node of the CWL index in full: metadata, the whole description, the nodes it holds, and its leaves as ID plus the first line of the label. Works on ANY node: a topic, a legacy node, the buffer, the pit.',
+      nodeId: 'The node id, as shown by cwl_map or cwl_status.',
+      nodeSnippet: 'cwl_node: one CWL node in full, with the IDs of its leaves',
+      nodeHeader: (id, kind, name, leaves, chars) => `${id} │ ${kind}${name ? ` "${name}"` : ''} │ ${leaves} leaf/leaves │ ${chars} chars`,
+      nodeLeaf: (id, micro) => `  ${id} │ ${micro}`,
+      nodeChild: (ids) => `holds: ${ids}`,
+      nodeNotFound: (id) => `No node with id "${id}". List them with cwl_map.`,
+      pendingDesc: 'What is NOT yet in a topic: the young legacy nodes and the buffer, with their leaves and the total characters. It is the inventory for creating a topic: if the total is below the needed size, a topic is refused.',
+      pendingSnippet: 'cwl_pending: the leaves still to be ordered (young nodes + buffer), with the character count',
+      pendingHeader: (nodes, leaves, chars, need) => `${nodes} node(s) still to order, ${leaves} leaf/leaves, ${chars} chars (a topic needs ~${need})`,
+      pendingLine: (id, kind, leaves, chars) => `${id} │ ${kind} │ ${leaves} leaf/leaves │ ${chars} chars`,
+      pendingEmpty: 'Nothing left to order: every leaf is inside a topic.',
+    },
   },
   it: {
     guidelines: [
@@ -474,6 +528,7 @@ const I18N: Record<Lang, CwlMessages> = {
     statusAddresses: (eligible, withId) => `Indirizzi: ${withId}/${eligible} messaggi-endpoint con un id stabile`,
     statusSpans: (n) => `Span di compressione tenuti: ${n}`,
     statusTopics: (n, names) => `Topic (${n}): ${names}`,
+    statusIds: (ids) => `Id dei nodi: ${ids}`,
     oldTopicLine: (id, name, shape, taste) => `- ${id} \u00b7 TOPIC "${name}": ${shape} \u2014 ${taste}`,
     oldTooSmall: (leaves, microChars, needChars) =>
       `\n\nNon e\' stato registrato niente: le ${leaves} foglia/e che uscirebbero dal contesto tengono ${microChars} caratteri, e un accorpamento deve liberarne almeno ${needChars}. Un accorpamento COSTA una sintesi: la sintesi del pozzo viene riscritta, quindi cio\' che esce deve valere piu\' di cio\' che lo sostituisce. Comprimi altro prima, o accorpa quando i nodi sono pieni.`,
@@ -601,6 +656,34 @@ const I18N: Record<Lang, CwlMessages> = {
       dependencies: 'Nomi degli episodi expl da cui questo atto dipende. Obbligatorio per action=start con type="act".',
       description: 'Descrizione di cosa hai imparato. Obbligatorio solo per action=end con type="expl".',
       statusDesc: 'Mostra lo stato del context lifecycle: budget, episodi attivi/chiusi, eviction eseguite.',
+    },
+    consult: {
+      findDesc: 'Cerca nelle memorie CWL e nel transcript per parole chiave e restituisce gli ID. Usalo PRIMA di aprire qualcosa: una memoria si trova, non si indovina. scope="index" (default) cerca le etichette delle foglie e le descrizioni dei topic; scope="transcript" cerca la conversazione; scope="both" cerca in entrambi.',
+      findQuery: 'Parole chiave di cio\' che ricordi: un argomento, una decisione, un nome di file.',
+      findScope: '"index" (etichette e descrizioni dei topic), "transcript" (la conversazione), oppure "both".',
+      findLimit: 'Quanti risultati (default 8, massimo 50).',
+      findSnippet: 'cwl_find: trova una memoria o un messaggio per parole chiave e d\u00e0 il suo ID (usalo prima di cwl_open)',
+      findFound: (n, query, body) => `${n} risultato/i per "${query}":\n${body}`,
+      findNoMatch: (query) => `Nessun risultato per "${query}". Prova con meno parole o parole diverse: le etichette sono scritte nella lingua del lavoro.`,
+      findNotLoaded: 'L\'indice di recall non \u00e8 ancora caricato in questa sessione.',
+      mapDesc: 'La mappa dell\'indice CWL CON gli ID: ogni nodo, il suo tipo (pozzo, topic, buffer, legacy), quante foglie e quanti nodi contiene, e quanto costa in testa. Gli id delle foglie compaiono solo per i nodi APERTI (il buffer e le foglie sciolte); per un topic, leggi le sue foglie con cwl_node.',
+      mapNode: 'Id opzionale di un nodo: mostra solo quel sottoalbero. Senza, tutto l\'indice.',
+      mapSnippet: 'cwl_map: la mappa dell\'indice CWL con gli id dei nodi',
+      mapHeader: (nodes, leaves, chars) => `${nodes} nodo/i, ${leaves} foglia/e, testa ~${chars}t`,
+      mapLine: (id, kind, name, leaves, children, chars) => `${id} \u2502 ${kind}${name ? ` "${name}"` : ''} \u2502 ${leaves} foglia/e${children > 0 ? ` \u2502 contiene ${children} nodo/i` : ''} \u2502 ${chars} caratteri`,
+      mapLeaves: (ids) => `  foglie: ${ids}`,
+      nodeDesc: 'Un nodo dell\'indice CWL per intero: metadati, descrizione completa, i nodi che contiene, e le sue foglie come ID piu\' la prima riga dell\'etichetta. Funziona su QUALSIASI nodo: un topic, un nodo legacy, il buffer, il pozzo.',
+      nodeId: 'L\'id del nodo, come lo mostrano cwl_map o cwl_status.',
+      nodeSnippet: 'cwl_node: un nodo CWL per intero, con gli ID delle sue foglie',
+      nodeHeader: (id, kind, name, leaves, chars) => `${id} \u2502 ${kind}${name ? ` "${name}"` : ''} \u2502 ${leaves} foglia/e \u2502 ${chars} caratteri`,
+      nodeLeaf: (id, micro) => `  ${id} \u2502 ${micro}`,
+      nodeChild: (ids) => `contiene: ${ids}`,
+      nodeNotFound: (id) => `Nessun nodo con id "${id}". Elencali con cwl_map.`,
+      pendingDesc: 'Cio\' che NON \u00e8 ancora in un topic: i nodi young legacy e il buffer, con le loro foglie e i caratteri totali. \u00c8 l\'inventario per creare un topic: se il totale \u00e8 sotto la soglia, il topic viene rifiutato.',
+      pendingSnippet: 'cwl_pending: le foglie ancora da mettere in ordine (nodi young + buffer), con i caratteri',
+      pendingHeader: (nodes, leaves, chars, need) => `${nodes} nodo/i ancora da ordinare, ${leaves} foglia/e, ${chars} caratteri (un topic ne serve ~${need})`,
+      pendingLine: (id, kind, leaves, chars) => `${id} \u2502 ${kind} \u2502 ${leaves} foglia/e \u2502 ${chars} caratteri`,
+      pendingEmpty: 'Non resta niente da ordinare: ogni foglia \u00e8 dentro un topic.',
     },
   },
 } satisfies Record<Lang, CwlMessages>;
@@ -3165,6 +3248,100 @@ export default function (pi: ExtensionAPI) {
     },
   });
 
+/**
+ * One node of the index, as every CONSULTATION tool sees it.
+ *
+ * `cwl_map`, `cwl_node`, `cwl_pending` and `cwl_find` all read the index through
+ * `indexNodeViews`, so they can never disagree about what exists or about an id.
+ */
+interface IndexNodeView {
+  id: string;
+  name: string | null;
+  kind: 'pit' | 'topic' | 'buffer' | 'legacy';
+  leaves: string[];
+  children: string[];
+  /** What this node costs in the head: its description, or the micros of its leaves. */
+  chars: number;
+  description: string | null;
+  /** The last node of the frontier: the working set, the only one that can become a topic. */
+  isBuffer: boolean;
+}
+
+/** Every leaf the index knows, with the text a search can look at. */
+interface LeafView {
+  id: string;
+  micro: string | null;
+  chars: number;
+  /** The node that owns it, or null when it is loose. */
+  container: string | null;
+}
+
+/** A single-line rendering of a label: the consultation tools must stay readable. */
+function firstLine(text: string | null | undefined, max = 90): string {
+  if (!text) return '';
+  const line = text.replace(/\s+/g, ' ').trim();
+  return line.length > max ? `${line.slice(0, max - 1)}\u2026` : line;
+}
+
+function leafViews(st: CwlState): Map<string, LeafView> {
+  const views = new Map<string, LeafView>();
+  for (const sp of st.spans) {
+    const id = idOfSpan(sp);
+    views.set(id, { id, micro: sp.micro ?? null, chars: sp.micro?.length ?? 0, container: null });
+  }
+  for (const nd of st.nodes) {
+    for (const id of nd.leaves) {
+      const v = views.get(id);
+      if (v) v.container = nd.id;
+    }
+  }
+  return views;
+}
+
+/**
+ * Every node of the index in the order the head injects them: the pit first, then
+ * `st.nodes` chronologically. The pit reports the chars it REALLY costs (the shorter of
+ * its synthesis and the descriptions it holds, see `pitView`), and a node that is HELD
+ * by another costs nothing: its parent's block stands for it.
+ */
+function indexNodeViews(st: CwlState): IndexNodeView[] {
+  const leaves = leafViews(st);
+  const childIds = new Set(st.nodes.flatMap((nd) => nd.children ?? []));
+  const bufferId = st.nodes.length > 0 ? st.nodes[st.nodes.length - 1].id : null;
+  const views: IndexNodeView[] = [];
+  const pit = st.oldNode;
+  if (pit && pit.summary) {
+    views.push({
+      id: pit.id,
+      name: null,
+      kind: 'pit',
+      leaves: [],
+      children: [...pit.nodes],
+      chars: pitView(st)?.body.length ?? pit.summary.length,
+      description: null,
+      isBuffer: false,
+    });
+  }
+  for (const nd of st.nodes) {
+    const held = childIds.has(nd.id);
+    views.push({
+      id: nd.id,
+      name: nd.name ?? null,
+      kind: nd.description ? 'topic' : nd.id === bufferId ? 'buffer' : 'legacy',
+      leaves: [...nd.leaves],
+      children: [...(nd.children ?? [])],
+      chars: held
+        ? 0
+        : nd.description
+          ? nd.description.length
+          : nd.leaves.reduce((n, id) => n + (leaves.get(id)?.chars ?? 0), 0),
+      description: nd.description ?? null,
+      isBuffer: nd.id === bufferId,
+    });
+  }
+  return views;
+}
+
   pi.registerTool({
     name: 'cwl_status',
     label: 'CWL Status',
@@ -3200,8 +3377,19 @@ export default function (pi: ExtensionAPI) {
       // The shape of the index: which memories exist, how big they are, and what the head
       // costs. The TUI widget shows the same line — one measurement, two windows.
       lines.push(t('indexLine')(...indexShape(st, cf)));
-      const topicNames = st.nodes.filter((nd) => nd.description).map((nd) => nd.name ?? nd.id);
+      const topicNames = st.nodes
+        .filter((nd) => nd.description)
+        .map((nd) => (nd.name ? `${nd.name}(${nd.id})` : nd.id));
       if (topicNames.length > 0) lines.push(t('statusTopics')(topicNames.length, topicNames.join(', ')));
+      // The pit and the buffer are the two ids an agent needs most often and could not see
+      // anywhere. They are NOT topics, so they get their OWN line: appending them to the
+      // topics made `Topics (1)` say something untrue on a fresh index, and four tests
+      // caught it. Everything else is one `cwl_map` away.
+      const nodeIds: string[] = [];
+      if (st.oldNode?.summary) nodeIds.push(`${st.oldNode.id} (pit)`);
+      const bufferNode = st.nodes.length > 0 ? st.nodes[st.nodes.length - 1] : null;
+      if (bufferNode) nodeIds.push(`${bufferNode.id} (buffer)`);
+      if (nodeIds.length > 0) lines.push(t('statusIds')(nodeIds.join(', ')));
       if (st.unlocatable > 0) {
         lines.push(t('statusUnlocatable')(st.unlocatable));
       }
@@ -4955,6 +5143,219 @@ export default function (pi: ExtensionAPI) {
     // a restart must not throw them away. Sessions that never used CWL write
     // nothing.
     if (!st.graph.isEmpty || st.spans.length > 0) saveState(key, st);
+  });
+
+  // -------------------------------------------------------------------------
+  // The CONSULTATION tools. They exist because an id that cannot be FOUND is an
+  // id that will be hunted by trial: the index is walked once, here, and every
+  // tool below reads it through `indexNodeViews`, so they cannot disagree.
+  // -------------------------------------------------------------------------
+
+  pi.registerTool({
+    name: 'cwl_find',
+    label: 'CWL Find',
+    description: t('consult').findDesc,
+    promptSnippet: t('consult').findSnippet,
+    parameters: Type.Object({
+      query: Type.String({ description: t('consult').findQuery }),
+      scope: Type.Optional(Type.String({ description: t('consult').findScope })),
+      limit: Type.Optional(Type.Number({ description: t('consult').findLimit, minimum: 1, maximum: 50 })),
+    }),
+    async execute(_toolCallId, params, _signal, _onUpdate, ctx) {
+      const key = sessionKey(ctx);
+      const st = getState(key);
+      const cf = getConfig(key);
+      const scope = (params.scope ?? 'index').toLowerCase();
+      const limit = params.limit ?? 8;
+      if (!recall) {
+        return { content: [{ type: 'text', text: t('consult').findNotLoaded }], details: { ok: false, error: 'not-loaded' } };
+      }
+      const rows: string[] = [];
+      const ids: string[] = [];
+      let indexed = 0;
+
+      // HALF ONE: the index. The labels of the leaves and the descriptions of the
+      // topics — the half that was missing entirely, because a leaf inside a topic
+      // had no other way in than opening the topic, i.e. guessing it first.
+      if (scope === 'index' || scope === 'both') {
+        const idx = new recall.Bm25Index();
+        const leaves = leafViews(st);
+        for (const nd of indexNodeViews(st)) {
+          const text = `${nd.name ?? ''} ${nd.description ?? ''} ${nd.kind}`;
+          if (!text.trim()) continue;
+          idx.add(nd.id, {
+            id: nd.id,
+            role: nd.kind,
+            ts: 0,
+            preview: firstLine(`${nd.kind}${nd.name ? ` "${nd.name}"` : ''}${nd.description ? `: ${nd.description}` : ''}`, 160),
+            hash: nd.id,
+          }, text);
+        }
+        for (const v of leaves.values()) {
+          if (!v.micro) continue;
+          idx.add(v.id, {
+            id: v.id,
+            role: 'leaf',
+            ts: 0,
+            preview: firstLine(v.micro, 160),
+            hash: v.id,
+          }, v.micro);
+        }
+        indexed = idx.size;
+        for (const hit of idx.search(params.query, limit)) {
+          ids.push(hit.id);
+          const container = leaves.get(hit.id)?.container;
+          rows.push(`[${rows.length + 1}] ${hit.id} \u2502 ${hit.role}${container ? ` \u2502 in ${container}` : ''} \u2502 score=${hit.score.toFixed(2)}\n${hit.preview}`);
+        }
+      }
+
+      // HALF TWO: the transcript. Same engine, different corpus: the messages.
+      if (scope === 'transcript' || scope === 'both') {
+        const file = findTranscript(key);
+        const raw = file ? readFileOrNull(file) : null;
+        if (raw !== null) {
+          const idx = recall.indexTranscript(raw, scope === 'both' ? null : st.recallIndex);
+          if (scope !== 'both') st.recallIndex = idx;
+          indexed += idx.size;
+          for (const hit of idx.search(params.query, limit)) {
+            ids.push(hit.id);
+            rows.push(`[${rows.length + 1}] ${hit.id} \u2502 ${hit.role} \u2502 score=${hit.score.toFixed(2)}\n${hit.preview}`);
+          }
+        }
+      }
+
+      debugLog(cf, `FIND scope=${scope} query="${params.query}" indexed=${indexed} hits=${rows.length}`);
+      if (rows.length === 0) {
+        return {
+          content: [{ type: 'text', text: t('consult').findNoMatch(params.query) }],
+          details: { ok: true, hits: 0, indexed, scope, ids: [] },
+        };
+      }
+      return {
+        content: [{ type: 'text', text: t('consult').findFound(rows.length, params.query, rows.join('\n\n')) }],
+        details: { ok: true, hits: rows.length, indexed, scope, ids },
+      };
+    },
+  });
+
+  pi.registerTool({
+    name: 'cwl_map',
+    label: 'CWL Map',
+    description: t('consult').mapDesc,
+    promptSnippet: t('consult').mapSnippet,
+    parameters: Type.Object({
+      node: Type.Optional(Type.String({ description: t('consult').mapNode })),
+    }),
+    async execute(_toolCallId, params, _signal, _onUpdate, ctx) {
+      const key = sessionKey(ctx);
+      const st = getState(key);
+      const cf = getConfig(key);
+      let nodes = indexNodeViews(st);
+      if (params.node) {
+        // A subtree: the node asked for, plus the nodes it holds, transitively.
+        const wanted = new Set<string>([params.node]);
+        let grew = true;
+        while (grew) {
+          grew = false;
+          for (const nd of nodes) {
+            if (wanted.has(nd.id)) continue;
+            if (nd.children.some((c) => wanted.has(c))) { wanted.add(nd.id); grew = true; }
+          }
+        }
+        nodes = nodes.filter((nd) => wanted.has(nd.id));
+        if (nodes.length === 0) {
+          return { content: [{ type: 'text', text: t('consult').nodeNotFound(params.node) }], details: { ok: false, error: 'node-not-found' } };
+        }
+      }
+      const totalLeaves = nodes.reduce((n, nd) => n + nd.leaves.length, 0);
+      const headChars = nodes.reduce((n, nd) => n + nd.chars, 0);
+      const lines = [t('consult').mapHeader(nodes.length, totalLeaves, Math.round(headChars / 4).toLocaleString())];
+      for (const nd of nodes) {
+        lines.push(t('consult').mapLine(nd.id, nd.kind, nd.name ?? '', nd.leaves.length, nd.children.length, nd.chars));
+        // The leaves are named ONLY where the head already pays for them (a node with
+        // no description injects its micros). Listing a topic's leaves here would put
+        // back the very ids that the description was written to replace.
+        if (!nd.description && nd.leaves.length > 0) {
+          lines.push(t('consult').mapLeaves(nd.leaves.join(' ')));
+        }
+      }
+      // The loose leaves are not nodes, but they ARE part of the index: the head injects
+      // their labels, and they are the working set. Naming their ids here is the difference
+      // between a map of the NODES and a map of the INDEX.
+      const looseIds = (cf.looseLeaves > 0 ? st.spans.slice(-cf.looseLeaves) : []).map((sp) => idOfSpan(sp));
+      if (looseIds.length > 0) lines.push(t('consult').mapLeaves(looseIds.join(' ')));
+      debugLog(cf, `MAP nodes=${nodes.length} leaves=${totalLeaves}${params.node ? ` node=${params.node}` : ''}`);
+      return {
+        content: [{ type: 'text', text: lines.join('\n') }],
+        details: { ok: true, nodes: nodes.length, leaves: totalLeaves, ids: nodes.map((nd) => nd.id) },
+      };
+    },
+  });
+
+  pi.registerTool({
+    name: 'cwl_node',
+    label: 'CWL Node',
+    description: t('consult').nodeDesc,
+    promptSnippet: t('consult').nodeSnippet,
+    parameters: Type.Object({
+      id: Type.String({ description: t('consult').nodeId }),
+    }),
+    async execute(_toolCallId, params, _signal, _onUpdate, ctx) {
+      const key = sessionKey(ctx);
+      const st = getState(key);
+      const cf = getConfig(key);
+      const views = indexNodeViews(st);
+      const nd = views.find((v) => v.id === params.id);
+      if (!nd) {
+        return { content: [{ type: 'text', text: t('consult').nodeNotFound(params.id) }], details: { ok: false, error: 'node-not-found', id: params.id } };
+      }
+      const leaves = leafViews(st);
+      const lines = [t('consult').nodeHeader(nd.id, nd.kind, nd.name ?? '', nd.leaves.length, nd.chars)];
+      if (nd.description) lines.push(nd.description);
+      if (nd.children.length > 0) lines.push(t('consult').nodeChild(nd.children.join(' ')));
+      for (const id of nd.leaves) {
+        const v = leaves.get(id);
+        lines.push(t('consult').nodeLeaf(id, v?.micro ? firstLine(v.micro) : '(no label yet)'));
+      }
+      debugLog(cf, `NODE ${nd.id} kind=${nd.kind} leaves=${nd.leaves.length} chars=${nd.chars}`);
+      return {
+        content: [{ type: 'text', text: lines.join('\n') }],
+        details: { ok: true, id: nd.id, kind: nd.kind, leaves: nd.leaves.length, chars: nd.chars, leafIds: nd.leaves, children: nd.children },
+      };
+    },
+  });
+
+  pi.registerTool({
+    name: 'cwl_pending',
+    label: 'CWL Pending',
+    description: t('consult').pendingDesc,
+    promptSnippet: t('consult').pendingSnippet,
+    parameters: Type.Object({}),
+    async execute(_toolCallId, _params, _signal, _onUpdate, ctx) {
+      const key = sessionKey(ctx);
+      const st = getState(key);
+      const cf = getConfig(key);
+      // ONLY what still has to be ordered: the nodes with no description (their micros
+      // are injected as they are) plus the buffer. A topic is already ordered, and the
+      // pit is the archive.
+      const open = indexNodeViews(st).filter((nd) => nd.kind !== 'pit' && !nd.description);
+      const need = Math.max(Math.round(cf.mergeMinRatio * MERGE_SYNTHESIS_CHARS), cf.mergeMinChars);
+      const totalLeaves = open.reduce((n, nd) => n + nd.leaves.length, 0);
+      const totalChars = open.reduce((n, nd) => n + nd.chars, 0);
+      if (open.length === 0) {
+        return { content: [{ type: 'text', text: t('consult').pendingEmpty }], details: { ok: true, nodes: 0, leaves: 0, chars: 0, need } };
+      }
+      const lines = [t('consult').pendingHeader(open.length, totalLeaves, totalChars.toLocaleString(), need.toLocaleString())];
+      for (const nd of open) {
+        lines.push(t('consult').pendingLine(nd.id, nd.kind, nd.leaves.length, nd.chars));
+        lines.push(t('consult').mapLeaves(nd.leaves.join(' ')));
+      }
+      debugLog(cf, `PENDING nodes=${open.length} leaves=${totalLeaves} chars=${totalChars} need=${need}`);
+      return {
+        content: [{ type: 'text', text: lines.join('\n') }],
+        details: { ok: true, nodes: open.length, leaves: totalLeaves, chars: totalChars, need, enough: totalChars >= need, ids: open.map((nd) => nd.id) },
+      };
+    },
   });
 
   pi.on('session_shutdown', async (_event, ctx) => {
