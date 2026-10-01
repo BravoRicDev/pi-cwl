@@ -128,6 +128,14 @@ type CwlMessages = {
   statusEvictions: (count: number, tokens: string) => string;
   /** Message injected instead of a compressed span (goes into the LLM context). */
   compressedNotice: (from: string, to: string, saved: number, id: string) => string;
+  /**
+   * The announcement that opens an INHERITED memory (`cwl_adopt`), injected as the very
+   * first block. It exists because nothing else says it: the blocks that follow describe
+   * the past they hold, but they do not say that the past is ANOTHER transcript's — and a
+   * session that is not told goes looking for its own history on disk instead of reading
+   * the index it was given.
+   */
+  inheritedHead: (name: string, from: string, leaves: number, nodes: number) => string;
   episodeClosed: (type: string, name: string) => string;
   statusMeasured: (tokens: string) => string;
   statusActive: (list: string) => string;
@@ -342,6 +350,14 @@ const I18N: Record<Lang, CwlMessages> = {
       `this summary (~${saved} tokens saved). Leaf id: ${id}.\n` +
       `To read the WHOLE summary again, call cwl_open with that id. ` +
       `If you need the original text, call cwl_recall with keywords from that content.\n\n`,
+    inheritedHead: (name, from, leaves, nodes) => `[CWL · INHERITED MEMORY] This session starts with an INHERITED MEMORY: ` +
+      `"${name}", forked from "${from}" — ${leaves} archived leaf/leaves and ${nodes} node(s) copied here from ANOTHER transcript.\n` +
+      `This session has NO earlier messages of its own: the index at the TOP of this context IS its past — ` +
+      `the pit's synthesis, the topics' descriptions, the labels of the leaves no topic holds. ` +
+      `Read it BEFORE exploring: cwl_map for the shape with ids, cwl_node to page a node's leaves, ` +
+      `cwl_open to read one leaf or the pit whole, cwl_recall to search them by keywords.\n` +
+      `Do NOT go looking on the filesystem or in old session logs for what this memory already says. ` +
+      `An archived leaf is never compressed nor pruned again: for those leaves the summary is the ONLY copy that exists.`,
     episodeClosed: (type, name) => `Episode ${type} "${name}" closed.`,
     statusMeasured: (tokens) => `Measured context tokens: ~${tokens}`,
     statusActive: (list) => `Active: ${list}`,
@@ -418,7 +434,7 @@ const I18N: Record<Lang, CwlMessages> = {
     memoriesEmpty: () => 'No CWL memory exists yet.',
     memoriesList: (rows) => `CWL memories:\n${rows}`,
     memoriesRow: (name, leaves, nodes, pit) => `- ${name} │ ${leaves} leaf/leaves │ ${nodes} node(s) │ pit: ${pit}`,
-    adoptDone: (name, from, leaves, nodes) => `Memory "${name}" created by forking "${from}": ${leaves} leaf/leaves, ${nodes} node(s) copied as ARCHIVED. They carry no anchors in this session, so they will never be compressed again and never pruned — their summaries are the only copy. Episodes did not travel. The memory is injected at the top of the context from now on.`,
+    adoptDone: (name, from, leaves, nodes) => `Memory "${name}" created by forking "${from}": ${leaves} leaf/leaves, ${nodes} node(s) copied as ARCHIVED. They carry no anchors in this session, so they will never be compressed again and never pruned — their summaries are the only copy. Episodes did not travel. The memory's index is injected at the top of the context and announces itself at the end of it, until this session has leaves of its own.`,
     adoptNotFound: (from, names) => `No CWL memory matches "${from}". The memories that exist are: ${names}.`,
     adoptBusy: (name) => `The memory "${name}" is already this session's memory: there is nothing to fork.`,
     adoptEmpty: (from) => `The memory "${from}" has no leaves: there is nothing to fork.`,
@@ -587,6 +603,14 @@ const I18N: Record<Lang, CwlMessages> = {
       `questo riepilogo (~${saved} token risparmiati). Id della foglia: ${id}.\n` +
       `Per rileggere il riepilogo INTERO, chiama cwl_open con quell'id. ` +
       `Se ti serve il testo originale, chiama cwl_recall con parole chiave di quel contenuto.\n\n`,
+    inheritedHead: (name, from, leaves, nodes) => `[CWL · MEMORIA EREDITATA] Questa sessione parte con una MEMORIA EREDITATA: ` +
+      `"${name}", forketta da "${from}" — ${leaves} foglia/e archiviate e ${nodes} nodo/i copiati qui da UN'ALTRA trascrizione.\n` +
+      `Questa sessione NON ha messaggi precedenti propri: l'indice in TESTA a questo contesto e' il suo passato — ` +
+      `la sintesi del pozzo, le descrizioni dei topic, le etichette delle foglie che nessun topic tiene. ` +
+      `Leggilo PRIMA di esplorare: cwl_map per la forma con gli id, cwl_node per paginare le foglie di un nodo, ` +
+      `cwl_open per una foglia o il pozzo intero, cwl_recall per cercarli per parole chiave.\n` +
+      `NON andare a cercare nel filesystem o nei vecchi log di sessione cio' che questa memoria gia' dice. ` +
+      `Una foglia archiviata non viene piu' compressa ne' potato: per quelle foglie il riassunto e' l'UNICA copia che esiste.`,
     episodeClosed: (type, name) => `Episodio ${type} "${name}" chiuso.`,
     statusMeasured: (tokens) => `Token contesto misurati: ~${tokens}`,
     statusActive: (list) => `Attivi: ${list}`,
@@ -1753,11 +1777,28 @@ const EPISODE_PREVIEW_CHARS = 4000;
 
 /** customType of the injected demand, so it can be replaced instead of stacked. */
 const GATE_CUSTOM_TYPE = 'cwl-budget-gate';
+/**
+ * customType of the announcement that opens an INHERITED memory (`cwl_adopt`). It is its own
+ * type and not one of the notices above because it says something about the SESSION, not
+ * about the budget or the context: it is injected at the END like the demand, and it stops
+ * being injected on its own once this session has leaves of its own — see the caller.
+ */
+const INHERITED_CUSTOM_TYPE = 'cwl-inherited';
 
 /** True when the message is the budget demand this extension injected. */
 function isGateMessage(m: AgentMessage): boolean {
   // SAFETY: read-only field probe (customType); the AgentMessage union does not declare it.
   return (m as unknown as RealMessage).customType === GATE_CUSTOM_TYPE;
+}
+/**
+ * True when the message is the announcement of an inherited memory. It needs its own filter
+ * for the same reason the demand has one: an injected message comes BACK in the list of the
+ * next turn, so without this the announcement would stack one copy per turn — the tail would
+ * grow a banner every turn, which is exactly what the gate paid for once already.
+ */
+function isInheritedMessage(m: AgentMessage): boolean {
+  // SAFETY: read-only field probe (customType); the AgentMessage union does not declare it.
+  return (m as unknown as RealMessage).customType === INHERITED_CUSTOM_TYPE;
 }
 /** Turns over budget before the agent is asked to act on its own. */
 const GATE_AFTER_TURNS = 2;
@@ -3347,6 +3388,13 @@ function applySpans(
   pit: PitView | null,
   topics: Map<string, TopicView>,
   demand: string | null,
+  /**
+   * The announcement of an INHERITED memory, or null when this session's memory is its own.
+   * Built by the CALLER, because the name and the origin of the memory live in the state and
+   * not in this function's arguments. It is passed as text, not as a flag, so that the wording
+   * stays where the rest of the wording is.
+   */
+  inheritedHead: string | null,
 ): {
   kept: AgentMessage[];
   applied: number;
@@ -3385,8 +3433,22 @@ function applySpans(
   const demandMsg: AgentMessage | null = demand
     ? ({ role: 'custom', customType: 'cwl-demand', content: demand, display: false, timestamp: Date.now() } as unknown as AgentMessage)
     : null;
-  /** Appends the demand, when there is one. */
-  const out = (list: AgentMessage[]): AgentMessage[] => (demandMsg ? [...list, demandMsg] : list);
+  /**
+   * The announcement of an INHERITED memory, when there is one to make. It is an INJECTION
+   * and it rides at the END, beside the demand — the operator's placement, and the reason is
+   * measurable: at the TOP it would be part of the PREFIX, so dropping it later (the sentence
+   * is true only while this session has no history of its own) would invalidate every cached
+   * token after it. In the tail it is free to appear, and free to go. It also reads in the
+   * right order: the index it talks about is above, and this is the note that explains it.
+   */
+  const inheritedMsg: AgentMessage | null = inheritedHead
+    ? ({ role: 'custom', customType: INHERITED_CUSTOM_TYPE, content: inheritedHead, display: false, timestamp: Date.now() } as unknown as AgentMessage)
+    : null;
+  /** Appends the announcement and the demand, in that order: identity first, then the ask. */
+  const out = (list: AgentMessage[]): AgentMessage[] =>
+    inheritedMsg || demandMsg
+      ? [...list, ...(inheritedMsg ? [inheritedMsg] : []), ...(demandMsg ? [demandMsg] : [])]
+      : list;
 
   if (spans.length === 0) return { kept: out(messages), applied: 0, saved: 0, newApplied: 0, newSaved: 0, pairDropped: 0, pairStripped: 0, insideOut: [], dead: [], overlapped: 0 };
 
@@ -5360,7 +5422,7 @@ function indexNodeViews(st: CwlState): IndexNodeView[] {
     // index-based decision below — the episode ranges and `safetyFloor` — is
     // resolved against whatever list this variable holds, so the two must never
     // disagree.
-    let messages: AgentMessage[] = eventMessages.filter((m) => !isGateMessage(m));
+    let messages: AgentMessage[] = eventMessages.filter((m) => !isGateMessage(m) && !isInheritedMessage(m));
 
     // MEASUREMENT of the cache — the instrument this design never had. The provider
     // cache is a PREFIX cache, and every leaf written here lands where the
@@ -5730,7 +5792,22 @@ function indexNodeViews(st: CwlState): IndexNodeView[] {
       [microRequest, mergeRequest, topicRequest].filter((d): d is string => d !== null).join('\n\n') || null;
 
     if (st.spans.length > 0) {
-      const applied = applySpans(messages, st.spans, pitView(st), topicView(st), demand);
+      // An inherited memory announces itself, and the announcement is an INJECTION at the END
+      // (see `inheritedMsg`): without it the agent does not know that the index at the top of
+      // its context is NOT its own past, and goes looking for its history on disk — the real
+      // cost of that omission was a session that spent ~100k tokens working out why it existed.
+      // It speaks only while this session has NO leaves of its own: that is exactly the window
+      // in which the sentence is true ("this session has no earlier messages of its own"), and
+      // afterwards it stops by itself, in the one position where stopping is free.
+      const inheritedNotice = st.importedFrom && !st.spans.some((sp) => !sp.archived)
+        ? t('inheritedHead')(
+            st.memoryName ?? defaultMemoryName(key),
+            st.importedFrom,
+            st.spans.filter((sp) => sp.archived).length,
+            st.nodes.length,
+          )
+        : null;
+      const applied = applySpans(messages, st.spans, pitView(st), topicView(st), demand, inheritedNotice);
       // A span whose endpoints left the context can never apply again, and each
       // one carries a summary of thousands of characters that the state re-saves
       // on every turn. Pruned here — outside the `applied > 0` guard, because the

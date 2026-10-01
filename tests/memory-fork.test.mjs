@@ -121,11 +121,19 @@ test('an ARCHIVED leaf is never pruned, however many turns pass', async () => {
   } finally { home.restore(); sandbox.cleanup(); }
 });
 
-test('the inherited memory is injected at the TOP, and stays there once this session compresses too', async () => {
+test('the inherited memory is injected at the TOP, and the announcement rides at the END until this session has its own leaves', async () => {
   const { sandbox, home, tools, hooks, a, b } = await boot();
   try {
     await writeAMemory(tools, hooks, a);
     const name = stateOf(sandbox, a).name;
+    // NON-VACUITY, first: a session whose memory is ITS OWN has nothing to announce. If the
+    // announcement were unconditional it would be noise in every ordinary session — and a
+    // banner nobody can trust is a banner nobody reads.
+    const before = await hooks.get('context')({ messages: [user(1), assistant(1)] }, b);
+    assert.doesNotMatch(
+      JSON.stringify((before?.messages || []).map((m) => m.content)),
+      /INHERITED MEMORY|MEMORIA EREDITATA/,
+      'the announcement appeared in a session with no inherited memory');
     await tools.get('cwl_adopt').execute('t', { from: name, as: 'ramo' }, undefined, undefined, b);
 
     const own = [];
@@ -135,6 +143,35 @@ test('the inherited memory is injected at the TOP, and stays there once this ses
     assert.equal(rendered[0]?.customType, 'cwl-compressed',
       'the inherited memory was not injected at the top of the context');
     assert.match(String(rendered[0].content), /CWL/, 'the top block does not carry the memory');
+    // THE ANNOUNCEMENT IS AN INJECTION AT THE END, beside the compaction demand: NOT a prefix
+    // (dropping it later would invalidate the cache it sits in) and NOT a fake user turn.
+    const last = rendered[rendered.length - 1];
+    assert.equal(last?.customType, 'cwl-inherited',
+      'the announcement is not injected at the END of the context');
+    const notice = String(last.content);
+    assert.match(notice, /INHERITED MEMORY|MEMORIA EREDITATA/,
+      'the injected message does not announce that the memory is inherited');
+    assert.match(notice, /ramo/, 'the announcement does not name the memory');
+    assert.ok(notice.includes(name), 'the announcement does not say where the memory came from');
+    assert.match(notice, /cwl_open/, 'the announcement does not say how to read the memory');
+    // AND IT MUST NOT STACK. An injected message comes BACK in the list of the next turn
+    // (the gate's demand is filtered for exactly this reason): without the filter the tail
+    // would grow one copy of the banner per turn. Simulated by handing the hook the list it
+    // produced itself, which is the worst case.
+    const again = await hooks.get('context')({ messages: rendered }, b);
+    const grown = again?.messages || rendered;
+    const copies = grown.filter((m) => m.customType === 'cwl-inherited').length;
+    assert.equal(copies, 1, `the announcement stacked: ${copies} copies of it in the list`);
+    // AND THE HEAD IS NOT FILTERED — measured here, and stated instead of hidden: fed the
+    // list it produced itself, the hook prepends a SECOND copy of the archived leaf's notice
+    // (`2 copies`), because a `cwl-compressed` block with no anchor cannot be recognised as
+    // already present. It is pre-existing behaviour, and the evidence says Pi does not do this
+    // in production: in the live session that inherited 205 leaves this test's author saw ONE
+    // copy of the head after ~70 turns. What this filter guarantees is the failure mode the
+    // gate already paid for once — one copy of the banner per turn — cannot happen even if the
+    // list ever does come back. The head is left alone here: changing it is a separate call.
+    const heads = grown.filter((m) => /^\[CWL · (RECALL|RICHIAMO)/.test(String(m.content))).length;
+    assert.ok(heads <= 2, `the head multiplied unexpectedly: ${heads} copies`);
 
     // The case that breaks a naive implementation: the session compresses something of its
     // OWN, so `resolved` is no longer empty. The inherited block must still be there.
@@ -146,6 +183,12 @@ test('the inherited memory is injected at the TOP, and stays there once this ses
     const after = second?.messages || own;
     assert.equal(after[0]?.customType, 'cwl-compressed',
       'the inherited memory disappeared from the top once this session compressed something');
+    // AND THE ANNOUNCEMENT GOES. This session now has a leaf of its own, so the sentence
+    // "this session has no earlier messages of its own" would be a lie; the injection stops
+    // by itself, in the one position (the tail) where stopping costs nothing. A banner left
+    // on forever is a banner nobody reads.
+    assert.notEqual(after[after.length - 1]?.customType, 'cwl-inherited',
+      'the announcement outlived the window it describes: this session has leaves of its own now');
     assert.equal(stateOf(sandbox, b).spans.length, 2, 'the fork did not keep both the inherited and the new leaf');
   } finally { home.restore(); sandbox.cleanup(); }
 });
