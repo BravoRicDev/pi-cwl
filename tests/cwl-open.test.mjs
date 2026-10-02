@@ -120,6 +120,10 @@ test('cwl_open returns the WHOLE body and declares an id that does not exist', a
       seen,
       `the notice in the context does not say which id to open: ${String(injected.content).slice(0, 140)}`,
     );
+    assert.ok(
+      String(injected.content).includes(`cwl_open({id: "${seen[1]}"})`),
+      `the notice does not provide a compiled cwl_open call for ${seen[1]}: ${String(injected.content).slice(0, 240)}`,
+    );
     const reopened = await tools.get('cwl_open').execute('t', { id: seen[1] }, undefined, undefined, ctx);
     assert.equal(
       reopened.details.ok,

@@ -145,6 +145,15 @@ test('a topic is born collapsed, behind the buffer', async () => {
     assert.equal(res.details.name, 'login-otp');
     assert.equal(res.details.leaves, 9);
 
+    const injected = await hook(hooks, ctx, conversation(1, 40));
+    const topicBlock = injected.find((message) => message?.customType === 'cwl-compressed'
+      && String(message.content).includes(`TOPIC "login-otp" (${res.details.id})`));
+    assert.ok(topicBlock, `the topic block does not expose its own id: ${JSON.stringify(injected.filter((message) => message?.customType === 'cwl-compressed'))}`);
+    assert.ok(
+      String(topicBlock.content).includes(`cwl_open({id: "${res.details.id}"})`),
+      `the topic block lacks a compiled cwl_open call: ${String(topicBlock.content).slice(0, 240)}`,
+    );
+
     const after = youngOf(await statusText(tools, ctx));
     assert.ok(after, 'the index line lost its shape');
     assert.equal(after.nodes, 2, 'the topic replaced the buffer: the buffer must survive BEHIND it');

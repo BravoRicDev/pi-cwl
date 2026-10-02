@@ -179,6 +179,14 @@ test('the old node replaces the micros with the synthesis, and does not lose the
     assert.equal(page.details.ok, true, `the pit does not open: ${JSON.stringify(page.details)}`);
     assert.equal(page.details.nodes, 1, `the pit declares ${page.details.nodes} nodes inside instead of 1`);
     assert.ok(text(page).includes('MERGE-SUMMARY'), 'the pit page does not report the synthesis');
+    assert.ok(
+      after.includes(`cwl_open({id: "${pit}"})`),
+      `the injected pit block does not contain its compiled cwl_open call: ${after.slice(0, 300)}`,
+    );
+    assert.ok(
+      after.includes('To read the full synthesis and list its contents'),
+      'the injected shorter-descriptions variant does not explain how to open the pit synthesis',
+    );
     assert.match(
       text(page),
       /2 leaf\/leaves/,

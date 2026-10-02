@@ -178,7 +178,7 @@ type CwlMessages = {
   /** Said when a topic absorbs other NODES: what left the head, and what stays readable. */
   groupAbsorbed: (name: string, id: string, nodes: number, leaves: number, blocks: number) => string;
   /** The header of the ONE block a topic node injects, where its first leaf used to be. */
-  topicHead: (name: string, leaves: number, saved: number) => string;
+  topicHead: (id: string, name: string, leaves: number, saved: number) => string;
   /** The shape of what a parent topic holds, MEASURED by the code and never written by the agent. */
   topicHolds: (nodes: number, leaves: number) => string;
   /** Said after a merge that carried the immutable descriptions of the topics it absorbed. */
@@ -218,7 +218,7 @@ type CwlMessages = {
   oldHead: (id: string, nodes: number, tokens: number) => string;
   /** Said when the block below is the DESCRIPTIONS rather than the synthesis, so the agent knows
    *  where the narrative went. See `PitView.body`. */
-  oldHeadDescriptions: () => string;
+  oldHeadDescriptions: (id: string) => string;
   /** The old-node page: the merge summary and the shape of what it holds. */
   oldPage: (id: string, nodes: number, tokens: number, body: string) => string;
   /** One entry of the old node's catalogue: a topic inside the pit, named and tasted. */
@@ -354,7 +354,7 @@ const I18N: Record<Lang, CwlMessages> = {
     statusEvictions: (count, tokens) => `Evictions total: ${count} | tokens saved: ${tokens}`,
     compressedNotice: (from, to, saved, id) => `[CWL · RECALL] The messages from ${from} to ${to} were compressed into ` +
       `this summary (~${saved} tokens saved). Leaf id: ${id}.\n` +
-      `To read the WHOLE summary again, call cwl_open with that id. ` +
+      `To reopen the WHOLE summary, call exactly cwl_open({id: "${id}"}). ` +
       `If you need the original text, call cwl_recall with keywords from that content.\n\n`,
     inheritedHead: (name, from, leaves, nodes) => `[CWL · INHERITED MEMORY] This session starts with an INHERITED MEMORY: ` +
       `"${name}", forked from "${from}" — ${leaves} archived leaf/leaves and ${nodes} node(s) copied here from ANOTHER transcript.\n` +
@@ -403,8 +403,8 @@ const I18N: Record<Lang, CwlMessages> = {
       `\n\n"${name}" (${id}) now CONTAINS ${nodes} node(s) and ${leaves} leaf/leaves in all: their ${blocks} block(s) left the head and the parent's description stands for them. Nothing was deleted — cwl_open("<child id>") returns any of them whole.`,
     groupDescriptionUpdated: () =>
       `\n\nThe description was rewritten, and this changes NOTHING in the index: the node is inside the old node, whose synthesis was written before these leaves arrived. The pit's synthesis is a frozen snapshot; what you have just written is the living copy, readable with cwl_open.`,
-    topicHead: (name, leaves, saved) =>
-      `[CWL \u00b7 TOPIC "${name}" \u2014 ${leaves} leaf/leaves stand behind this description, which never changes (~${saved} tokens saved). Their bodies are whole and readable with cwl_open.\n\n`,
+    topicHead: (id, name, leaves, saved) =>
+      `[CWL \u00b7 TOPIC "${name}" (${id}) \u2014 ${leaves} leaf/leaves stand behind this description, which never changes (~${saved} tokens saved). To open this topic, call exactly cwl_open({id: "${id}"}); to open one leaf, call cwl_open({id: "<leaf-id>"}).\n\n`,
     topicHolds: (nodes, leaves) =>
       `(holds ${nodes} node(s), ${leaves} leaf/leaves in all \u2014 open them with cwl_open("<id>"))\n`,
     oldTopicsConcatenated: (topics, chars) =>
@@ -430,8 +430,8 @@ const I18N: Record<Lang, CwlMessages> = {
     groupManyDone: (groups, already, leaves, nodes) => `Batch of ${groups} group(s): ${groups - already} applied, ${already} already satisfied (nothing to do), ${leaves} leaf/leaves moved and ${nodes} node(s) absorbed. Validated ALL of them before touching anything, so nothing was applied half way.`,
     groupDryRunAdd: (id, name, leaves, nodes, microChars, needChars) => `DRY RUN, nothing was recorded. Topic ${id} "${name}" would receive ${leaves} leaf/leaves and ${nodes} node(s); it holds ${microChars} characters of labels against a floor of ${needChars}.`,
     groupDryRunNew: (id, name, leaves, nodes, microChars, needChars) => `DRY RUN, nothing was recorded. A new topic would be born as ${id} "${name}", taking ${leaves} leaf/leaves and ${nodes} node(s); it holds ${microChars} characters of labels against a floor of ${needChars}.`,
-    oldHead: (id, nodes, tokens) => `[CWL OLD NODE ${id} — ${nodes} older node(s) merged behind this synthesis (~${tokens} tokens). Their micros left the context; cwl_open("${id}") pages through them, leaf by leaf.]\n\n`,
-    oldHeadDescriptions: () => `[CWL OLD NODE — what follows is NOT the merge synthesis but the descriptions of the topics it holds, which are shorter. The synthesis is whole on the pit page: cwl_open on the node id above.]\n\n`,
+    oldHead: (id, nodes, tokens) => `[CWL OLD NODE ${id} — ${nodes} older node(s) merged behind this synthesis (~${tokens} tokens). To open this pit and list its contents, call exactly cwl_open({id: "${id}"}); open a listed node or leaf with cwl_open({id: "<id-from-the-page>"}).]\n\n`,
+    oldHeadDescriptions: (id) => `[CWL OLD NODE — what follows is NOT the merge synthesis but the shorter topic descriptions held by the pit. To read the full synthesis and list its contents, call cwl_open({id: "${id}"}).]\n\n`,
     oldPage: (id, nodes, tokens, body) => `[CWL old node ${id} — ${nodes} node(s) inside, ~${tokens} tokens. The synthesis first, then one line per node with its SHAPE; cwl_open("<node id>") opens one, and its leaves open in full.]\n\n${body}`,
     oldHot: (listed, total) => `--- Most consulted leaves (${listed} of ${total} in the old node; nothing was deleted, this is only the reading order) ---`,
     oldSupersededHead: (count) => `--- Syntheses this one replaced (${count}, newest first): open one with cwl_open("<id>.s1") — cwl_old overwrites the synthesis instead of extending it, so these are kept readable rather than lost ---`,
@@ -612,7 +612,7 @@ const I18N: Record<Lang, CwlMessages> = {
     statusEvictions: (count, tokens) => `Eviction totali: ${count} | token risparmiati: ${tokens}`,
     compressedNotice: (from, to, saved, id) => `[CWL · RICHIAMO] I messaggi da ${from} a ${to} sono stati compressi in ` +
       `questo riepilogo (~${saved} token risparmiati). Id della foglia: ${id}.\n` +
-      `Per rileggere il riepilogo INTERO, chiama cwl_open con quell'id. ` +
+      `Per riaprire il riepilogo INTERO, chiama esattamente cwl_open({id: "${id}"}). ` +
       `Se ti serve il testo originale, chiama cwl_recall con parole chiave di quel contenuto.\n\n`,
     inheritedHead: (name, from, leaves, nodes) => `[CWL · MEMORIA EREDITATA] Questa sessione parte con una MEMORIA EREDITATA: ` +
       `"${name}", forketta da "${from}" — ${leaves} foglia/e archiviate e ${nodes} nodo/i copiati qui da UN'ALTRA trascrizione.\n` +
@@ -661,8 +661,8 @@ const I18N: Record<Lang, CwlMessages> = {
       `\n\n"${name}" (${id}) ora CONTIENE ${nodes} nodo/i e ${leaves} foglia/e in tutto: i loro ${blocks} blocco/chi sono usciti dalla testa e la descrizione del genitore sta per loro. Niente e' stato cancellato — cwl_open("<id figlio>") li restituisce interi.`,
     groupDescriptionUpdated: () =>
       `\n\nLa descrizione e' stata riscritta, e questo NON cambia niente nell'indice: il nodo e' dentro il nodo vecchio, la cui sintesi e' stata scritta prima che queste foglie arrivassero. La sintesi del pozzo e' un'istantanea congelata; quella che hai appena scritto e' la copia viva, leggibile con cwl_open.`,
-    topicHead: (name, leaves, saved) =>
-      `[CWL \u00b7 TOPIC "${name}" \u2014 ${leaves} foglia/e stanno dietro questa descrizione, che non cambia mai (~${saved} token risparmiati). I loro corpi sono interi e leggibili con cwl_open.\n\n`,
+    topicHead: (id, name, leaves, saved) =>
+      `[CWL \u00b7 TOPIC "${name}" (${id}) \u2014 ${leaves} foglia/e stanno dietro questa descrizione, che non cambia mai (~${saved} token risparmiati). Per aprire questo topic, chiama esattamente cwl_open({id: "${id}"}); per aprire una foglia, chiama cwl_open({id: "<id-foglia>"}).\n\n`,
     topicHolds: (nodes, leaves) =>
       `(contiene ${nodes} nodo/i, ${leaves} foglia/e in tutto \u2014 aprili con cwl_open("<id>"))\n`,
     oldTopicsConcatenated: (topics, chars) =>
@@ -688,8 +688,8 @@ const I18N: Record<Lang, CwlMessages> = {
     groupManyDone: (groups, already, leaves, nodes) => `Lotto di ${groups} gruppo/i: ${groups - already} applicati, ${already} gia' soddisfatti (niente da fare), ${leaves} foglia/e spostate e ${nodes} nodo/i assorbiti. Validati TUTTI prima di toccare qualcosa, quindi niente e' stato applicato a meta'.`,
     groupDryRunAdd: (id, name, leaves, nodes, microChars, needChars) => `PROVA, non e' stato registrato niente. Il topic ${id} "${name}" riceverebbe ${leaves} foglia/e e ${nodes} nodo/i; tiene ${microChars} caratteri di etichette contro una soglia di ${needChars}.`,
     groupDryRunNew: (id, name, leaves, nodes, microChars, needChars) => `PROVA, non e' stato registrato niente. Nascerebbe un topic nuovo come ${id} "${name}", prendendo ${leaves} foglia/e e ${nodes} nodo/i; tiene ${microChars} caratteri di etichette contro una soglia di ${needChars}.`,
-    oldHead: (id, nodes, tokens) => `[CWL NODO VECCHIO ${id} — ${nodes} nodo/i piu' vecchi accorpati dietro questa sintesi (~${tokens} token). I loro micro sono usciti dal contesto; cwl_open("${id}") li pagina, foglia per foglia.]\n\n`,
-    oldHeadDescriptions: () => `[CWL NODO VECCHIO — quello che segue NON e' la sintesi del riassuntone ma le descrizioni dei topic che tiene, che sono piu' corte. La sintesi e' intera nella pagina del pozzo: cwl_open sull'id del nodo qui sopra.]\n\n`,
+    oldHead: (id, nodes, tokens) => `[CWL NODO VECCHIO ${id} — ${nodes} nodo/i piu' vecchi accorpati dietro questa sintesi (~${tokens} token). Per aprire il pozzo e vedere cosa contiene, chiama esattamente cwl_open({id: "${id}"}); apri un nodo o una foglia elencata con cwl_open({id: "<id-dalla-pagina>"}).]\n\n`,
+    oldHeadDescriptions: (id) => `[CWL NODO VECCHIO — quello che segue NON e' la sintesi del riassuntone ma le descrizioni piu' corte dei topic contenuti nel pozzo. Per leggere la sintesi intera e vedere cosa contiene, chiama cwl_open({id: "${id}"}).]\n\n`,
     oldPage: (id, nodes, tokens, body) => `[CWL nodo vecchio ${id} — ${nodes} nodo/i dentro, ~${tokens} token. Prima la sintesi, poi una riga per nodo con la sua FORMA; cwl_open("<id nodo>") ne apre uno, e le sue foglie si aprono intere.]\n\n${body}`,
     oldHot: (listed, total) => `--- Foglie piu' consultate (${listed} di ${total} nel nodo vecchio; niente e' stato cancellato, questo e' solo l'ordine di lettura) ---`,
     oldSupersededHead: (count) => `--- Sintesi sostituite da questa (${count}, dalla piu' recente): aprine una con cwl_open("<id>.s1") — cwl_old sostituisce la sintesi invece di estenderla, quindi queste restano leggibili invece di andare perse ---`,
@@ -3555,7 +3555,7 @@ function applySpans(
       if (pitDoneAtTop) inherited.push({
         role: 'custom',
         customType: 'cwl-compressed',
-        content: t('oldHead')(pit.id, pit.nodes, 0) + (pit.mode === 'descriptions' ? t('oldHeadDescriptions')() : '') + pit.body,
+        content: t('oldHead')(pit.id, pit.nodes, 0) + (pit.mode === 'descriptions' ? t('oldHeadDescriptions')(pit.id) : '') + pit.body,
         display: false,
         timestamp: pit.at,
       } as unknown as AgentMessage);
@@ -3568,7 +3568,7 @@ function applySpans(
       inherited.push({
         role: 'custom',
         customType: 'cwl-compressed',
-        content: t('topicHead')(tv.node.name ?? tv.node.id, standsFor, 0)
+        content: t('topicHead')(tv.node.id, tv.node.name ?? tv.node.id, standsFor, 0)
           + (tv.heldNodes ? t('topicHolds')(tv.heldNodes, tv.heldLeaves) : '')
           + String(tv.node.description ?? ''),
         display: false,
@@ -3638,7 +3638,7 @@ function applySpans(
       const buildPit = (claim: number): AgentMessage => ({
         role: 'custom',
         customType: 'cwl-compressed',
-        content: t('oldHead')(pit.id, pit.nodes, claim) + (pit.mode === 'descriptions' ? t('oldHeadDescriptions')() : '') + pit.body,
+        content: t('oldHead')(pit.id, pit.nodes, claim) + (pit.mode === 'descriptions' ? t('oldHeadDescriptions')(pit.id) : '') + pit.body,
         display: false,
         // STATIC TRACE: the time of the EVENT that created this block, never `Date.now()`.
         // This block sits in the MIDDLE of the list, so a value that changes per turn makes
@@ -3682,7 +3682,7 @@ function applySpans(
       // content after this block, so everything from here on is invalidated anyway.
       const standsFor = topic.node.leaves.length + topic.heldLeaves;
       const topicText = (claim: number): string =>
-        t('topicHead')(topic.node.name ?? topic.node.id, standsFor, claim)
+        t('topicHead')(topic.node.id, topic.node.name ?? topic.node.id, standsFor, claim)
         + (topic.heldNodes ? t('topicHolds')(topic.heldNodes, topic.heldLeaves) : '')
         + String(topic.node.description ?? '');
       // SAFETY: the same contract as the per-leaf notice and the pit block below — Pi
