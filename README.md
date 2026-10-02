@@ -35,7 +35,7 @@ still be reopened down to the original messages in the session transcript.
 
 - **Zero LLM overhead.** Compression never calls the model. It is purely algorithmic and structural —
   no cost, no added hallucination, no blocking.
-- **User and system messages are protected from CWL eviction.** This describes CWL's eviction pass; it does not override Pi's native compaction behavior.
+- **User turns are inviolable.** User and system messages are never evicted.
 - **Typed episode separation:**
   - `expl` (exploration) — searches, listings, orientation reads. On close, the agent supplies a
     concise description: *this is the only content that survives eviction*.
@@ -59,16 +59,15 @@ Each level is independently toggleable in `levels`.
 
 ### Tools
 
-**`delimiter`** — records and closes ONE episode: the segment of work since the previous
-delimiter (or since the start of the session). The episode opens **implicitly**: there is no
-separate opening call.
+**`delimiter`** — marks episode boundaries.
 
 | Parameter | Type | Notes |
 |---|---|---|
-| `name` | `string` | Required. Unique: it is how the eviction and `cwl_recall_episode` refer to the segment |
-| `type` | `"expl"` \| `"act"` | Required. `expl` = exploration (reads, searches: not needed after the inference), `act` = a change with persistent effects |
-| `dependencies` | `string[]` | Names of closed `expl` episodes an `act` builds on |
-| `description` | `string` | What you learned. For an `expl` it is the only content that survives eviction |
+| `action` | `"start"` \| `"end"` | Required |
+| `name` | `string` | Required on `start`. Must be unique |
+| `type` | `"expl"` \| `"act"` | Required on `start` |
+| `dependencies` | `string[]` | Names of closed `expl` episodes an `act` depends on |
+| `description` | `string` | Required when closing an `expl`: what you learned |
 
 **`cwl_status`** — current token budget, measured context size, episode counts, evictions performed
 and tokens saved.
@@ -84,29 +83,21 @@ an empty `text` gives the body back.
 
 **`cwl_old`** — fold the oldest young nodes into the old node: the summary of summaries.
 
-**`cwl_group`** — groups leaves into a **topic node**, which is born collapsed: its `name` and
-`description` stand for its contents in the index, so the description must already cover the
-future use of the topic. The tool accepts `leaves`, `nodes`, `node`, `name`, `description`, and
-`pit`. Only leaves in the buffer — the last node, attached to leaves still open — can be moved;
-the buffer itself is never absorbed.
+**`cwl_group`** — group leaves into a **topic node**, which is born collapsed: the `name` and the
+`description` you write stand for its leaves in the index from that moment on, so the description
+must already cover the future use of the topic. Only the leaves of the buffer — the last node, the
+one attached to the leaves still open — can be grouped or moved, and a topic is never the first
+node. Adding leaves to an existing topic (`node`, without `description`) is free: the labels leave
+the head, the description stays. The description is immutable while the topic is OUTSIDE the old
+node; once the topic is inside it, it can be rewritten, because there it no longer touches the
+context.
 
-With `nodes`, a topic can contain later topic nodes, preserving chronological order: a parent can
-absorb only nodes that follow it, and at the live frontier only consecutive topics can be nested.
-The parent's description cannot be rewritten there. With `pit: true`, leaves can instead be
-catalogued inside the old node; creating a pit topic requires at least three leaves. Inside the old
-node, a topic description can be rewritten without changing the index or the pit synthesis. Adding
-leaves to an existing topic (`node`, without `description`) does not rewrite its description.
-
-A nested topic's injected block includes a code-generated shape line, for example
-`(holds 3 node(s), 41 leaf/leaves in all — open them with cwl_open("<id>"))`. The line reports
-contained nodes and total leaves; use `cwl_open` on a child id to inspect it.
-
-The index is nested: the **old node** at the head, then **legacy and topic nodes**, then the
-**buffer**, then loose/open leaves. When the configured node threshold is reached (three nodes by default), the old node can absorb
-the two oldest eligible nodes, of either kind, if the size and savings guards also pass. Topic descriptions absorbed into it are
-preserved word for word; the pit synthesis is a frozen snapshot, while later additions remain
-visible through their topic. Superseded pit syntheses remain readable with `cwl_open` using ids such
-as `<pit id>.s1`.
+The index is therefore NESTED: the **old node** at the head, then **legacy nodes** and **topic
+nodes**, then the **buffer** (which is never pruned, even at zero leaves), then the leaves still
+open. With three nodes in front of it, the old node absorbs two, of any kind, and the descriptions
+of the topics it swallows are glued to its synthesis word for word — they are not rewritten, and
+the tip's synthesis is a frozen snapshot: material added to a topic afterwards is described by the
+topic, not by the pit, and both are readable with `cwl_open`.
 
 **`cwl_recall`** / **`cwl_recall_episode`** — find compressed text by keyword, or retrieve an evicted
 episode by name, straight from the transcript.
@@ -150,17 +141,11 @@ Optional, at `~/.pi/cwl/config.json`:
   (default `5`).
 - `nodeCapacity` — how many leaves a node holds before it is full (default `30`).
 - `mergeNodesAt` — how many young nodes trigger a merge into the old node (default `3`).
-- `mergeMinRatio` — how many times the synthesis a merge frees must outweigh the one it writes (default `1.8`). It is the guard a merge AND a topic both pass: the topic floor is `ratio × 3,600` characters, never less than `mergeMinChars`, so with the defaults a topic must free at least `6,480` characters. Raising it makes topics rarer and merges harder; lowering it does the opposite for both.
+- `mergeMinRatio` — how many times the synthesis a merge frees must outweigh the one it writes (default `3`).
 - `mergeMinChars` — the absolute floor, in characters: below it a merge is refused whatever the ratio says (default `6000`).
-- `topicInviteAt` — how many leaves the buffer may hold before the agent is invited to open a topic with `cwl_group` (default `18`). The buffer is the LAST node and the only one whose leaves can still be moved: a leaf that has entered a node can never be moved again, so this invitation is the last moment a topic can be born. It fires only when the group would pass the size guard, and it carries every number needed to act — the node id, how many leaves it holds, the characters of micro they carry, and the characters the guard requires.
-- `gate` — enables the contextual request to compress older material when the budget remains exceeded and deterministic eviction has nothing left to remove (default `true`).
 - `showWidget` — draws the index shape (pit / young / topics / loose / waiting / head) in one TUI line below the editor. A widget is UI: it never enters the context and costs no tokens (default `true`).
 
 Missing keys fall back to defaults, so a partial file is valid.
-
-### Development checks
-
-Run `bash check.sh` to link Pi dependencies and execute the full test suite. Typechecking runs only when `tsc` is available; look for `[check.sh] typecheck ran:` in the output. If it is absent, the typecheck was skipped.
 
 ### Attribution
 
@@ -206,7 +191,7 @@ sessione.
 
 - **Zero LLM overhead.** La compressione non chiama mai il modello. È puramente algoritmica e
   strutturale — nessun costo, nessuna allucinazione aggiuntiva, nessun blocco.
-- **CWL protegge i messaggi utente e di sistema dalla propria eviction.** Questo descrive la politica CWL e non modifica il comportamento della compattazione nativa di Pi.
+- **I turni dell'utente sono inviolabili.** I messaggi utente e di sistema non vengono mai evictati.
 - **Separazione episodica tipizzata:**
   - `expl` (esplorazione) — ricerche, listing, letture di orientamento. Alla chiusura, l'agente
     fornisce una descrizione concisa: *è questo l'unico contenuto che sopravvive all'eviction*.
@@ -230,16 +215,15 @@ Ogni livello è attivabile/disattivabile indipendentemente in `levels`.
 
 ### Tool
 
-**`delimiter`** — registra e chiude UN episodio: il segmento di lavoro dal delimiter
-precedente (o dall'inizio della sessione). L'episodio si apre **implicitamente**: non esiste
-una chiamata di apertura separata.
+**`delimiter`** — segna i confini di un episodio.
 
 | Parametro | Tipo | Note |
 |---|---|---|
-| `name` | `string` | Obbligatorio. Univoco: e' come l'eviction e `cwl_recall_episode` si riferiscono al segmento |
-| `type` | `"expl"` \| `"act"` | Obbligatorio. `expl` = esplorazione (letture, ricerche: non serve dopo l'inferenza), `act` = una modifica con effetti persistenti |
-| `dependencies` | `string[]` | Nomi degli episodi `expl` chiusi su cui un `act` si basa |
-| `description` | `string` | Cosa hai imparato. Per un `expl` e' l'unico contenuto che sopravvive all'eviction |
+| `action` | `"start"` \| `"end"` | Obbligatorio |
+| `name` | `string` | Obbligatorio su `start`. Deve essere univoco |
+| `type` | `"expl"` \| `"act"` | Obbligatorio su `start` |
+| `dependencies` | `string[]` | Nomi degli episodi `expl` chiusi da cui un `act` dipende |
+| `description` | `string` | Obbligatorio alla chiusura di un `expl`: cosa hai imparato |
 
 **`cwl_status`** — budget corrente, dimensione misurata del contesto, conteggio episodi, eviction
 eseguite e token risparmiati.
@@ -251,36 +235,25 @@ disponibile e accetta un `micro` opzionale: l'etichetta che rappresenterà la fo
 **`cwl_open`** — riapre una foglia: restituisce il corpo intero, mai troncato, e ne dichiara prima la
 dimensione.
 
-**`cwl_micro`** — sostituisce il corpo di una foglia con un'etichetta breve (obiettivo: ~960
-caratteri, ~240 token; il tetto misurato è 1.400 caratteri, ~350 token); un `text` vuoto
-restituisce il corpo.
+**`cwl_micro`** — sostituisce il corpo di una foglia con un'etichetta breve (tetto: 1.200
+caratteri, ~300 token); un `text` vuoto restituisce il corpo.
 
 **`cwl_old`** — accorpa i nodi giovani più vecchi nel nodo vecchio: il riassunto dei riassunti.
 
-**`cwl_group`** — raggruppa le foglie in un **nodo topic**, che nasce collassato: `name` e
-`description` rappresentano il contenuto nell'indice, quindi la descrizione deve coprire già l'uso
-futuro del topic. Il tool accetta `leaves`, `nodes`, `node`, `name`, `description` e `pit`. Si possono
-spostare solo foglie nel buffer — l'ultimo nodo, attaccato alle foglie ancora aperte; il buffer non
-viene mai assorbito.
+**`cwl_group`** — raggruppa le foglie in un **nodo topic**, che nasce già collassato: il `name` e la
+`description` che scrivi stanno per le sue foglie nell'indice da quel momento, quindi la descrizione
+deve coprire già l'uso futuro del topic. Si possono raggruppare o spostare solo le foglie del buffer
+— l'ultimo nodo, quello attaccato alle foglie ancora aperte — e un topic non è mai il primo nodo.
+Aggiungere foglie a un topic esistente (`node`, senza `description`) è gratis: le etichette escono
+dalla testa, la descrizione resta. La descrizione è immutabile finché il topic è FUORI dal nodo
+vecchio; una volta che il topic è dentro, si può riscrivere, perché lì non tocca più il contesto.
 
-Con `nodes`, un topic può contenere topic successivi, mantenendo l'ordine cronologico: un genitore
-può assorbire solo nodi che vengono dopo di lui e, alla frontiera attiva, solo topic consecutivi.
-Alla frontiera la descrizione del genitore non si può riscrivere. Con `pit: true`, le foglie possono
-essere catalogate dentro il nodo vecchio; per creare un topic nel pozzo servono almeno tre foglie.
-Dentro il nodo vecchio la descrizione di un topic si può riscrivere senza cambiare l'indice o la
-sintesi del pozzo. Aggiungere foglie a un topic esistente (`node`, senza `description`) non ne
-riscrive la descrizione.
-
-Il blocco iniettato di un topic annidato include una riga di forma generata dal codice, ad esempio
-`(holds 3 node(s), 41 leaf/leaves in all — open them with cwl_open("<id>"))`. La riga indica i
-nodi contenuti e il totale delle foglie; usa `cwl_open` con l'id del figlio per ispezionarlo.
-
-L'indice è annidato: in testa il **nodo vecchio**, poi i **nodi legacy e topic**, il **buffer** e
-le foglie sciolte/aperte. Quando scatta la soglia configurata (tre nodi per default), il nodo vecchio può assorbire i due
-nodi idonei più vecchi, di qualunque natura, se passano anche i limiti di dimensione e risparmio. Le descrizioni dei topic assorbiti vengono
-conservate parola per parola; la sintesi del pozzo è un'istantanea congelata, mentre le aggiunte
-successive restano visibili nel topic. Le sintesi del pozzo superate si riaprono con `cwl_open`
-usando id come `<pit id>.s1`.
+L'indice è quindi ANNIDATO: in testa il **nodo vecchio**, poi i **nodi legacy** e i **nodi topic**,
+poi il **buffer** (che non viene mai potato, nemmeno a zero foglie), poi le foglie ancora aperte.
+Con tre nodi davanti, il nodo vecchio ne assorbe due, di qualunque natura, e le descrizioni dei
+topic che ingoia vengono incollate alla sua sintesi parola per parola — non vengono riscritte, e la
+sintesi del pozzo è un'istantanea congelata: il materiale aggiunto dopo a un topic lo racconta il
+topic, non il pozzo, e si leggono entrambi con `cwl_open`.
 
 **`cwl_recall`** / **`cwl_recall_episode`** — cercano testo compresso per parola chiave, oppure
 recuperano un episodio evictato per nome, direttamente dal transcript.
@@ -324,18 +297,11 @@ Opzionale, in `~/.pi/cwl/config.json`:
   assorbita in un nodo (default `5`).
 - `nodeCapacity` — quante foglie tiene un nodo prima di essere pieno (default `30`).
 - `mergeNodesAt` — quanti nodi giovani fanno scattare l'accorpamento nel nodo vecchio (default `3`).
-- `mergeMinRatio` — quante volte la sintesi liberata da un accorpamento deve valere piu' di quella che scrive (default `1.8`). E' il guard che passano sia un accorpamento sia un topic: la soglia di un topic e' `rapporto × 3.600` caratteri, mai meno di `mergeMinChars`, quindi con i default un topic deve liberare almeno `6.480` caratteri. Alzarlo rende i topic piu' rari e gli accorpamenti piu' difficili; abbassarlo fa l'opposto su entrambi.
+- `mergeMinRatio` — quante volte la sintesi liberata da un accorpamento deve valere piu' di quella che scrive (default `3`).
 - `mergeMinChars` — il minimo assoluto, in caratteri: sotto quella soglia un accorpamento viene rifiutato comunque (default `6000`).
-- `topicInviteAt` — quante foglie puo' tenere il buffer prima che l'agente sia invitato ad aprire un topic con `cwl_group` (default `18`). Il buffer e' l'ULTIMO nodo e l'unico le cui foglie si possono ancora spostare: una foglia entrata in un nodo non si muove piu', quindi questo invito e' l'ultimo momento in cui un topic puo' nascere. Scatta solo quando il gruppo passerebbe il guard di dimensione, e porta con se' tutti i numeri per agire — l'id del nodo, quante foglie tiene, i caratteri di micro che portano, e i caratteri che il guard richiede.
 - `showWidget` — disegna la forma dell'indice (pozzo / giovani / topic / sciolte / in attesa / testa) in una riga della TUI sotto l'editor. Una widget e' UI: non entra mai nel contesto e non costa un token (default `true`).
 
-- `gate` — abilita la richiesta contestuale di comprimere materiale più vecchio quando il budget resta superato e l'eviction deterministica non ha altro da rimuovere (default `true`).
-
 Le chiavi mancanti ricadono sui valori di default, quindi un file parziale è valido.
-
-### Verifiche di sviluppo
-
-Esegui `bash check.sh` per collegare le dipendenze Pi ed eseguire l'intera suite di test. Il typecheck parte solo se `tsc` è disponibile; verifica la riga `[check.sh] typecheck ran:` nell'output. Se non è presente, il typecheck è stato saltato.
 
 ### Attribuzione
 
