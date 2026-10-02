@@ -88,7 +88,7 @@ test('an autonomous turn (wake-up, card) counts as an operator turn', async () =
     await hook(hooks, ctx, list);
     const log = logOf(sandbox).slice(before);
 
-    const row = /CONTEXT (\d+)t still above trigger \d+t: (\d+)t in the protected window/.exec(log);
+    const row = /CONTEXT (\d+)t (?:estimated total )?still above trigger \d+t: (\d+)t in the protected window/.exec(log);
     assert.ok(
       row,
       `the turn does not declare the floor (the two figures are needed to measure): ${log.trim().split('\n').slice(-3).join(' | ')}`,
@@ -143,7 +143,7 @@ test('three consecutive injections count as ONE single turn', async () => {
     const before = logOf(sandbox).length;
     await hook(hooks, ctx, exchangesWithConsecutiveInjections(10));
     const log = logOf(sandbox).slice(before);
-    const row = /CONTEXT (\d+)t still above trigger \d+t: (\d+)t in the protected window/.exec(log);
+    const row = /CONTEXT (\d+)t (?:estimated total )?still above trigger \d+t: (\d+)t in the protected window/.exec(log);
     assert.ok(row, `the turn does not declare the floor: ${log.trim().split('\n').slice(-3).join(' | ')}`);
     const share = Number(row[2]) / Number(row[1]);
     assert.ok(
@@ -183,7 +183,7 @@ test('OUR injections do not count as turns', async () => {
     const before = logOf(sandbox).length;
     await hook(hooks, ctx, shortList());
     const log = logOf(sandbox).slice(before);
-    const row = /CONTEXT (\d+)t still above trigger \d+t: (\d+)t in the protected window/.exec(log);
+    const row = /CONTEXT (\d+)t (?:estimated total )?still above trigger \d+t: (\d+)t in the protected window/.exec(log);
     assert.ok(row, `the turn does not declare the floor: ${log.trim().split('\n').slice(-3).join(' | ')}`);
     const share = Number(row[2]) / Number(row[1]);
     assert.ok(
@@ -232,7 +232,7 @@ test('a closing delimiter counts as a turn: the agent consumes the window by wor
     const before = logOf(sandbox).length;
     await hook(hooks, ctx, listWithClosingDelimiters());
     const log = logOf(sandbox).slice(before);
-    const row = /CONTEXT (\d+)t still above trigger \d+t: (\d+)t in the protected window/.exec(log);
+    const row = /CONTEXT (\d+)t (?:estimated total )?still above trigger \d+t: (\d+)t in the protected window/.exec(log);
     assert.ok(row, `the turn does not declare the floor: ${log.trim().split('\n').slice(-3).join(' | ')}`);
     const share = Number(row[2]) / Number(row[1]);
     assert.ok(

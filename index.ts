@@ -1092,6 +1092,18 @@ function estimateMessageTokens(msg: unknown, ratio: number = DEFAULT_CHAR_TOKEN_
   }
 }
 
+function serializedMessageChars(messages: readonly unknown[]): number {
+  let chars = 0;
+  for (const message of messages) {
+    try { chars += JSON.stringify(message).length; } catch { /* skip unserializable messages */ }
+  }
+  return chars;
+}
+
+function estimateMessageListTokens(messages: readonly unknown[], ratio: number): number {
+  return messages.reduce<number>((sum, message) => sum + estimateMessageTokens(message, ratio), 0);
+}
+
 // ---------------------------------------------------------------------------
 // Content helpers (real shape: array of blocks)
 // ---------------------------------------------------------------------------
@@ -1490,6 +1502,10 @@ function anonymousKey(ctx: unknown): string {
 
 const states = new Map<string, CwlState>();
 const configs = new Map<string, CwlConfig>();
+// Ephemeral per-session snapshot of the exact list most recently returned by the
+// context hook. The next assistant usage report measures that request, not the
+// raw message list visible when the next context hook runs.
+const pendingPromptChars = new Map<string, number>();
 
 // Recall module, dynamically loaded in session_start: it holds the BM25
 // index of the transcript. Null until the load has happened.
@@ -2383,6 +2399,7 @@ function storeRange(
   messages: AgentMessage[],
   currentTokens?: number,
   trigger?: number,
+  source: 'hook-input' | 'spans-applied' = 'hook-input',
 ): void {
   st.rangeStartHash = range?.startHash ?? null;
   st.rangeEndHash = range?.endHash ?? null;
@@ -2391,9 +2408,9 @@ function storeRange(
   // the state already carries.
   const tokens = currentTokens ?? st.lastMeasuredTokens;
   const trig = trigger ?? cf.tokenBudget * cf.thresholdRatio;
-  debugLog(cf, `RANGE ${range
+  debugLog(cf, `RANGE source=${source} ${range
     ? `${range.startHash}..${range.endHash} (~${range.tokens}t)`
-    : 'none'} | ${messages.length} msgs, ${tokens}t vs trigger ${Math.round(trig)}t, ${st.spans.length} span(s)`);
+    : 'none'} | ${messages.length} msgs, ${tokens} message-tokens vs trigger ${Math.round(trig)}t, ${st.spans.length} span(s)`);
 }
 
 /**
@@ -5467,7 +5484,12 @@ function indexNodeViews(st: CwlState): IndexNodeView[] {
     const cf = getConfig(key);
 
     const eventMessages: AgentMessage[] = event.messages;
-    if (!eventMessages || eventMessages.length === 0) return;
+    if (!eventMessages || eventMessages.length === 0) {
+      // This callback will not produce an outgoing list. Consume any older snapshot
+      // so the next usage sample cannot be paired with a request that was not sent.
+      pendingPromptChars.set(key, 0);
+      return;
+    }
 
     // Drop the demand injected on the PREVIOUS call before anything else: it is
     // re-added only while the gate is armed, so it can never pile up turn after
@@ -5481,6 +5503,7 @@ function indexNodeViews(st: CwlState): IndexNodeView[] {
     // resolved against whatever list this variable holds, so the two must never
     // disagree.
     let messages: AgentMessage[] = eventMessages.filter((m) => !isGateMessage(m) && !isInheritedMessage(m) && !isDemandMessage(m));
+    let messageSource: 'hook-input' | 'spans-applied' = 'hook-input';
 
     // MEASUREMENT of the cache — the instrument this design never had. The provider
     // cache is a PREFIX cache, and every leaf written here lands where the
@@ -5497,37 +5520,46 @@ function indexNodeViews(st: CwlState): IndexNodeView[] {
       const hit = prefix > 0 ? Math.round((usage.cacheRead / prefix) * 100) : 0;
       st.providerContextTokens = prefix + usage.output;
 
-      // Online calibration of charTokenRatio and systemOverheadTokens based on real provider numbers
-      let totalMsgChars = 0;
-      for (const m of messages) {
-        try { totalMsgChars += JSON.stringify(m).length; } catch { /* skip */ }
-      }
-
-      if (prefix > 0 && totalMsgChars > 0) {
-        if (st.lastCalibTokens > 0 && prefix > st.lastCalibTokens && totalMsgChars > st.lastCalibChars) {
-          const deltaChars = totalMsgChars - st.lastCalibChars;
-          const deltaTokens = prefix - st.lastCalibTokens;
-          if (deltaTokens >= 300) {
-            const measuredRatio = deltaChars / deltaTokens;
-            if (measuredRatio >= MIN_CHAR_TOKEN_RATIO && measuredRatio <= MAX_CHAR_TOKEN_RATIO) {
-              st.charTokenRatio = Math.round((0.7 * st.charTokenRatio + 0.3 * measuredRatio) * 100) / 100;
-            }
-            st.lastCalibChars = totalMsgChars;
-            st.lastCalibTokens = prefix;
+      // This usage belongs to the exact outgoing list returned by the previous
+      // context-hook invocation. The current `messages` already includes this
+      // assistant response (and may also include tool results or a new CWL leaf),
+      // so measuring it here would compare different requests.
+      const promptChars = pendingPromptChars.get(key);
+      pendingPromptChars.delete(key);
+      let sample = 'unpaired';
+      if (prefix > 0 && promptChars && promptChars > 0) {
+        sample = 'paired';
+        const compressedSinceSnapshot = st.lastEvent !== 'none';
+        const deltaChars = promptChars - st.lastCalibChars;
+        const deltaTokens = prefix - st.lastCalibTokens;
+        if (!compressedSinceSnapshot
+          && st.lastCalibTokens > 0
+          && deltaChars > 0
+          && deltaTokens >= 300) {
+          const measuredRatio = deltaChars / deltaTokens;
+          if (measuredRatio >= MIN_CHAR_TOKEN_RATIO && measuredRatio <= MAX_CHAR_TOKEN_RATIO) {
+            st.charTokenRatio = Math.round((0.7 * st.charTokenRatio + 0.3 * measuredRatio) * 100) / 100;
           }
-        } else if (st.lastCalibTokens === 0) {
-          st.lastCalibChars = totalMsgChars;
-          st.lastCalibTokens = prefix;
         }
-
-        const estimatedMsgTokens = Math.ceil(totalMsgChars / st.charTokenRatio);
-        st.systemOverheadTokens = Math.max(0, prefix - estimatedMsgTokens);
+        // Always move the baseline to this paired request, including on a skipped
+        // delta. This prevents a later sample from crossing a compression/native
+        // compaction boundary and makes a skipped guard unable to poison future deltas.
+        st.lastCalibChars = promptChars;
+        st.lastCalibTokens = prefix;
+        const estimatedPromptTokens = Math.ceil(promptChars / st.charTokenRatio);
+        st.systemOverheadTokens = Math.max(0, prefix - estimatedPromptTokens);
+      } else {
+        // After a restart or a missing hook snapshot there is no comparable sample.
+        // Do not let a future delta bridge this unmeasured request.
+        st.lastCalibChars = 0;
+        st.lastCalibTokens = 0;
       }
 
       debugLog(cf,
         `CACHE read=${usage.cacheRead} write=${usage.cacheWrite} input=${usage.input}`
         + ` output=${usage.output} hit=${hit}% after=${st.lastEvent}`
         + ` since-compress=${st.turnsSinceCompress}`
+        + ` sample=${sample} promptChars=${promptChars ?? 0} providerPrefix=${prefix}`
         + ` ratio=${st.charTokenRatio.toFixed(2)} overhead=${st.systemOverheadTokens}t`);
       // Charged once: the event explains THIS row and no other.
       st.lastEvent = 'none';
@@ -5572,13 +5604,8 @@ function indexNodeViews(st: CwlState): IndexNodeView[] {
     const g = st.graph;
 
     // 1. Measure the real context
-    let currentTokens = 0;
-    for (const m of messages) {
-      currentTokens += estimateMessageTokens(m, st.charTokenRatio);
-    }
-    st.lastMeasuredTokens = st.providerContextTokens > 0
-      ? Math.max(currentTokens, st.providerContextTokens)
-      : currentTokens + st.systemOverheadTokens;
+    let currentTokens = estimateMessageListTokens(messages, st.charTokenRatio);
+    st.lastMeasuredTokens = currentTokens + st.systemOverheadTokens;
 
     const trigger = cf.tokenBudget * cf.thresholdRatio;
 
@@ -5634,7 +5661,7 @@ function indexNodeViews(st: CwlState): IndexNodeView[] {
       let spanUser = 0;
       let spanOther = 0;
       list.forEach((m, i) => {
-        const t = estimateMessageTokens(m);
+        const t = estimateMessageTokens(m, st.charTokenRatio);
         if (i >= floor) protectedTokens += t;
         else if (inSpans.has(i)) {
           spanTokens += t;
@@ -5654,7 +5681,7 @@ function indexNodeViews(st: CwlState): IndexNodeView[] {
       // span), so it is subtracted from it: the four numbers must partition the
       // context EXACTLY, and the test checks that identity.
       const free = Math.min(st.rangeTokens, outside);
-      debugLog(cf, `CONTEXT ${tokens}t still above trigger ${Math.round(trigger)}t: ${protectedTokens}t in the protected window (last ${cf.protectedTurns} user turns), ${spanTokens}t inside the spans (${countedFrom}), ${free}t freely compressible, ${outside - free}t elsewhere`);
+      debugLog(cf, `CONTEXT ${tokens}t estimated total still above trigger ${Math.round(trigger)}t: ${protectedTokens}t in the protected window (last ${cf.protectedTurns} user turns), ${spanTokens}t inside the spans (${countedFrom}), ${free}t freely compressible, ${outside - free}t elsewhere, ${st.systemOverheadTokens}t fixed overhead`);
       // The three parts sum to `spanTokens` BY CONSTRUCTION, and the test checks
       // that against the row above: two lines, one number, and a sum that cannot
       // be talked around. Without this, "48.623t inside the spans" is a number
@@ -5687,23 +5714,34 @@ function indexNodeViews(st: CwlState): IndexNodeView[] {
       if (fs.existsSync(statePath(key))) saveState(key, st);
     };
 
+    const rememberOutgoing = (list: AgentMessage[]): { messages: AgentMessage[] } => {
+      pendingPromptChars.set(key, serializedMessageChars(list));
+      return { messages: list };
+    };
+
     const finish = (list: AgentMessage[]): { messages: AgentMessage[] } => {
-      const msgTokens = list.reduce((s: number, m: AgentMessage) => s + estimateMessageTokens(m, st.charTokenRatio), 0);
-      const after = st.providerContextTokens > 0
-        ? Math.max(msgTokens, st.providerContextTokens)
-        : msgTokens + st.systemOverheadTokens;
+      const msgTokens = estimateMessageListTokens(list, st.charTokenRatio);
+      const after = msgTokens + st.systemOverheadTokens;
       st.lastMeasuredTokens = after;
       persistIfUsed();
-      if (after <= trigger) {
-        // Effect achieved: the gate has nothing left to ask for.
+      if (msgTokens <= trigger) {
+        // The budget governs history CWL can act on. Fixed system/tool overhead
+        // may make total provider usage larger, but cannot justify a futile demand.
         st.overBudgetSince = -1;
         st.gateArmedTurn = -1;
-        return { messages: list };
+        if (after > trigger && st.systemOverheadTokens > 0) {
+          const why = `estimated context ${after}t exceeds trigger ${Math.round(trigger)}t only by fixed overhead (~${st.systemOverheadTokens}t); history (${msgTokens}t) is within limits`;
+          if (st.gateWithheld !== why) {
+            st.gateWithheld = why;
+            debugLog(cf, `GATE withheld: ${why}`);
+          }
+        }
+        return rememberOutgoing(list);
       }
       // Still over budget. Remember since when, so turn_end knows when to ask.
       if (st.overBudgetSince < 0) st.overBudgetSince = st.turns;
       declareFloor(list, after);
-      if (!cf.gate || st.gateArmedTurn < 0) return { messages: list };
+      if (!cf.gate || st.gateArmedTurn < 0) return rememberOutgoing(list);
       // Only demand what the extension can actually deliver — and MEASURE it on
       // THIS list instead of trusting the state: an ask no call can satisfy costs
       // the agent a turn, distracts it and dirties the context. Two ways to be
@@ -5736,7 +5774,7 @@ function indexNodeViews(st: CwlState): IndexNodeView[] {
           st.gateWithheld = why;
           debugLog(cf, `GATE withheld: ${why} — the demand would ask for something no call can do`);
         }
-        return { messages: list };
+        return rememberOutgoing(list);
       }
       st.gateWithheld = '';
       // The demand is DELIVERED now, and that is the only thing that makes a turn
@@ -5746,8 +5784,7 @@ function indexNodeViews(st: CwlState): IndexNodeView[] {
       st.demandShown = true;
       // SAFETY: Pi accepts the custom role in the context hook although the
       // AgentMessage union does not declare it; the extra keys are its contract.
-      return {
-        messages: [...list, {
+      return rememberOutgoing([...list, {
           role: 'custom',
           customType: GATE_CUSTOM_TYPE,
           content: t('gateDemand')(
@@ -5759,8 +5796,7 @@ function indexNodeViews(st: CwlState): IndexNodeView[] {
           ),
           display: false,
           timestamp: Date.now(),
-        } as unknown as AgentMessage],
-      };
+        } as unknown as AgentMessage]);
     };
 
     // Episodes the eviction can no longer locate, said out loud instead of
@@ -5984,6 +6020,7 @@ function indexNodeViews(st: CwlState): IndexNodeView[] {
         // resolved on the original list would point the eviction at messages that
         // no longer exist there.
         messages = applied.kept;
+        messageSource = 'spans-applied';
         spanInside = { set: new Set(applied.insideOut), len: applied.kept.length };
         currentTokens = afterSpans;
       } else if (applied.kept.length !== messages.length) {
@@ -5993,15 +6030,17 @@ function indexNodeViews(st: CwlState): IndexNodeView[] {
         // end. Either way `kept` IS the list to show — and the measured tokens must
         // follow it, or the trigger check below reads the pre-injection count.
         messages = applied.kept;
-        currentTokens = applied.kept.reduce((s: number, m: AgentMessage) => s + estimateMessageTokens(m, st.charTokenRatio), 0);
+        messageSource = 'spans-applied';
+        currentTokens = estimateMessageListTokens(applied.kept, st.charTokenRatio);
       }
     }
 
+    st.lastMeasuredTokens = currentTokens + st.systemOverheadTokens;
     const totalContext = st.lastMeasuredTokens;
     if (currentTokens <= trigger) {
       if (st.forceAllNext && !rangeStoredBySpans) {
         const range = compressibleRange(messages, st.spans, 0, st.charTokenRatio);
-        storeRange(st, cf, range, messages, currentTokens, trigger);
+        storeRange(st, cf, range, messages, currentTokens, trigger, messageSource);
       }
       if (totalContext > trigger && st.systemOverheadTokens > 0) {
         // Option B: total context exceeds trigger only because of incompressible system overhead.
@@ -6018,7 +6057,9 @@ function indexNodeViews(st: CwlState): IndexNodeView[] {
         debugLog(cf, `CONTEXT ${currentTokens}t under threshold ${Math.round(trigger)}t: no eviction`);
       }
       persistIfUsed();
-      return (droppedGate || st.forceAllNext || demand !== null) ? { messages } : undefined;
+      const result = (droppedGate || st.forceAllNext || demand !== null) ? rememberOutgoing(messages) : undefined;
+      if (!result) pendingPromptChars.set(key, serializedMessageChars(messages));
+      return result;
     }
 
     const protTurns = st.forceAllNext ? 0 : cf.protectedTurns;
@@ -6027,11 +6068,11 @@ function indexNodeViews(st: CwlState): IndexNodeView[] {
     const safetyFloor = protectedFromIndex(messages, protTurns);
 
     // Addresses of the largest range the agent may ask to compress. Recomputed
-    // here because this hook is the only place that sees the real message list.
     if (!rangeStoredBySpans) {
       const range = compressibleRange(messages, st.spans, protTurns, st.charTokenRatio);
-      storeRange(st, cf, range, messages, currentTokens, trigger);
+      storeRange(st, cf, range, messages, currentTokens, trigger, messageSource);
     }
+      // here because this hook is the only place that sees the real message list.
 
     // No episodes at all: with no episodes, we do not perform global reasoning
     // strips on live messages because modifying historical turns destroys the

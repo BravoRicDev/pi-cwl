@@ -93,7 +93,7 @@ test('the saving declared by a span is what the context has really lost', async 
     const out = await hook(hooks, ctx, base);
     const log = logOf(sandbox);
 
-    const before = /RANGE \S+ \(~\d+t\) \| 12 msgs, (\d+)t vs trigger/.exec(log);
+    const before = /RANGE source=(?:hook-input|spans-applied) \S+ \(~\d+t\) \| 12 msgs, (\d+) message-tokens vs trigger/.exec(log);
     const declared = /SPANS applied: \d+ \(new \d+\), saved (\d+)t/.exec(log);
     const after = /SPANS applied \((\d+)t\) still above trigger/.exec(log);
     assert.ok(
@@ -127,7 +127,7 @@ test('the injected message no longer declares more tokens than the context has l
 
     const out = await hook(hooks, ctx, base);
     const log = logOf(sandbox);
-    const before = /RANGE \S+ \(~\d+t\) \| 12 msgs, (\d+)t vs trigger/.exec(log);
+    const before = /RANGE source=(?:hook-input|spans-applied) \S+ \(~\d+t\) \| 12 msgs, (\d+) message-tokens vs trigger/.exec(log);
     const after = /SPANS applied \((\d+)t\) still above trigger/.exec(log);
     assert.ok(before && after, 'measurements missing: the test proves nothing');
     const lost = Number(before[1]) - Number(after[1]);

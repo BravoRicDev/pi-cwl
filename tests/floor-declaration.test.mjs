@@ -66,7 +66,7 @@ const conversation = () => {
   return out;
 };
 
-test('the floor line partitions the context: the four numbers add up to the total', async () => {
+test('the floor line partitions message history and fixed overhead into the total', async () => {
   const { sandbox, home, tools, hooks, ctx } = await boot();
   try {
     // The CLOSING anchor of a span is the last ELIGIBLE message below the
@@ -92,13 +92,13 @@ test('the floor line partitions the context: the four numbers add up to the tota
     // turn passed through `finish` above budget, and in the FIRST turn (the one
     // that creates the address) the spans do not exist yet, so `inside` would be
     // zero by construction and the test would prove nothing.
-    const rows = [...log.matchAll(/CONTEXT (\d+)t still above trigger \d+t: (\d+)t in the protected window \(last \d+ user turns\), (\d+)t inside the spans \(counted from (\d+) of (\d+) spans\), (\d+)t freely compressible, (\d+)t elsewhere/g)];
+    const rows = [...log.matchAll(/CONTEXT (\d+)t estimated total still above trigger \d+t: (\d+)t in the protected window \(last \d+ user turns\), (\d+)t inside the spans \(counted from (\d+) of (\d+) spans\), (\d+)t freely compressible, (\d+)t elsewhere, (\d+)t fixed overhead/g)];
     assert.ok(rows.length > 0, 'the floor line was not written: the context is above the trigger and `finish` did not declare why');
-    const [, total, protectedTokens, inside, counted, kept, free, elsewhere] = rows[rows.length - 1].map(Number);
+    const [, total, protectedTokens, inside, counted, kept, free, elsewhere, overhead] = rows[rows.length - 1].map(Number);
     assert.equal(
-      protectedTokens + inside + free + elsewhere,
+      protectedTokens + inside + free + elsewhere + overhead,
       total,
-      `the four numbers must partition the context: ${protectedTokens} + ${inside} + ${free} + ${elsewhere} != ${total}`,
+      `the five numbers must partition total context: ${protectedTokens} + ${inside} + ${free} + ${elsewhere} + ${overhead} != ${total}`,
     );
     // The line DECLARES how many spans it counted. If the count comes from a
     // RE-RESOLUTION of the compressed list, there it finds nothing anymore
