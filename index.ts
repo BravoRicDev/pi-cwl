@@ -266,6 +266,17 @@ type CwlMessages = {
   mergeFailed: (reason: string) => string;
   mergeDone: (name: string, sources: string[], leaves: number, nodes: number, renamed: number, deleted: number) => string;
   mergeSourcesKept: (names: string) => string;
+  /**
+   * THE ABSORB: the merge's whole judgement, without its deletion. Sources stay exactly where
+   * they are; only THIS session's memory grows.
+   */
+  absorbNeedOne: () => string;
+  absorbSelf: (name: string) => string;
+  absorbEmptySource: (name: string) => string;
+  absorbAmbig: (from: string, candidates: string) => string;
+  absorbDone: (sources: string[], added: number, kept: number, upgraded: number, renamed: number, nodes: number, pit: string) => string;
+  absorbNothingNew: (sources: string[], kept: number) => string;
+  absorbPitRewritten: (chars: number) => string;
   /** The slash commands: the fork in the operator's hands, with no agent in between. */
   cmdMemoriesDesc: () => string;
   cmdAdoptDesc: () => string;
@@ -281,6 +292,11 @@ type CwlMessages = {
   cmdMergeNameRequired: () => string;
   cmdNoMergeable: () => string;
   cmdMergeCancelled: () => string;
+  /** /cwl_absorb: absorb one or more memories into this session without deleting them. */
+  cmdAbsorbDesc: () => string;
+  cmdAbsorbPick: () => string;
+  cmdAbsorbCancelled: () => string;
+  cmdNoAbsorbable: () => string;
   /** /cwl_save and /cwd_save: operator-triggered full compaction with zero protected turns. */
   cmdSaveDesc: () => string;
   cmdSaveNothing: () => string;
@@ -293,7 +309,7 @@ type CwlMessages = {
   gateDemand: (current: string, budget: string, turns: number, canClose: boolean, canCompress: boolean) => string;
   gateGiveUp: (attempts: number) => string;
   /** Texts that end up in the LLM context. */
-  snippets: { delimiter: string; status: string; compress: string; recall: string; recallEpisode: string; compressRange: string; memories: string; adopt: string; merge: string };
+  snippets: { delimiter: string; status: string; compress: string; recall: string; recallEpisode: string; compressRange: string; memories: string; adopt: string; merge: string; absorb: string };
   /** Texts of the autonomous tools. */
   tools: {
     compressDesc: string; compressStart: string; compressEnd: string; compressSummary: string;
@@ -301,6 +317,7 @@ type CwlMessages = {
     recallEpisodeDesc: string; recallEpisodeName: string; recallEpisodeFull: string;
     memoriesDesc: string; adoptDesc: string; adoptFromDesc: string; adoptAsDesc: string;
     mergeDesc: string; mergeFromDesc: string; mergeAsDesc: string;
+    absorbDesc: string; absorbFromDesc: string;
     openDesc: string;
     openId: string;
     microDesc: string;
@@ -474,6 +491,13 @@ const I18N: Record<Lang, CwlMessages> = {
     mergeFailed: (reason) => `The merge was ABORTED and NO source memory was touched: ${reason}. The half-written file, if any, was removed.`,
     mergeDone: (name, sources, leaves, nodes, renamed, deleted) => `Merged ${sources.length} memories into "${name}": ${leaves} leaf/leaves, ${nodes} node(s). Sources: ${sources.join(', ')}. ${renamed === 0 ? 'No id carried diverging content: every leaf was kept exactly once.' : `${renamed} leaf/leaves kept BOTH copies (same id, different micro or summary) and the extra one took a derived id.`} ${deleted} source memory/memories deleted: "${name}" is the only one left. It is an ARCHIVE, not this session's memory — bring it in with cwl_adopt("${name}").`,
     mergeSourcesKept: (names) => `The merged memory was written and verified, but these sources could NOT be deleted and are still on disk: ${names}. Remove them by hand once you are sure: keeping them costs space, not correctness.`,
+    absorbNeedOne: () => 'Absorbing needs at least ONE memory: there is nothing to absorb.',
+    absorbSelf: (name) => `The memory "${name}" is the one this session is writing: absorbing it into itself would rewrite this very file from its own contents. Name another memory.`,
+    absorbEmptySource: (name) => `The memory "${name}" holds no leaves: it would add nothing to this session. Give it a leaf first, or leave it out.`,
+    absorbAmbig: (from, candidates) => `The name "${from}" matches MORE than one memory, so the absorb will not guess which one you meant. Retry with the path of the one you mean: ${candidates}.`,
+    absorbDone: (sources, added, kept, upgraded, renamed, nodes, pit) => `Absorbed ${sources.length} memory/memories into this session: ${added} leaf/leaves ADDED, ${kept} leaf/leaves already here and left alone, ${upgraded} micro(s) improved with the newer wording, ${nodes} node(s) regrouped, pit ${pit}. ${renamed === 0 ? 'No id carried a different body, so nothing was duplicated.' : `${renamed} leaf/leaves carried the same id with a DIFFERENT body: both copies were kept and the extra one took a derived id.`} The source memories were NOT touched: they are still on disk, unchanged, and you can absorb them again.`,
+    absorbNothingNew: (sources, kept) => `Absorbed ${sources.length} memory/memories, and they added NOTHING: all ${kept} leaf/leaves were already here with the same body. That is what makes a repeated absorb cheap — it is a no-op, not a copy. The sources were not touched.`,
+    absorbPitRewritten: (chars) => `The pit was REWRITTEN from the descriptions of what it holds (${chars} characters), so the archive re-aligns with the material inside it. The synthesis it replaces was kept: read it on the pit page as <pit id>.s1.`,
     cmdMemoriesDesc: () => 'List the CWL memories on this machine, by name and size.',
     cmdAdoptDesc: () => 'Fork a memory into this session: pick it from the list, then name the fork.',
     cmdPickSource: () => 'Pick the memory to fork:',
@@ -488,6 +512,10 @@ const I18N: Record<Lang, CwlMessages> = {
     cmdMergeNameRequired: () => 'The merged memory needs a name of its own: nothing was merged.',
     cmdNoMergeable: () => 'Fewer than two free memories on this machine: there is nothing to merge.',
     cmdMergeCancelled: () => 'Nothing was merged.',
+    cmdAbsorbDesc: () => 'Absorb one or more archived CWL memories into this session without deleting them. The sources stay untouched on disk. Leaves with the same body are deduplicated; bodies that differ with the same id keep both copies, and the extra one gets a derived id. The pit is rewritten from internal descriptions so the archive re-aligns with its own material.',
+    cmdAbsorbPick: () => 'Pick one or more memories to absorb into this session:',
+    cmdAbsorbCancelled: () => 'Nothing was absorbed.',
+    cmdNoAbsorbable: () => 'No adoptable memory found on this machine.',
     cmdSaveDesc: () => 'Force total compaction (zero protected turns) into a final leaf for inheritance or topic change.',
     cmdSaveNothing: () => 'Nothing left to compact: all recent messages are already inside leaves or not enough messages exist.',
     cmdSaveTriggered: (tokens) => `Total compaction triggered: ~${tokens} recent tokens will be compressed into the final leaf.`,
@@ -532,6 +560,7 @@ const I18N: Record<Lang, CwlMessages> = {
       memories: 'cwl_memories: the memories that can be adopted, by name',
       adopt: 'cwl_adopt: forks another memory into this session',
       merge: 'cwl_merge_memories: merges two or more archived memories into ONE, deleting the sources',
+      absorb: 'cwl_absorb_memories: copies one or more archived memories INTO this session (sources untouched), deduplicating by body',
       status: 'cwl_status: CWL context lifecycle status',
       compress: 'cwl_compress: compress a range of messages in the active context',
       recall: 'cwl_recall: retrieve a conversation excerpt by BM25 query',
@@ -574,6 +603,8 @@ const I18N: Record<Lang, CwlMessages> = {
       mergeDesc: 'Merges TWO OR MORE archived CWL memories into ONE new memory (a "super-memory"), then deletes the sources. The rules, in order: (1) the same leaf id with the same micro and the same summary is kept ONCE; (2) the same id with diverging content keeps BOTH copies, and the extra one takes a derived id, so nothing is thrown away; (3) a leaf that sits in a TOPIC in one memory and loose in another goes into the topic; (4) when the same topic id exists in both memories their leaves are UNITED; (5) a leaf claimed by two DIFFERENT topics goes to the topic of the more recent memory (ties: the topic with fewer leaves). The merged memory is written to disk and RE-READ before any source is deleted, so a failure leaves every source intact.',
       mergeFromDesc: 'The memories to merge: two or more names as cwl_memories shows them. An ABSOLUTE state-file path also works, and it is the only unambiguous way to name one of two memories that share a name; a relative path is not accepted, because it would have to be anchored to a directory this call does not know.',
       mergeAsDesc: 'The NAME of the merged memory. Required, and it must not collide with an existing memory.',
+      absorbDesc: 'Copies one or more archived CWL memories INTO the memory of the CURRENT session, WITHOUT deleting them: the sources stay on disk exactly as they were, so absorbing the same one again is a no-op. It is cwl_merge_memories without the deletion, and it is what a fork-and-merge loop in a live session is: take what another session learned and keep going. The judgement is the MERGE judgement — the same placement rules, the same topics coming back as topics, the same pit rebuilt from what it holds — with ONE difference: a leaf is identified by its BODY and not by body+micro, because this is the case where the same story arrives again written better. Two copies of one body are ONE leaf and the newer wording upgrades its label; two DIFFERENT bodies under one id are both kept and the extra one takes a derived id. Nothing is ever lost, and nothing is duplicated.',
+      absorbFromDesc: 'The memories to absorb: one or more names as cwl_memories shows them, or their ABSOLUTE state-file paths. Duplicate names are REFUSED (the candidates are listed), because the path is the only unambiguous way to name one of two archives that share a name; a relative path is not accepted, since it would have to be anchored to a directory this call does not know. A LIVE memory is accepted on purpose: copying one never disturbs its writer.',
       compressRangeDesc: 'Compresses the OLDEST usable range of the conversation into your summary. YOU DO NOT pick the range and you do not need any hash: the extension already computed the address and holds it. Call it when an eviction marker or the budget demand tells you to compact, and write a summary good enough to keep working without re-reading the originals. Nothing inside the protected window is touched.',
       compressRangeSummary: 'The summary that REPLACES the compressed range. Write WHOLE PIECES, not a digest: it must be enough to keep working without re-reading them. Include paths, file names, function names, numeric values, and what you decided and why.',
       compressMicro: 'Your LABEL of ~960 characters (≈240 tokens) for this leaf: what it contains, detailed enough that the index can show it instead of the body. Write it HERE, while you have the messages in front of you — the leaf is then ready for a node and nothing will have to ask you for it later. A compression without a label stays valid: the extension will ask for it when the leaf is due to join a node.',
@@ -747,6 +778,13 @@ const I18N: Record<Lang, CwlMessages> = {
     mergeFailed: (reason) => `Il merge e\' stato ANNULLATO e NESSUNA memoria sorgente e\' stata toccata: ${reason}. Il file scritto a meta\', se c\'era, e\' stato rimosso.`,
     mergeDone: (name, sources, leaves, nodes, renamed, deleted) => `Fuse ${sources.length} memorie in "${name}": ${leaves} foglia/e, ${nodes} nodo/i. Sorgenti: ${sources.join(', ')}. ${renamed === 0 ? 'Nessun id portava contenuto divergente: ogni foglia e\' stata tenuta esattamente una volta.' : `${renamed} foglia/e hanno tenuto ENTRAMBE le copie (stesso id, micro o riassunto diverso) e quella in piu\' ha preso un id derivato.`} ${deleted} memoria/e sorgente cancellate: resta solo "${name}". E\' un ARCHIVIO, non la memoria di questa sessione — portala qui con cwl_adopt("${name}").`,
     mergeSourcesKept: (names) => `La memoria fusa e\' stata scritta e verificata, ma queste sorgenti NON si sono potute cancellare e sono ancora su disco: ${names}. Rimuovile a mano quando sei sicuro: tenerle costa spazio, non correttezza.`,
+    absorbNeedOne: () => 'L\'assorbimento vuole ALMENO UNA memoria: non c\'e\' niente da assorbire.',
+    absorbSelf: (name) => `La memoria "${name}" e\' quella che questa sessione sta scrivendo: assorbirla in se\' significa riscrivere questo stesso file a partire da se\' stesso. Indica un\'altra memoria.`,
+    absorbEmptySource: (name) => `La memoria "${name}" non ha foglie: non aggiungerebbe niente a questa sessione. Da\' le foglie prima, o lasciala fuori.`,
+    absorbAmbig: (from, candidates) => `Il nome "${from}" corrisponde a PIU\' DI UNA memoria, e l\'assorbimento non tira a indovinare quale intendevi. Riprova con il path di quella che intendi: ${candidates}.`,
+    absorbDone: (sources, added, kept, upgraded, renamed, nodes, pit) => `Assorbite ${sources.length} memoria/e in questa sessione: ${added} foglia/e AGGIUNTE, ${kept} foglia/e che c\'erano gia\' e sono state lasciate stare, ${upgraded} micro migliorati con la formulazione piu\' recente, ${nodes} nodo/i raggruppati, pozzo ${pit}. ${renamed === 0 ? 'Nessun id portava un corpo diverso: niente e\' stato duplicato.' : `${renamed} foglia/e avevano lo stesso id con un corpo DIVERSO: sono state tenute entrambe le copie e quella in piu\' ha preso un id derivato.`} Le memorie sorgente NON sono state toccate: sono ancora su disco, immutate, e puoi assorbirle di nuovo.`,
+    absorbNothingNew: (sources, kept) => `Assorbite ${sources.length} memoria/e, e non hanno aggiunto NULLA: tutte le ${kept} foglia/e erano gia\' qui con lo stesso corpo. E\' cio\' che rende un assorbimento ripetuto economico — e\' un no-op, non una copia. Le sorgenti non sono state toccate.`,
+    absorbPitRewritten: (chars) => `Il pozzo e\' stato RISCRITTO a partire dalle descrizioni di cio\' che contiene (${chars} caratteri), cosi\' l\'archivio si riallinea al materiale che contiene davvero. La sintesi che sostituisce e\' stata conservata: leggila nella pagina del pozzo come <id pozzo>.s1.`,
     cmdMemoriesDesc: () => 'Elenca le memorie CWL di questa macchina, per nome e dimensione.',
     cmdAdoptDesc: () => 'Forka una memoria in questa sessione: sceglila dalla lista, poi dai un nome al fork.',
     cmdPickSource: () => 'Scegli la memoria da forkare:',
@@ -761,6 +799,10 @@ const I18N: Record<Lang, CwlMessages> = {
     cmdMergeNameRequired: () => 'La memoria fusa vuole un nome suo: non e\' stato fuso niente.',
     cmdNoMergeable: () => 'Meno di due memorie libere su questa macchina: non c\'e\' niente da fondere.',
     cmdMergeCancelled: () => 'Non e\' stato fuso niente.',
+    cmdAbsorbDesc: () => 'Assorbi una o piu\' memorie CWL archiviate in questa sessione SENZA cancellarle. Le sorgenti restano intatte su disco. Le foglie con lo stesso corpo vengono deduplicate; i corpi diversi con lo stesso id tengono entrambe le copie e quella in piu\' prende un id derivato. Il pozzo viene riscritto dalle descrizioni interne, cosi\' l\'archivio si riallinea al proprio materiale.',
+    cmdAbsorbPick: () => 'Scegli una o piu\' memorie da assorbire in questa sessione:',
+    cmdAbsorbCancelled: () => 'Non e\' stato assorbito niente.',
+    cmdNoAbsorbable: () => 'Nessuna memoria adottabile su questa macchina.',
     cmdSaveDesc: () => 'Forza la compattazione totale (zero turni protetti) in una foglia finale per eredità o cambio topic.',
     cmdSaveNothing: () => 'Nessun messaggio recente da compattare: tutta la cronologia e\' gia\' dentro le foglie o non ci sono abbastanza messaggi.',
     cmdSaveTriggered: (tokens) => `Compattazione totale avviata: ~${tokens} token recenti verranno compressi nella foglia finale.`,
@@ -801,6 +843,7 @@ const I18N: Record<Lang, CwlMessages> = {
       memories: 'cwl_memories: le memorie adottabili, per nome',
       adopt: 'cwl_adopt: fork di un\'altra memoria in questa sessione',
       merge: 'cwl_merge_memories: fonde due o piu\' memorie archiviate in UNA sola, cancellando le sorgenti',
+      absorb: 'cwl_absorb_memories: copia una o piu\' memorie archiviate IN questa sessione (sorgenti intatte), deduplicando per corpo',
       status: 'cwl_status: stato del context lifecycle CWL',
       compress: 'cwl_compress: comprimi un intervallo di messaggi nel contesto attivo',
       recall: 'cwl_recall: recupera un pezzo di conversazione per query BM25',
@@ -843,6 +886,8 @@ const I18N: Record<Lang, CwlMessages> = {
       mergeDesc: 'Fonde DUE O PIU\' memorie CWL archiviate in UNA memoria nuova (una "super-memoria"), poi cancella le sorgenti. Le regole, in ordine: (1) lo stesso id di foglia con lo stesso micro e lo stesso riassunto si tiene UNA volta; (2) lo stesso id con contenuto divergente tiene ENTRAMBE le copie, e quella in piu\' prende un id derivato, cosi\' niente viene buttato; (3) una foglia che in una memoria sta in un TOPIC e in un\'altra e\' sciolta va nel topic; (4) quando lo stesso id di topic esiste in entrambe le memorie le loro foglie vengono UNITE; (5) una foglia contesa da due topic DIVERSI va al topic della memoria piu\' recente (a pari, al topic con meno foglie). La memoria fusa viene scritta su disco e RILETTA prima di cancellare qualsiasi sorgente, quindi un fallimento lascia ogni sorgente intatta.',
       mergeFromDesc: 'Le memorie da fondere: due o piu\' nomi come li mostra cwl_memories. Funziona anche il PATH ASSOLUTO di un file di stato, ed e\' l\'unico modo non ambiguo per nominare una delle due memorie che portano lo stesso nome; un path relativo non viene accettato, perche\' andrebbe ancorato a una directory che questa chiamata non conosce.',
       mergeAsDesc: 'Il NOME della memoria fusa. Obbligatorio, e non deve collidere con una memoria esistente.',
+      absorbDesc: 'Copia una o piu\' memorie CWL archiviate NELLA memoria della sessione CORRENTE, SENZA cancellarle: le sorgenti restano su disco esattamente come erano, quindi assorbire di nuovo la stessa e\' un no-op. E\' cwl_merge_memories senza la cancellazione, ed e\' quello che serve a un fork-and-merge fatto in corsa: prendere cio\' che un\'altra sessione ha imparato e continuare. Il giudizio e\' quello del MERGE — stesse regole di collocazione, stessi topic che tornano topic, stesso pozzo riscritto da cio\' che contiene — con UNA differenza: la foglia e\' identificata dal CORPO e non da corpo+micro, perche\' questo e\' il caso in cui la stessa storia arriva di nuovo scritta meglio. Due copie dello stesso corpo sono UNA foglia e la formulazione piu\' recente ne migliora l\'etichetta; due corpi DIVERSI con lo stesso id sono tenuti entrambi e quello in piu\' prende un id derivato. Niente viene perso, e niente viene duplicato.',
+      absorbFromDesc: 'Le memorie da assorbire: uno o piu\' nomi come li mostra cwl_memories, oppure i loro PATH ASSOLUTI di file di stato. I nomi duplicati sono RIFIUTATI (i candidati vengono elencati), perche\' il path e\' l\'unico modo non ambiguo per nominare una delle due memorie che portano lo stesso nome; un path relativo non viene accettato, perche\' dovrebbe essere ancorato a una directory che questa chiamata non conosce. Una memoria VIVA viene accettata di proposito: copiarla non disturba mai chi la sta scrivendo.',
       compressRangeDesc: "Comprime nel tuo riassunto l'intervallo PIU' VECCHIO utilizzabile della conversazione. NON scegli tu l'intervallo e non ti serve nessun hash: l'estensione ha gia' calcolato e tiene l'indirizzo. Chiamalo quando un marker di eviction o la richiesta di budget ti dicono di compattare, e scrivi un riassunto che basti a lavorare senza rileggere gli originali. Nulla dentro la finestra protetta viene toccato.",
       compressRangeSummary: "Il riassunto che SOSTITUISCE l'intervallo compresso. Scrivi PEZZI INTERI, non un sommario: deve bastare a lavorare senza rileggere. Includi path, nomi di file, nomi di funzione, valori numerici e cosa hai scelto e perche'.",
       compressMicro: "La tua ETICHETTA di ~960 caratteri (≈240 token) per questa foglia: cosa contiene, con dettaglio sufficiente perche' l'indice la possa mostrare al posto del corpo. Scrivila QUI, mentre hai i messaggi davanti — la foglia e' cosi' pronta per un nodo e nessuno dovra' chiedertela dopo. Una compressione senza etichetta resta valida: l'estensione te la chiedera' quando la foglia dovra' entrare in un nodo.",
@@ -1486,6 +1531,12 @@ interface CwlState {
    */
   importedFrom?: string;
   /**
+   * The names of the memories this session absorbed, in order. A trace — not a link, and not
+   * an endorsement: absorbing does not promise the content is still correct, only that it was
+   * copied into this branch at the time the operation ran.
+   */
+  absorbedFrom?: string[];
+  /**
    * Where the DEEP bodies live: leaf id -> [byte offset, byte length] in the append-only
    * bodies file. Only the leaves INSIDE the pit have their summary moved there (the level-0
    * rule: everything outside the pit keeps micro + full summary in RAM). A summary, once
@@ -1651,6 +1702,8 @@ interface PersistedState {
   /** The memory's name, and where it came from when it is a fork. See `CwlState`. */
   name?: string;
   importedFrom?: string;
+  /** The memories this session absorbed, in order. A trace, never a link. See `CwlState`. */
+  absorbedFrom?: string[];
   /**
    * The pid of the session that wrote this state. It is what makes adoption safe: a memory
    * whose owner is STILL ALIVE cannot be forked, because that session keeps saving its own
@@ -1818,6 +1871,7 @@ function saveState(key: string, st: CwlState, opts?: { ownerPid?: number }): voi
       graph: { episodes: st.graph.all },
       spans: st.spans,
       looseFrom: st.looseFrom,
+      absorbedFrom: st.absorbedFrom,
       graves: st.graves.slice(-GRAVE_MAX),
       oldNode: st.oldNode,
       nodes: st.nodes,
@@ -1888,6 +1942,9 @@ function loadPersistedState(key: string): CwlState | null {
     st.turns = typeof data.turns === 'number' ? data.turns : 0;
     st.memoryName = typeof data.name === 'string' && data.name ? data.name : undefined;
     st.importedFrom = typeof data.importedFrom === 'string' && data.importedFrom ? data.importedFrom : undefined;
+    st.absorbedFrom = Array.isArray(data.absorbedFrom)
+      ? data.absorbedFrom.filter((v) => typeof v === 'string' && v.length > 0)
+      : undefined;
     st.bodies = new Map<string, [number, number]>();
     if (data.bodies && typeof data.bodies === 'object') {
       for (const [k, v] of Object.entries(data.bodies)) {
@@ -3037,6 +3094,33 @@ interface PitView {
   at: number;
 }
 
+/**
+ * The pit's OWN material, put back together the way `cwl_old` wrote it into the synthesis.
+ *
+ * ONE definition, shared with `rewritePit`: a rule that decides what the pit holds, written
+ * twice, is two rules — the same disagreement that made `pitView` declare 76% of the head.
+ * A topic's description wrapped exactly as the merge wraps it; an ordinary node contributes
+ * its leaves' micros. A node contained in another contributes nothing: its parent stands for it.
+ */
+function pitDescriptions(st: CwlState): string {
+  const pit = st.oldNode;
+  if (!pit) return '';
+  const byId = new Map(st.nodes.map((nd) => [nd.id, nd]));
+  const microOf = new Map(st.spans.map((s) => [idOfSpan(s), s.micro ?? '']));
+  const childIds = new Set(st.nodes.flatMap((nd) => nd.children ?? []));
+  const parts: string[] = [];
+  for (const id of pit.nodes) {
+    const nd = byId.get(id);
+    if (!nd || childIds.has(id)) continue;
+    if (nd.description) parts.push(`[topic "${nd.name ?? nd.id}"] ${nd.description}`);
+    else for (const leaf of nd.leaves) {
+      const micro = microOf.get(leaf);
+      if (micro) parts.push(micro);
+    }
+  }
+  return parts.join('\n\n');
+}
+
 /** Builds the view above from the state. See `PitView` for why the summary gates it. */
 function pitView(st: CwlState): PitView | null {
   const pit = st.oldNode;
@@ -3047,25 +3131,10 @@ function pitView(st: CwlState): PitView | null {
     if (!inPit.has(nd.id)) continue;
     for (const id of nd.leaves) leaves.add(id);
   }
-  // The pit's OWN content, put back together the way `cwl_old` wrote it into the synthesis: a
-  // topic's description wrapped exactly as the merge wrapped it, an ordinary node's labels. It
+  // The pit's OWN content, put back together the way `cwl_old` wrote it into the synthesis: it
   // keeps every piece of material the pit holds — only the agent's narrative is left out, and
   // that one stays whole on the pit page, reachable with `cwl_open` on the pit id.
-  const byId = new Map(st.nodes.map((nd) => [nd.id, nd]));
-  const microOf = new Map(st.spans.map((s) => [idOfSpan(s), s.micro ?? '']));
-  const childIds = new Set(st.nodes.flatMap((nd) => nd.children ?? []));
-  const parts: string[] = [];
-  for (const id of pit.nodes) {
-    const nd = byId.get(id);
-    // A node contained in another injects nothing: its parent's description stands for it.
-    if (!nd || childIds.has(nd.id)) continue;
-    if (nd.description) parts.push(`[topic "${nd.name ?? nd.id}"] ${nd.description}`);
-    else for (const leaf of nd.leaves) {
-      const micro = microOf.get(leaf);
-      if (micro) parts.push(micro);
-    }
-  }
-  const internal = parts.join('\n\n');
+  const internal = pitDescriptions(st);
   const useInternal = internal.length > 0 && internal.length < pit.summary.length;
   return {
     id: pit.id,
@@ -4481,6 +4550,12 @@ interface MergePlan {
   droppedNodes: number;
   /** References to leaves that no source had in `spans`: pruned long ago, nothing to carry. */
   orphanRefs: number;
+  /**
+   * How many leaves ended up with the micro of a MORE RECENT copy of their own body.
+   * Always zero unless the plan was asked to deduplicate by body (the absorb): the merge counts
+   * copies, the absorb counts stories, and a story has one label at a time.
+   */
+  upgraded: number;
 }
 
 /**
@@ -4546,7 +4621,18 @@ function cmpKey(a: Array<number | string>, b: Array<number | string>): number {
  * author had seen more. At equal recency the topic with FEWER leaves wins, and what remains is
  * settled by node id and then by source index, so the outcome never depends on iteration order.
  */
-function planMerge(sources: MemoryEntry[]): MergePlan {
+/** What a plan may be asked to do differently, because two callers need two answers. */
+interface MergeOptions {
+  /**
+   * Deduplicate by BODY instead of by body+micro, and let the more recent copy's micro UPGRADE
+   * the leaf in place. Only the absorb asks for it: one story arriving from two forks is ONE
+   * leaf here, and paying twice for it would fill the memory with its own past.
+   */
+  byBody?: boolean;
+}
+
+function planMerge(sources: MemoryEntry[], opts: MergeOptions = {}): MergePlan {
+  const byBody = opts.byBody === true;
   const when = sources.map((s) => (typeof s.savedAt === 'number' ? s.savedAt : 0));
   const nodesOf = sources.map((s) => (Array.isArray(s.data.nodes) ? s.data.nodes as SpanNode[] : []));
 
@@ -4576,6 +4662,7 @@ function planMerge(sources: MemoryEntry[]): MergePlan {
   const groups = new Map<string, MergeLeaf[]>();
   const order: string[] = [];
   let conflicts = 0;
+  let upgraded = 0;
   sources.forEach((s, i) => {
     const spans = Array.isArray(s.data.spans) ? s.data.spans : [];
     for (const sp of spans) {
@@ -4584,7 +4671,7 @@ function planMerge(sources: MemoryEntry[]): MergePlan {
       // THAT memory is asked, by offset, exactly as `cwl_open` would.
       const body = sp.summary || readBodyAt(s.file, s.data.bodies, orig);
       const micro = sp.micro ?? undefined;
-      const sig = hashText(`${body}\u0000${micro ?? ''}`);
+      const sig = byBody ? hashText(body) : hashText(`${body}\u0000${micro ?? ''}`);
       let variants = groups.get(orig);
       if (!variants) { variants = []; groups.set(orig, variants); order.push(orig); }
       let leaf = variants.find((v) => v.sig === sig);
@@ -4597,6 +4684,13 @@ function planMerge(sources: MemoryEntry[]): MergePlan {
         };
         taken.add(leaf.id);
         variants.push(leaf);
+      } else if (byBody && micro && micro.length > (leaf.micro ?? '').length && (sp.at ?? 0) >= (leaf.span.at ?? 0)) {
+        // The SAME story, said better and more recently: the label is replaced, the leaf is not
+        // duplicated. The span travels with the micro it won, because that is the session whose
+        // author had seen more when they wrote it.
+        leaf.micro = micro;
+        leaf.span = sp;
+        upgraded++;
       }
       leaf.seen.push({ src: i, node: place[i].get(orig) ?? null });
     }
@@ -4772,8 +4866,189 @@ function planMerge(sources: MemoryEntry[]): MergePlan {
     spans, nodes: out, oldNode,
     bodies: new Map<string, [number, number]>(),
     conflicts,
+    upgraded,
     droppedNodes: Math.max(0, sourceNodeIds.size - out.length),
     orphanRefs,
+  };
+}
+
+/**
+ * THE PIT REWRITTEN FROM ITS OWN MATERIAL, shared with `pitView`: after an absorb the archive
+ * is describing a collection it did not have a synthesis for, so the synthesis is rebuilt from
+ * the descriptions of what is really inside — the same text the pit page would inject anyway,
+ * which is what makes the two agree instead of drifting apart.
+ */
+function rewritePit(st: CwlState): number {
+  const pit = st.oldNode;
+  if (!pit) return 0;
+  const before = pit.summary;
+  const next = pitDescriptions(st);
+  if (!next.trim()) return 0;
+  // The synthesis being replaced is not thrown away: it goes where `cwl_old` puts the one it
+  // replaces, so it stays readable as `<pit id>.s1` and the change is never silent.
+  pit.superseded = [before, ...(pit.superseded ?? [])]
+    .filter((s) => typeof s === 'string' && s.trim() && s !== next)
+    .slice(0, SUPERSEDED_KEEP);
+  pit.summary = next;
+  return next.length;
+}
+
+/**
+ * THE ABSORB, shared by the tool and the slash command.
+ *
+ * IT IS THE MERGE WITHOUT ITS DELETION: the same plan decides which copies are the same piece
+ * of work, the same rule puts every leaf in exactly one node, the same pit is rebuilt — and
+ * then nothing is removed. The sources stay on disk exactly as they were, so absorbing the
+ * same memory again is a no-op and the operator can always go back to the archive he came from.
+ *
+ * WHY THE BODY DECIDES IDENTITY HERE and the micro does not: this is the fork-and-merge loop,
+ * where the same story arrives again from a session that has since learnt to say it better.
+ * Counting a new label as a new leaf would make every round add a second copy of the past.
+ * So the body is the leaf, the micro is its CURRENT best wording, and `byBody` is what turns
+ * that sentence into code.
+ *
+ * NOTHING is checked about the sources except that they can be READ: a live memory is
+ * absorbing too, on purpose, and being copied never disturbs the writer.
+ */
+function performAbsorbMemory(
+  cf: CwlConfig,
+  key: string,
+  from: string[],
+): { ok: boolean; text: string; details: Record<string, unknown> } {
+  const all = listMemories();
+  const mineFile = statePath(key);
+  const byName = all.map((s) => s.name).join(', ') || '- none -';
+
+  // ---- resolve every source BEFORE planning anything ----
+  const picked: MemoryEntry[] = [];
+  const files = new Set<string>();
+  for (const ref of from) {
+    const wanted = String(ref ?? '').trim();
+    if (!wanted) continue;
+    const found = resolveMemory(all, wanted, true);
+    if (found.kind === 'ambiguous') {
+      const where = found.matches.map((m) => `${m.file} (${m.leaves} leaf/leaves, ${new Date(m.savedAt).toISOString().slice(0, 16)})`).join('; ');
+      return { ok: false, text: t('absorbAmbig')(wanted, where), details: { ok: false, error: 'memory-ambiguous', from: wanted, files: found.matches.map((m) => m.file) } };
+    }
+    if (found.kind === 'missing') {
+      return { ok: false, text: t('adoptNotFound')(wanted, byName), details: { ok: false, error: 'memory-not-found', from: wanted } };
+    }
+    // This session's own memory is not a source: absorbing it would plan against a copy of
+    // itself and could only ever duplicate leaves.
+    if (found.entry.file === mineFile) {
+      return { ok: false, text: t('absorbSelf')(found.name), details: { ok: false, error: 'absorb-self', name: found.name } };
+    }
+    if (files.has(found.entry.file)) continue;
+    files.add(found.entry.file);
+    picked.push({ ...found.entry, name: found.name, display: found.name });
+  }
+  if (picked.length === 0) {
+    return { ok: false, text: t('absorbNeedOne')(), details: { ok: false, error: 'absorb-need-one', requested: from.length } };
+  }
+
+  // ---- this session's memory, seen from the outside, as a source like any other ----
+  const st = getState(key);
+  const now = Date.now();
+  const live: MemoryEntry = {
+    name: st.memoryName ?? defaultMemoryName(key),
+    display: st.memoryName ?? defaultMemoryName(key),
+    leaves: st.spans.length,
+    nodes: st.nodes.length,
+    pit: st.oldNode?.id ?? 'no',
+    // NOW, so the memory being absorbed into wins every tie: what this session already knows
+    // is not second-hand, and the imported material fills gaps without displacing it.
+    savedAt: now,
+    alive: true,
+    file: mineFile,
+    data: {
+      spans: st.spans,
+      nodes: st.nodes,
+      oldNode: st.oldNode,
+      bodies: Object.fromEntries(st.bodies),
+      memoryName: st.memoryName,
+      savedAt: now,
+      absorbedFrom: st.absorbedFrom,
+    } as Partial<PersistedState>,
+  };
+  // Newest source first, and the live memory is the newest of all: `planMerge` reads the array
+  // order as the recency order, so this is what makes the live copy win.
+  const sources = [live, ...picked.sort((a, b) => (b.savedAt ?? 0) - (a.savedAt ?? 0))];
+
+  // ---- plan: THE MERGE'S PLAN, deduplicating by body ----
+  let plan: MergePlan;
+  try {
+    plan = planMerge(sources, { byBody: true });
+  } catch (err) {
+    return { ok: false, text: t('mergeFailed')(err instanceof Error ? err.message : String(err)), details: { ok: false, error: 'absorb-plan-failed' } };
+  }
+
+  // ---- what actually changed, counted against the memory as it was ----
+  const beforeIds = new Set(st.spans.map((s) => idOfSpan(s)));
+  const afterIds = new Set(plan.spans.map((s) => idOfSpan(s)));
+  let added = 0;
+  for (const id of afterIds) if (!beforeIds.has(id)) added++;
+  const kept = beforeIds.size;
+  // A leaf the plan left OUT belonged to no node in any memory, and the invariant is that a
+  // leaf belongs to at most one node: it stays out here too, exactly as `planMerge` decided.
+  // Nothing is forced into a node it was not found in.
+
+  // ---- apply ----
+  const prevNodes = st.nodes;
+  st.spans = plan.spans.map((sp) => {
+    const id = idOfSpan(sp);
+    const old = st.spans.find((s) => idOfSpan(s) === id);
+    if (!old) {
+      // Foreign: archived so `locateSpans` skips an anchor of another transcript, and counted
+      // so nothing ever evicts it. The usage counters are dropped on purpose — how often a leaf
+      // was opened is the history of a session that is not this one.
+      return { ...sp, archived: true, counted: true, opens: undefined, lastOpen: undefined };
+    }
+    // Mine: the plan rewrote the body and the micro, the COUNTERS are still my history.
+    const mine = { ...old, summary: sp.summary, micro: sp.micro ?? old.micro, id: sp.id };
+    // A leaf whose body was ALREADY on disk must not come back into the state file: the plan
+    // read it out to compare the copies, and re-inlining it would grow the file by the size of
+    // the whole pit on every absorb. The record on disk is the same text, byte for byte,
+    // because that is where the plan read it from.
+    return mine;
+  });
+  st.nodes = plan.nodes;
+  st.looseFrom = Math.max(0, st.spans.length - DEFAULT_CONFIG.looseLeaves);
+
+  // ---- the pit, rebuilt from what it now holds ----
+  // A plan that found no pit at all leaves the one this session already had in place: absorbing
+  // material into a memory that has no synthesis does not invent one out of nothing.
+  st.oldNode = plan.oldNode ?? st.oldNode;
+  const rewritten = rewritePit(st);
+
+  // The names of what was taken in, kept so a later session can see this memory is not one
+  // root: `absorbedFrom` is a provenance line, not a way back.
+  const names = new Set<string>(st.absorbedFrom ?? []);
+  for (const p of picked) names.add(p.name);
+  st.absorbedFrom = [...names];
+
+  saveState(key, st);
+  debugLog(
+    cf,
+    `ABSORB: ${picked.map((p) => p.name).join(' + ')} into "${live.name}" — ${added} leaf/leaves ADDED, ${kept} already here, ` +
+    `${plan.upgraded} micro(s) upgraded, ${plan.conflicts} conflict(s), ${plan.nodes.length} node(s) ` +
+    `(was ${prevNodes.length}), pit ${st.oldNode ? st.oldNode.id : 'none'} rewritten to ${rewritten} chars; SOURCES UNTOUCHED`,
+  );
+
+  const text = t('absorbDone')(
+    picked.map((p) => p.name), added, kept, plan.upgraded, plan.conflicts, plan.nodes.length,
+    st.oldNode ? st.oldNode.id : 'none',
+  ) + (rewritten ? `\n\n${t('absorbPitRewritten')(rewritten)}` : '');
+  return {
+    ok: true,
+    text: added === 0 && plan.upgraded === 0 ? `${t('absorbNothingNew')(picked.map((p) => p.name), kept)}\n\n${text}` : text,
+    details: {
+      ok: true, name: live.name, sources: picked.map((p) => p.name), files: picked.map((p) => p.file),
+      added, kept, upgraded: plan.upgraded, conflicts: plan.conflicts, renamed: plan.conflicts,
+      nodes: plan.nodes.length, nodesBefore: prevNodes.length,
+      droppedNodes: plan.droppedNodes, orphanRefs: plan.orphanRefs,
+      pit: st.oldNode ? st.oldNode.id : null, pitRewritten: rewritten,
+      bodiesKept: true, sourcesUntouched: true,
+    },
   };
 }
 
@@ -5561,6 +5836,22 @@ function indexNodeViews(st: CwlState): IndexNodeView[] {
   });
 
   pi.registerTool({
+    name: 'cwl_absorb_memories',
+    label: 'CWL Absorb Memories',
+    description: t('tools').absorbDesc,
+    promptSnippet: t('snippets').absorb,
+    parameters: Type.Object({
+      from: Type.Array(Type.String(), { description: t('tools').absorbFromDesc }),
+    }),
+    async execute(_toolCallId, params, _signal, _onUpdate, ctx) {
+      const key = sessionKey(ctx);
+      const from = Array.isArray(params.from) ? params.from.map((s) => String(s)) : [];
+      const res = performAbsorbMemory(getConfig(key), key, from);
+      return { content: [{ type: 'text', text: res.text }], details: res.details };
+    },
+  });
+
+  pi.registerTool({
     name: 'cwl_recall_episode',
     label: 'CWL Recall Episode',
     description:
@@ -6103,8 +6394,8 @@ function indexNodeViews(st: CwlState): IndexNodeView[] {
         details: {
           ok: false, error: 'group-refused', code: why, why, detail,
           ids: extra?.ids ?? [],
-          ...(extra?.constraint ? { constraint: extra.constraint } : {}),
-          ...(extra?.allowed ? { allowed: extra.allowed } : {}),
+          constraint: extra?.constraint,
+          allowed: extra?.allowed,
         },
       });
 
@@ -7810,6 +8101,57 @@ function indexNodeViews(st: CwlState): IndexNodeView[] {
         return;
       }
       const res = performMergeMemories(getConfig(key), key, picked.map((m) => m.file), entered.trim());
+      ctx.ui.notify(res.text, res.ok ? 'info' : 'error');
+    },
+  });
+
+  pi.registerCommand('cwl_absorb', {
+    description: t('cmdAbsorbDesc')(),
+    handler: async (_args, ctx) => {
+      if (!ctx.hasUI) return;
+      const key = sessionKey(ctx);
+      const mineFile = statePath(key);
+      // Unlike the merge, an absorb NEVER deletes anything and never cares if a source is alive —
+      // so even this session's own archive (or another live session) can be absorbed. Only the
+      // session itself is excluded (absorbing yourself into yourself adds nothing).
+      const absorbable = listMemories().filter((m) => m.file !== mineFile && m.leaves > 0);
+      if (absorbable.length === 0) {
+        ctx.ui.notify(t('cmdNoAdoptable')(), 'warning');
+        return;
+      }
+      const labelsOf = (pool: MemoryEntry[]): Map<string, MemoryEntry> => {
+        const out = new Map<string, MemoryEntry>();
+        for (const m of pool) {
+          let label = `${m.display} — ${m.leaves} leaf/leaves`;
+          let n = 2;
+          while (out.has(label)) label = `${m.display} — ${m.leaves} leaf/leaves (${n++})`;
+          out.set(label, m);
+        }
+        return out;
+      };
+      const picked: MemoryEntry[] = [];
+      for (;;) {
+        const pool = absorbable.filter((m) => !picked.includes(m));
+        if (pool.length === 0) break;
+        const labels = labelsOf(pool);
+        const chosen = await ctx.ui.select(t('cmdAbsorbPick')(), [...labels.keys()]);
+        if (chosen === undefined) {
+          if (picked.length === 0) {
+            ctx.ui.notify(t('cmdAbsorbCancelled')(), 'info');
+            return;
+          }
+          break;
+        }
+        const hit = labels.get(chosen);
+        if (!hit) continue;
+        picked.push(hit);
+        if (!(await ctx.ui.confirm(t('cmdMergeAddAnother')(picked.length), t('cmdMergeAddAnotherBody')()))) break;
+      }
+      if (picked.length === 0) {
+        ctx.ui.notify(t('absorbNeedOne')(), 'warning');
+        return;
+      }
+      const res = performAbsorbMemory(getConfig(key), key, picked.map((m) => m.file));
       ctx.ui.notify(res.text, res.ok ? 'info' : 'error');
     },
   });
