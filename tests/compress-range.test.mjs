@@ -353,7 +353,7 @@ test('two messages with the SAME text do not collapse onto a single address', as
   } finally { home.restore(); sandbox.cleanup(); }
 });
 
-test('an episode whose anchors left the context is STATED, not assumed evacuated', async () => {
+test('an episode whose closing anchor left the context is STATED, not assumed evacuated', async () => {
   // MEASURED in a real session: all 4 episodes were at level='removed',
   // but their delimiter anchors had been taken away by the native
   // compaction. episodeRanges skips them (right: without anchors it does not know what to touch),
@@ -363,9 +363,7 @@ test('an episode whose anchors left the context is STATED, not assumed evacuated
   const { sandbox, home, tools, hooks, ctx } = await boot(config());
   try {
     const delim = (id, params) => tools.get('delimiter').execute(id, params, undefined, undefined, ctx);
-    const openResult = await delim('T1', { action: 'start', name: 'ep-anchor', type: 'expl' });
-    assert.equal(openResult.details.ok, true, `opening rejected: ${JSON.stringify(openResult.details)}`);
-    const closeResult = await delim('T2', { action: 'end', name: 'ep-anchor', description: 'done' });
+    const closeResult = await delim('T2', { name: 'ep-anchor', type: 'expl', description: 'done' });
     assert.equal(closeResult.details.ok, true, `closing rejected: ${JSON.stringify(closeResult.details)}`);
 
     const body = 'X'.repeat(200);
@@ -384,9 +382,10 @@ test('an episode whose anchors left the context is STATED, not assumed evacuated
     assert.equal(withAnchors.details.unlocatable, 0,
       'with the anchors in the context the episode is locatable: ' + JSON.stringify(withAnchors.details));
 
-    // The native compaction takes away the two results of delimiter: the episode
-    // is no longer locatable, and it must be STATED.
-    const withoutAnchors = complete.filter((m) => m.toolCallId !== 'T1' && m.toolCallId !== 'T2');
+    // The native compaction takes away the CLOSING anchor: with the implicit open the
+    // start needs no anchor, so the closing is the only endpoint and the episode is no
+    // longer locatable. It must be STATED.
+    const withoutAnchors = complete.filter((m) => m.toolCallId !== 'T2');
     await hooks.get('context')({ messages: withoutAnchors }, ctx);
     const without = await tools.get('cwl_status').execute('t', {}, undefined, undefined, ctx);
     assert.equal(without.details.unlocatable, 1,

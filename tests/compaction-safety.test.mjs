@@ -39,8 +39,7 @@ test('with an episode present, outside reasoning remains unchanged without a glo
   const { sandbox, home, tools, hooks, ctx } = await boot(baseConfig());
   try {
     // An episode exists: it is exactly the condition that used to switch the net off.
-    await tools.get('delimiter').execute('call-s', { action: 'start', name: 'ep', type: 'expl' }, undefined, undefined, ctx);
-    await tools.get('delimiter').execute('call-e', { action: 'end', name: 'ep', description: 'n' }, undefined, undefined, ctx);
+    await tools.get('delimiter').execute('call-e', { name: 'ep', type: 'expl', description: 'n' }, undefined, undefined, ctx);
 
     const messages = [
       { role: 'user', content: 'opening' },

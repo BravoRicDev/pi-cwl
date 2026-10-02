@@ -115,13 +115,9 @@ type CwlMessages = {
   truncatedString: (len: number, level: StripLevel) => string;
   truncatedArray: (len: number, level: StripLevel) => string;
   evictedEpisode: (name: string, desc: string) => string;
-  startNeedsNameType: string;
-  endNeedsName: string;
   duplicateName: (name: string) => string;
   notFoundOrClosed: (name: string) => string;
   invalidDeps: (names: string) => string;
-  episodeOpened: (type: string, name: string) => string;
-  unknownAction: string;
   emptyDescriptionWarning: string;
   statusHeader: (budget: string, threshold: string) => string;
   statusEpisodes: (total: number, active: number, closed: number, stripped: number) => string;
@@ -295,7 +291,7 @@ type CwlMessages = {
   };
   /** Parameter descriptions: read by the LLM on every invocation. */
   params: {
-    delimiterDesc: string; action: string; name: string; type: string;
+    name: string; type: string;
     dependencies: string; description: string; statusDesc: string;
   };
   /**
@@ -331,23 +327,19 @@ type CwlMessages = {
 const I18N: Record<Lang, CwlMessages> = {
   en: {
     guidelines: [
-      'Open an expl episode when you start exploring (reads, searches, listings). Close it as soon as you have the answer you need.',
-      'Open an act episode when you make a change (write files, run commands with effects). Declare the exploration episodes it depends on.',
-      'When closing an expl, give a concise description of what you learned: it is the only content that survives eviction.',
-      'Do not open overly fine-grained episodes: 5-15 per session is a good target.',
+      'Call `delimiter` at the END of a coherent chunk of work: it records the segment since the previous delimiter (or since the start of the session) and gives it a name, a type and a description. There is no separate opening call.',
+      'Types: "expl" for exploration (reads, searches, listings — the content is not needed after the inference), "act" for changes (writes, commands with effects, first candidate for eviction).',
+      'When the type is "expl", always give a concise description of what you learned: it is the only content that survives eviction.',
+      'Declare in `dependencies` the expl episodes an act builds on. Do not delimit too finely: a segment should be the chunk you would summarise as one thing (5-15 per session).',
     ],
     strippedReasoning: '[CWL: reasoning evicted]',
     truncatedString: (len, level) => `[CWL: content reduced from ${len} chars (level ${level})]`,
     truncatedArray: (len, level) => `[CWL: text reduced from ${len} chars to a marker (level ${level}) — use arc_recall or reopen the episode if needed]`,
     evictedEpisode: (name, desc) => `[CWL episode "${name}" evicted — recover the original with cwl_recall_episode("${name}")]` +
       (desc ? ` Notes kept: ${desc}` : ' No notes were kept.'),
-    startNeedsNameType: 'action=start requires name and type.',
-    endNeedsName: 'action=end requires name.',
     duplicateName: (name) => `Episode "${name}" already exists. Use a unique name.`,
     notFoundOrClosed: (name) => `Episode "${name}" not found or already closed.`,
     invalidDeps: (names) => `Invalid dependencies (must be closed expl episodes): ${names}`,
-    episodeOpened: (type, name) => `Episode ${type} "${name}" opened.`,
-    unknownAction: 'Unrecognised action.',
     emptyDescriptionWarning: ' WARNING: empty description — this episode has no fallback content.',
     statusHeader: (budget, threshold) => `CWL — token budget: ${budget} (threshold: ${threshold}%)`,
     statusEpisodes: (total, active, closed, stripped) => `Episodes total: ${total} | active: ${active} | with evictable content: ${closed} | already stripped: ${stripped}`,
@@ -475,8 +467,8 @@ const I18N: Record<Lang, CwlMessages> = {
       // burning the very context it was trying to save.
       const opts: string[] = [];
       if (canClose) {
-        opts.push('  1. close the episodes you no longer need: ' +
-          'delimiter(action="end", name="<episode>", description="<what you learned>")');
+        opts.push('  1. record the chunk of work you just finished: ' +
+          'delimiter(name="<a unique name>", type="expl"|"act", description="<what you learned>")');
       }
       if (canCompress) {
         opts.push(`  ${opts.length + 1}. compress a range you have already worked through: ` +
@@ -491,7 +483,7 @@ const I18N: Record<Lang, CwlMessages> = {
     },
     gateGiveUp: (attempts) => `CWL: the compaction demand went unanswered for ${attempts} turns; dropping it for a cooldown.`,
     snippets: {
-      delimiter: 'delimiter: marks the boundaries of a CWL episode (expl/act)',
+      delimiter: 'delimiter: records and closes a CWL episode (expl/act) for the chunk of work just finished',
       memories: 'cwl_memories: the memories that can be adopted, by name',
       adopt: 'cwl_adopt: forks another memory into this session',
       status: 'cwl_status: CWL context lifecycle status',
@@ -542,12 +534,10 @@ const I18N: Record<Lang, CwlMessages> = {
         `\n\nStored, but ${where} is ${chars} characters (~${Math.round(chars / 4)} tokens) against a ceiling of ${ceiling} (~350 tokens). The top of the index is made of these labels: measured on 42 real ones they cost ~722t each instead of ~300t, and the top cost 30k instead of ~12k. The label stays as you wrote it — next time write it shorter: the density that matters lives in the body, and cwl_open still returns all of it.`,
     },
     params: {
-      delimiterDesc: 'Marks the boundaries of a CWL episode. Types: "expl" (exploration: searches, reads, orientation — the content is not needed after the inference) and "act" (action: writes, edits, executions — persistent effects, first candidate for eviction). When you open an "act", declare the explorations it depends on. When you close an "expl", give the description of what you learned: it is the only content that survives eviction.',
-      action: '"start" to open an episode, "end" to close it.',
-      name: 'Unique episode name (required for action=start).',
-      type: 'Episode type: "expl" (exploration) or "act" (action). Required for action=start.',
-      dependencies: 'Names of the expl episodes this action depends on. Required for action=start with type="act".',
-      description: 'Marks the boundaries of a CWL episode. Types: "expl" (exploration: searches, reads, orientation — the content is not needed after the inference) and "act" (action: writes, edits, executions — persistent effects, first candidate for eviction). When you open an "act", declare the explorations it depends on. When you close an "expl", give the description of what you learned: it is the only content that survives eviction.',
+      name: 'Unique episode name: it is how the eviction and cwl_recall_episode refer to this segment.',
+      type: 'Episode type: "expl" (exploration) or "act" (action).',
+      dependencies: 'Names of the closed expl episodes this act builds on (optional).',
+      description: 'What you learned. For an "expl" it is the only content that survives eviction; for an "act" it is optional notes kept after eviction.',
       statusDesc: 'Shows the context lifecycle status: budget, active/closed episodes, evictions performed.',
     },
     consult: {
@@ -589,23 +579,19 @@ const I18N: Record<Lang, CwlMessages> = {
   },
   it: {
     guidelines: [
-      'Apri un episodio expl quando inizi a esplorare (letture, ricerche, listing). Chiudilo appena hai la risposta che ti serve.',
-      'Apri un episodio act quando fai una modifica (scrivi file, esegui comandi con effetti). Dichiara le esplorazioni da cui dipende.',
-      "Alla chiusura di un expl, fornisci una descrizione concisa di cosa hai imparato: e' il contenuto che sopravvive all'eviction.",
-      "Non aprire episodi troppo fini: 5-15 per sessione e' un buon target.",
+      'Chiama `delimiter` alla FINE di un blocco di lavoro coerente: registra il segmento dal delimiter precedente (o dall\'inizio della sessione) e gli da\' un nome, un tipo e una descrizione. Non esiste una chiamata di apertura separata.',
+      'Tipi: "expl" per l\'esplorazione (letture, ricerche, listing — il contenuto non serve dopo l\'inferenza), "act" per le modifiche (scritture, comandi con effetti, primo candidato all\'eviction).',
+      "Quando il tipo e' \"expl\", fornisci sempre una descrizione concisa di cosa hai imparato: e' il contenuto che sopravvive all'eviction.",
+      "Dichiara in `dependencies` gli episodi expl su cui un act si basa. Non delimitare troppo fine: un segmento dev'essere il blocco che riassumeresti come una cosa sola (5-15 per sessione).",
     ],
     strippedReasoning: '[CWL: reasoning evictato]',
     truncatedString: (len, level) => `[CWL: contenuto ridotto da ${len} chars (livello ${level})]`,
     truncatedArray: (len, level) => `[CWL: testo ridotto da ${len} chars a marker (livello ${level}) — usa arc_recall o riapri l'episodio se serve]`,
     evictedEpisode: (name, desc) => `[CWL episodio "${name}" evictato — recupera l'originale con cwl_recall_episode("${name}")]` +
       (desc ? ` Appunti conservati: ${desc}` : ' Nessun appunto conservato.'),
-    startNeedsNameType: 'action=start richiede name e type.',
-    endNeedsName: 'action=end richiede name.',
     duplicateName: (name) => `Episodio "${name}" gia' esiste. Usa un nome univoco.`,
     notFoundOrClosed: (name) => `Episodio "${name}" non trovato o gia' chiuso.`,
     invalidDeps: (names) => `Dipendenze non valide (devono essere episodi expl chiusi): ${names}`,
-    episodeOpened: (type, name) => `Episodio ${type} "${name}" aperto.`,
-    unknownAction: 'Azione non riconosciuta.',
     emptyDescriptionWarning: ' ATTENZIONE: descrizione vuota — questo episodio non ha contenuto di fallback.',
     statusHeader: (budget, threshold) => `CWL — token budget: ${budget} (threshold: ${threshold}%)`,
     statusEpisodes: (total, active, closed, stripped) => `Episodi totali: ${total} | attivi: ${active} | con contenuto evictabile: ${closed} | gia' stripped: ${stripped}`,
@@ -729,8 +715,8 @@ const I18N: Record<Lang, CwlMessages> = {
     gateDemand: (current, budget, turns, canClose, canCompress) => {
       const opts: string[] = [];
       if (canClose) {
-        opts.push('  1. chiudi gli episodi che non ti servono piu\': ' +
-          'delimiter(action="end", name="<episodio>", description="<cosa hai imparato>")');
+        opts.push('  1. registra il blocco di lavoro che hai appena finito: ' +
+          'delimiter(name="<un nome univoco>", type="expl"|"act", description="<cosa hai imparato>")');
       }
       if (canCompress) {
         opts.push(`  ${opts.length + 1}. comprimi un intervallo che hai gia' consumato: ` +
@@ -745,7 +731,7 @@ const I18N: Record<Lang, CwlMessages> = {
     },
     gateGiveUp: (attempts) => `CWL: la richiesta di compattazione e' rimasta senza risposta per ${attempts} turni; la tolgo per un cooldown.`,
     snippets: {
-      delimiter: 'delimiter: segna i confini di un episodio CWL (expl/act)',
+      delimiter: 'delimiter: registra e chiude un episodio CWL (expl/act) per il blocco di lavoro appena finito',
       memories: 'cwl_memories: le memorie adottabili, per nome',
       adopt: 'cwl_adopt: fork di un\'altra memoria in questa sessione',
       status: 'cwl_status: stato del context lifecycle CWL',
@@ -796,12 +782,10 @@ const I18N: Record<Lang, CwlMessages> = {
         `\n\nRegistrata, ma ${where} e' ${chars} caratteri (~${Math.round(chars / 4)} token) contro un tetto di ${ceiling} (~350 token). La cima dell'indice e' fatta di queste etichette: misurate su 42 reali costavano ~722t l'una invece di ~300t, e la cima 30k invece di ~12k. L'etichetta resta quella che hai scritto — la prossima volta scrivila piu' corta: la densita' che conta sta nel corpo, e cwl_open lo restituisce ancora tutto.`,
     },
     params: {
-      delimiterDesc: 'Segna i confini di un episodio CWL. Tipi: "expl" (esplorazione: ricerca, letture, orientamento — il contenuto non serve dopo l\'inferenza) e "act" (azione: scritture, edit, esecuzioni — effetti persistenti, primo candidato all\'eviction). Quando apri un "act", dichiara le esplorazioni da cui dipende. Quando chiudi un "expl", fornisci la descrizione di cosa hai imparato: e\' l\'unico contenuto che sopravvive all\'eviction.',
-      action: '"start" per aprire un episodio, "end" per chiuderlo.',
-      name: 'Nome univoco dell\'episodio (obbligatorio per action=start).',
-      type: 'Tipo episodio: "expl" (esplorazione) o "act" (azione). Obbligatorio per action=start.',
-      dependencies: 'Nomi degli episodi expl da cui questo atto dipende. Obbligatorio per action=start con type="act".',
-      description: 'Descrizione di cosa hai imparato. Obbligatorio solo per action=end con type="expl".',
+      name: 'Nome univoco dell\'episodio: e\' come l\'eviction e cwl_recall_episode si riferiscono a questo segmento.',
+      type: 'Tipo episodio: "expl" (esplorazione) o "act" (azione).',
+      dependencies: 'Nomi degli episodi expl chiusi su cui questo atto si basa (opzionale).',
+      description: 'Cosa hai imparato. Per un "expl" e\' l\'unico contenuto che sopravvive all\'eviction; per un "act" sono appunti opzionali conservati dopo l\'eviction.',
       statusDesc: 'Mostra lo stato del context lifecycle: budget, episodi attivi/chiusi, eviction eseguite.',
     },
     consult: {
@@ -1991,10 +1975,13 @@ const LEVEL_CONFIG_KEY: Record<StripLevel, keyof CwlConfig['levels'] | null> = {
  *
  * ONE exception, and it points in one direction only. A native compaction cuts a
  * PREFIX: Pi keeps `firstKeptEntryId` and everything after it, and the summary
- * is prepended. So the only anchor a cut can carry away is the START one, and an
- * episode that was still open when the cut happened loses its start while its
- * end survives. Its surviving content is then everything the list still holds up
- * to that end: `{from: 0, to: end, deduced: true}`.
+ * is prepended. So the only anchor a cut can carry away is the START one — which,
+ * with IMPLICIT opens, is the closing anchor of the PREVIOUS episode. An episode
+ * whose start anchor was cut away keeps its end, and its surviving content is then
+ * everything the list still holds up to that end: `{from: 0, to: end, deduced: true}`.
+ *
+ * An EMPTY start anchor is not a deduction: it is the DEFINED start of the first
+ * episode (the session began there), and the flag stays false.
  *
  * The opposite deduction (`end` lost, `start` alive -> `[start, len-1]`) is
  * REFUSED, and the reason is structural rather than cautious: a prefix cut
@@ -2036,13 +2023,14 @@ function episodeRanges(
   for (const ep of episodes) {
     const to = ep.endToolCallId !== null ? posByToolCallId.get(ep.endToolCallId) : undefined;
     if (to === undefined) continue;
-    const from = posByToolCallId.get(ep.startToolCallId);
+    // An EMPTY anchor is the implicit open: the episode begins at the very start of the
+    // session. A non-empty anchor with no position is the prefix cut that took it. Both
+    // resolve to index 0 — with the whole prefix gone there is nothing older to claim,
+    // and an `end` AT 0 would claim nothing at all.
+    const from = ep.startToolCallId === '' ? undefined : posByToolCallId.get(ep.startToolCallId);
     if (from === undefined) {
-      // The prefix cut took the start anchor. With the whole prefix gone there is
-      // nothing older than index 0 left to claim, and an `end` AT 0 would claim
-      // nothing at all.
       if (to <= 0) continue;
-      out.set(ep.name, { from: 0, to: Math.min(to, messages.length - 1), deduced: true });
+      out.set(ep.name, { from: 0, to: Math.min(to, messages.length - 1), deduced: ep.startToolCallId !== '' });
       continue;
     }
     if (to <= from) continue;
@@ -3293,7 +3281,10 @@ function extractEpisodeText(
   endToolCallId: string | null,
 ): string | null {
   const parts: string[] = [];
-  let started = false;
+  // An EMPTY start anchor means "implicit open": the episode began where the previous
+  // one ended, or at the very start of the transcript when it is the first. There is no
+  // opening record to wait for, so the text starts from the first message.
+  let started = startToolCallId === '';
   for (const line of raw.split(/\r?\n/)) {
     if (!line) continue;
     let rec: unknown;
@@ -3949,24 +3940,22 @@ export default function (pi: ExtensionAPI) {
     name: 'delimiter',
     label: 'CWL Delimiter',
     description:
-      'Marks the boundaries of a CWL episode. Types: "expl" (exploration: searches, ' +
-      'reads, orientation — the content is not needed after the inference) and "act" ' +
-      '(action: writes, edits, executions — persistent effects, first candidate ' +
-      'for eviction). When you open an "act", declare the explorations it depends on. ' +
-      'When you close an "expl", give the description of what you learned: ' +
-      'it is the only content that survives eviction.',
+      'Records and closes one CWL episode: the segment of work since the previous ' +
+      'delimiter (or since the start of the session). The episode opens IMPLICITLY — ' +
+      'there is no separate opening call. Types: "expl" (exploration: searches, reads, ' +
+      'orientation — the content is not needed after the inference) and "act" (action: ' +
+      'writes, edits, executions — persistent effects, first candidate for eviction). ' +
+      'Declare in "dependencies" the expl episodes an act builds on, and for an "expl" ' +
+      'give the description of what you learned: it is the only content that survives eviction.',
     promptSnippet: t('snippets').delimiter,
     promptGuidelines: I18N[LANG].guidelines,
     parameters: Type.Object({
-      action: Type.Union([Type.Literal('start'), Type.Literal('end')], {
-        description: t('params').action,
-      }),
-      name: Type.Optional(Type.String({
+      name: Type.String({
         description: t('params').name,
-      })),
-      type: Type.Optional(Type.Union([Type.Literal('expl'), Type.Literal('act')], {
+      }),
+      type: Type.Union([Type.Literal('expl'), Type.Literal('act')], {
         description: t('params').type,
-      })),
+      }),
       dependencies: Type.Optional(Type.Array(Type.String(), {
         description: t('params').dependencies,
       })),
@@ -3979,70 +3968,41 @@ export default function (pi: ExtensionAPI) {
       const st = getState(key);
       const cf = getConfig(key);
 
-      if (params.action === 'start') {
-        if (!params.name || !params.type) {
-          return {
-            content: [{ type: 'text', text: t('startNeedsNameType') }],
-            details: { ok: false, error: 'missing-params' },
-          };
-        }
-        if (st.graph.has(params.name)) {
-          return {
-            content: [{ type: 'text', text: t('duplicateName')(params.name) }],
-            details: { ok: false, error: 'duplicate-name' },
-          };
-        }
-        const deps = params.dependencies ?? [];
-        const invalidDeps = deps.filter(d => {
-          const ep = st.graph.all.find(e => e.name === d);
-          return !ep || ep.type !== 'expl' || ep.endIdx === null;
-        });
-        if (invalidDeps.length > 0) {
-          return {
-            content: [{ type: 'text', text: t('invalidDeps')(invalidDeps.join(', ')) }],
-            details: { ok: false, error: 'invalid-dependencies' },
-          };
-        }
-
-        const ep = st.graph.open(params.name, params.type, deps, st.messageCursor, toolCallId);
-        debugLog(cf, `OPEN ${ep.type} "${ep.name}" deps=[${deps.join(',')}] startIdx=${ep.startIdx}`);
-
+      if (st.graph.has(params.name)) {
         return {
-          content: [{ type: 'text', text: t('episodeOpened')(ep.type, ep.name) }],
-          details: { ok: true, episode: ep.name, type: ep.type },
+          content: [{ type: 'text', text: t('duplicateName')(params.name) }],
+          details: { ok: false, error: 'duplicate-name' },
+        };
+      }
+      const deps = params.dependencies ?? [];
+      const invalidDeps = deps.filter(d => {
+        const ep = st.graph.all.find(e => e.name === d);
+        return !ep || ep.type !== 'expl' || ep.endIdx === null;
+      });
+      if (invalidDeps.length > 0) {
+        return {
+          content: [{ type: 'text', text: t('invalidDeps')(invalidDeps.join(', ')) }],
+          details: { ok: false, error: 'invalid-dependencies' },
         };
       }
 
-      if (params.action === 'end') {
-        if (!params.name) {
-          return {
-            content: [{ type: 'text', text: t('endNeedsName') }],
-            details: { ok: false, error: 'missing-params' },
-          };
-        }
-        const ep = st.graph.close(params.name, params.description ?? '', st.messageCursor, toolCallId);
-        if (ep) saveState(key, st);
-        if (!ep) {
-          return {
-            content: [{ type: 'text', text: t('notFoundOrClosed')(params.name) }],
-            details: { ok: false, error: 'episode-not-found' },
-          };
-        }
-        debugLog(cf, `CLOSE ${ep.type} "${ep.name}" level=${ep.level} endIdx=${ep.endIdx}`);
+      // IMPLICIT OPEN: an episode begins where the PREVIOUS one ended, or at the very
+      // start of the session when it is the first. An EMPTY anchor means exactly that,
+      // and `episodeRanges` resolves an anchor it cannot find to `from: 0`.
+      const closed = st.graph.closed();
+      const startAnchor = closed.length > 0 ? closed[closed.length - 1].endToolCallId ?? '' : '';
+      const ep = st.graph.open(params.name, params.type, deps, st.messageCursor, startAnchor);
+      st.graph.close(ep.name, params.description ?? '', st.messageCursor, toolCallId);
+      saveState(key, st);
+      debugLog(cf, `CLOSE ${ep.type} "${ep.name}" deps=[${deps.join(',')}] startAnchor=${startAnchor || '<session-start>'} endIdx=${ep.endIdx}`);
 
-        let msg = t('episodeClosed')(ep.type, ep.name);
-        if (ep.type === 'expl' && !ep.description) {
-          msg += t('emptyDescriptionWarning');
-        }
-        return {
-          content: [{ type: 'text', text: msg }],
-          details: { ok: true, episode: ep.name, type: ep.type },
-        };
+      let msg = t('episodeClosed')(ep.type, ep.name);
+      if (ep.type === 'expl' && !ep.description) {
+        msg += t('emptyDescriptionWarning');
       }
-
       return {
-        content: [{ type: 'text', text: t('unknownAction') }],
-        details: { ok: false },
+        content: [{ type: 'text', text: msg }],
+        details: { ok: true, episode: ep.name, type: ep.type },
       };
     },
   });
@@ -5744,30 +5704,22 @@ function indexNodeViews(st: CwlState): IndexNodeView[] {
       //    the call would answer ok and free nothing.
       // `turn_end` arms the gate on the static pair and that is enough: withholding
       // here leaves it armed, so the demand fires as soon as it is doable.
-      const activeEps = st.graph.active();
-      // Closing an OPEN episode is judged by its ANCHOR, not by `episodeRanges`:
-      // that function resolves closed episodes (it needs the end anchor, which an
-      // open one does not have yet) and would call every open episode impossible.
-      // Two things make the ask useless: an episode begun at the very end of the
-      // list (closing it would save nothing — `to <= from`), and no material at all.
-      // A LOST start anchor is not a reason to stay silent: closing it makes the
-      // range deduced from 0, which the eviction can act on.
-      const anchors = activeEps.length > 0 ? toolCallPositions(list) : null;
-      const canClose = activeEps.some((ep) => {
-        const from = anchors?.get(ep.startToolCallId);
-        return from === undefined ? list.length >= 2 : from < list.length - 1;
-      });
+      // With IMPLICIT opens there is no open episode to close: `delimiter` records and
+      // closes the segment in ONE call, so what the gate can ask for is that a segment
+      // be RECORDED. That is worth asking exactly when there is material a boundary
+      // could bound: at least two messages (an episode ending at index 0 frees nothing).
+      // A missing start anchor is NOT a reason to stay silent: the range is then deduced
+      // from 0, which the eviction can act on.
+      const canClose = list.length >= 2;
       const startH = st.rangeStartHash;
       const endH = st.rangeEndHash;
       // Option B: canCompress is true only if start/end exist AND there is actual material (rangeTokens > 0)
       const canCompress = startH !== null && endH !== null && st.rangeTokens > 0;
       if (!canClose && !canCompress) {
         const why =
-          activeEps.length > 0
-            ? 'the only open episode(s) begin at the end of the list: closing them frees nothing'
-            : (st.systemOverheadTokens > 0 && msgTokens <= trigger
-              ? `context ${after}t is over trigger ${Math.round(trigger)}t due to incompressible system overhead (~${st.systemOverheadTokens}t): history (~${msgTokens}t) is within limits`
-              : 'no episode is open and no compressible range is available (remaining history is inside safety floor or already compressed)');
+          st.systemOverheadTokens > 0 && msgTokens <= trigger
+            ? `context ${after}t is over trigger ${Math.round(trigger)}t due to incompressible system overhead (~${st.systemOverheadTokens}t): history (~${msgTokens}t) is within limits`
+            : 'no segment can be recorded and no compressible range is available (remaining history is inside the safety floor or already compressed)';
         if (st.gateWithheld !== why) {
           st.gateWithheld = why;
           debugLog(cf, `GATE withheld: ${why} — the demand would ask for something no call can do`);
@@ -6349,7 +6301,11 @@ function indexNodeViews(st: CwlState): IndexNodeView[] {
     // demand is unsatisfiable BY CONSTRUCTION and just burns context: measured in
     // a real session, where it asked every turn while no episode was open and no
     // compressible range existed.
-    const actionable = st.graph.active().length > 0 || st.rangeStartHash !== null;
+    // With IMPLICIT opens an episode is never left "active": `delimiter` records and
+    // closes the segment in ONE call. The gate arms when CWL is already IN USE (at least
+    // one episode recorded) or when the extension can offer a compressible range — i.e.
+    // when one of the two options it proposes can actually be delivered.
+    const actionable = st.rangeStartHash !== null || st.graph.count > 0;
     if (cf.gate && actionable && st.overBudgetSince >= 0 && (st.turns - st.overBudgetSince) >= GATE_AFTER_TURNS) {
       const inCooldown = st.lastGateViolationTurn >= 0 &&
         (st.turns - st.lastGateViolationTurn) < GATE_COOLDOWN_TURNS;

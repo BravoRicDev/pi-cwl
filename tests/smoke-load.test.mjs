@@ -38,7 +38,7 @@ test('the parameter descriptions are readable at runtime', async () => {
   try {
     const { tools } = await bootExtension(sandbox);
     const delimiter = tools.get('delimiter');
-    for (const param of ['action', 'name', 'type', 'dependencies', 'description']) {
+    for (const param of ['name', 'type', 'dependencies', 'description']) {
       const p = delimiter.parameters?.properties?.[param];
       assert.ok(p, `parameter "${param}" missing from delimiter`);
       assert.equal(typeof p.description, 'string', `description of "${param}" is not a string`);

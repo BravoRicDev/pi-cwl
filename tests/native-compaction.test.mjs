@@ -5,10 +5,10 @@
  * `firstKeptEntryId` and everything that comes after it, and prepends its own
  * summary. Two consequences, both verified here.
  *
- * 1. An episode still open when the cut happens loses its OPENING
- *    anchor and keeps the closing one. Its surviving part is
- *    everything the list still holds up to that closing, so the
- *    range must be DEDUCED ([0, end]) instead of read.
+ * 1. An episode whose OPENING anchor the cut carried away (with implicit opens that
+ *    anchor is the PREVIOUS episode's closing) keeps its own closing one. Its surviving
+ *    part is everything the list still holds up to that closing, so the range must be
+ *    DEDUCED ([0, end]) instead of read.
  *
  * 2. That range starts at index 0, where the summary of the native
  *    compaction lives: a message with role 'compactionSummary'
@@ -89,16 +89,21 @@ const summaryMessage = () => ({
   timestamp: 1,
 });
 
-/** Episode born BEFORE the cut: its opening is no longer in the list. */
-async function openAndClose(tools, ctx, name, type = 'expl') {
-  await tools.get('delimiter').execute('call-s', { action: 'start', name, type }, undefined, undefined, ctx);
-  await tools.get('delimiter').execute('call-e', { action: 'end', name, description: 'learned' }, undefined, undefined, ctx);
+/**
+ * Records ONE episode. With implicit opens its start anchor is the PREVIOUS episode's
+ * closing anchor, so a chain of calls is what produces a chain of episodes.
+ */
+async function recordEpisode(tools, ctx, endAnchor, name, type = 'expl', description = 'learned') {
+  await tools.get('delimiter').execute(endAnchor, { name, type, description }, undefined, undefined, ctx);
 }
 
-test('an episode that lost its opening is located by deduction and evacuated', async () => {
+test('an episode whose opening was lost is located by deduction and evacuated', async () => {
   const { sandbox, home, tools, hooks, ctx } = await boot(onlyRemoval());
   try {
-    await openAndClose(tools, ctx, 'crosses');
+    // A chain of two: the SECOND episode begins where the FIRST ended, and that
+    // closing anchor is the one the cut carries away while the second end survives.
+    await recordEpisode(tools, ctx, 'call-gone', 'first');
+    await recordEpisode(tools, ctx, 'call-e', 'crosses');
     const messages = [
       summaryMessage(),
       assistant('INSIDE-1'),
@@ -120,7 +125,8 @@ test('an episode that lost its opening is located by deduction and evacuated', a
 test('the summary of the native compaction survives that range', async () => {
   const { sandbox, home, tools, hooks, ctx } = await boot(onlyRemoval());
   try {
-    await openAndClose(tools, ctx, 'crosses');
+    await recordEpisode(tools, ctx, 'call-gone', 'first');
+    await recordEpisode(tools, ctx, 'call-e', 'crosses');
     const messages = [
       summaryMessage(),
       assistant('INSIDE-1'),
@@ -139,14 +145,16 @@ test('the summary of the native compaction survives that range', async () => {
   } finally { home.restore(); sandbox.cleanup(); }
 });
 
-test('the opposite direction is NOT deduced: no range invented for an episode without closing', async () => {
+test('the opposite direction is NOT deduced: no range invented for an episode whose closing is gone', async () => {
   const { sandbox, home, tools, hooks, ctx } = await boot(onlyRemoval());
   try {
-    await openAndClose(tools, ctx, 'without-closing');
+    // The FIRST episode closes on an anchor still in the list; the SECOND one's own
+    // closing anchor is gone. A prefix cut cannot produce that — the closing comes AFTER
+    // the start — so the arrangement has no explanation and no range is invented for it.
+    await recordEpisode(tools, ctx, 'call-s', 'first');
+    await recordEpisode(tools, ctx, 'call-gone', 'without-closing');
     const messages = [
       { role: 'user', content: 'opening' },
-      // The opening is there, the closing is not: a prefix cut cannot produce
-      // this arrangement, so it has no explanation and is not deduced.
       { role: 'toolResult', toolCallId: 'call-s', toolName: 'delimiter', content: [{ type: 'text', text: 'open' }] },
       assistant('INTACT-1'),
       assistant('INTACT-2'),
@@ -159,31 +167,10 @@ test('the opposite direction is NOT deduced: no range invented for an episode wi
   } finally { home.restore(); sandbox.cleanup(); }
 });
 
-test('a located episode wins over the deduction inside its own range', async () => {
-  const { sandbox, home, tools, hooks, ctx } = await boot(onlyRemoval());
-  try {
-    // 'crosses' is born first, before the cut: deduced, [0, 5].
-    await openAndClose(tools, ctx, 'crosses');
-    // 'inside' is born after the cut: both of its anchors are alive.
-    await tools.get('delimiter').execute('call-s2', { action: 'start', name: 'inside', type: 'expl' }, undefined, undefined, ctx);
-    await tools.get('delimiter').execute('call-e2', { action: 'end', name: 'inside', description: 'inside' }, undefined, undefined, ctx);
-
-    const messages = [
-      summaryMessage(),
-      assistant('CROSSES-1'),
-      { role: 'toolResult', toolCallId: 'call-s2', toolName: 'delimiter', content: [{ type: 'text', text: 'open' }] },
-      assistant('INSIDE-1'),
-      { role: 'toolResult', toolCallId: 'call-e2', toolName: 'delimiter', content: [{ type: 'text', text: 'closed' }] },
-      { role: 'toolResult', toolCallId: 'call-e', toolName: 'delimiter', content: [{ type: 'text', text: 'closed' }] },
-      { role: 'user', content: 'recent question' },
-    ];
-    const out = await hook(hooks, ctx, messages);
-    assert.ok(!contains(out, 'CROSSES-1'), 'the deduced episode was not evacuated');
-    // This is the contract: the deduced range reaches index 5 and covers
-    // indices 2..4 of 'inside', but 'inside' is located and opened AFTER the
-    // cut, so it writes last and claims its own. If one day the loop
-    // were reordered in a naive way, this line dies.
-    assert.ok(contains(out, 'INSIDE-1'),
-      'the deduced range ate the content of a located episode');
-  } finally { home.restore(); sandbox.cleanup(); }
-});
+// The old test "a located episode wins over the deduction inside its own range" is
+// GONE, and deliberately: with IMPLICIT opens the episodes form a CHAIN — an episode
+// begins exactly where the previous one ended — so a deduced range can never reach
+// past its own closing anchor into the content of the episode that follows it. That
+// overlap is structurally impossible now, and a test for an impossible arrangement
+// would be a lie. The equivalent guard for SPANS, which CAN overlap, lives in
+// tests/span-vs-eviction.test.mjs.

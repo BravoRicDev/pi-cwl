@@ -166,77 +166,71 @@ test('with NOTHING to do the gate does not ask: it must never ask the impossible
   } finally { home.restore(); sandbox.cleanup(); }
 });
 
-test('with an OPEN episode the gate asks, and proposes only the available option', async () => {
+test('with an episode recorded the gate asks, and proposes only the available option', async () => {
   const { sandbox, home, tools, hooks, ctx } = await boot(overBudgetConfig({ protectedTurns: 10 }));
   try {
-    // An open episode is the only action really available here.
-    await tools.get('delimiter').execute('call-s', { action: 'start', name: 'work-in-progress', type: 'act' }, undefined, undefined, ctx);
+    // One recorded episode is enough for the gate to arm (CWL is in use).
+    await tools.get('delimiter').execute('call-e', { name: 'work-in-progress', type: 'act' }, undefined, undefined, ctx);
     const messages = [
       { role: 'user', content: `question ${'P'.repeat(400)}` },
       { role: 'assistant', content: `reply ${'R'.repeat(400)}` },
+      { role: 'user', content: `more ${'Q'.repeat(400)}` },
     ];
     for (let i = 0; i < 3; i++) await round(hooks, ctx, messages);
     const r = await round(hooks, ctx, messages);
     const demands = gateOf(r);
-    assert.equal(demands.length, 1, 'with an open episode the gate must ask');
+    assert.equal(demands.length, 1, 'the gate must ask to record a segment');
     const text = String(demands[0].content);
-    assert.match(text, /delimiter/, 'it must propose closing the episodes');
+    assert.match(text, /delimiter/, 'it must propose recording a segment');
     assert.doesNotMatch(text, /cwl_compress_range/,
       'it must not propose an option that is not available (no compressible range)');
   } finally { home.restore(); sandbox.cleanup(); }
 });
 
-/** The anchor of an episode is the tool call that opened it, by call id. */
-const anchor = (callId, text = 'R'.repeat(400)) => ({ role: 'toolResult', toolCallId: callId, content: text });
-
 const logOf = (sandbox) => fs.readFileSync(path.join(sandbox.dir, '.pi', 'cwl', 'cwl.log'), 'utf8');
 
-test('an episode that BEGINS at the end of the list is not worth closing, and the gate stays silent', async () => {
-  // Measured shape of the impossible ask: the only open episode starts on the LAST
-  // message, so its range would be `to <= from` and closing it frees nothing. Asking
-  // for it costs a turn and dirties the context, and the agent cannot refuse it in a
-  // useful way: it would close the episode and watch the context stay exactly as big.
-  // Before this check the gate asked here — the condition was the static
-  // `active().length > 0` — and the demand was unsatisfiable BY CONSTRUCTION.
+test('when the gate is armed but no segment can be recorded, it withholds and says why', async () => {
+  // The gate arms as soon as CWL is in use, but it must still refuse to ask for the
+  // impossible. With ONE message there is no segment a new closing could bound
+  // (`canClose` needs a pair of messages) and no compressible range either. The demand
+  // is WITHHELD, and the reason is written to the log: a silence without a reason is
+  // the same defect one level down.
   const { sandbox, home, tools, hooks, ctx } = await boot(overBudgetConfig({ protectedTurns: 10, debug: true }));
   try {
-    await tools.get('delimiter').execute('call-s', { action: 'start', name: 'at-the-end', type: 'act' }, undefined, undefined, ctx);
+    await tools.get('delimiter').execute('call-e', { name: 'tiny', type: 'act' }, undefined, undefined, ctx);
     const messages = [
       { role: 'user', content: `question ${'P'.repeat(400)}` },
-      anchor('call-s'),
     ];
     for (let i = 0; i < 6; i++) {
       const r = await round(hooks, ctx, messages);
       assert.equal(gateOf(r).length, 0,
-        `turn ${i}: the gate asked to close an episode that saves nothing`);
+        `turn ${i}: the gate asked for a segment that cannot exist`);
     }
-    // And it says WHY it stays silent: a withheld demand that leaves no trace is
-    // the same defect one level down.
-    assert.match(logOf(sandbox), /GATE withheld: the only open episode\(s\) begin at the end of the list/,
+    assert.match(logOf(sandbox), /GATE withheld: no segment can be recorded/,
       'the withheld demand was not explained in the log');
-    // A demand that was never DELIVERED is not a failure of the agent. Before this
-    // check the attempt counter moved anyway — `turn_end` looked only at its own
-    // static predicate — and after three turns the gate gave up with "unanswered for
-    // 3 turns" on a request the agent had never seen.
+    // A demand that was never DELIVERED is not a failure of the agent.
     assert.doesNotMatch(logOf(sandbox), /GATE dropped/,
       'the gate gave up on a demand it never delivered');
   } finally { home.restore(); sandbox.cleanup(); }
 });
 
-test('the same episode, with material after its anchor, IS worth closing and the gate asks', async () => {
-  // The counter-proof. Without it a predicate that says "no" to everything would
-  // pass the test above while silencing a demand that was useful.
+test('the demand teaches the SINGLE-CALL contract: no action=start/end', async () => {
+  // The counter-proof, and a guard on the contract: with implicit opens the demand must
+  // NAME the one call that exists. A leftover `action="end"` would send the agent to a
+  // call whose parameter no longer exists.
   const { sandbox, home, tools, hooks, ctx } = await boot(overBudgetConfig({ protectedTurns: 10 }));
   try {
-    await tools.get('delimiter').execute('call-s', { action: 'start', name: 'with-material', type: 'act' }, undefined, undefined, ctx);
+    await tools.get('delimiter').execute('call-e', { name: 'work', type: 'act' }, undefined, undefined, ctx);
     const messages = [
       { role: 'user', content: `question ${'P'.repeat(400)}` },
-      anchor('call-s'),
+      { role: 'assistant', content: `reply ${'R'.repeat(400)}` },
       { role: 'user', content: `more work ${'Q'.repeat(400)}` },
     ];
     for (let i = 0; i < 3; i++) await round(hooks, ctx, messages);
     const demands = gateOf(await round(hooks, ctx, messages));
-    assert.equal(demands.length, 1, 'the episode holds material: the gate must ask to close it');
-    assert.match(String(demands[0].content), /delimiter/);
+    assert.equal(demands.length, 1, 'the material is there: the gate must ask');
+    const text = String(demands[0].content);
+    assert.match(text, /delimiter\(name=/, 'the demand must name the single-call contract');
+    assert.doesNotMatch(text, /action=/, 'the opening/closing action no longer exists');
   } finally { home.restore(); sandbox.cleanup(); }
 });

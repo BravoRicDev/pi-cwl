@@ -41,10 +41,8 @@ test('the episode graph survives a restart', async () => {
     // --- First run: open and close an episode.
     const run1 = await bootExtension(sandbox);
     await run1.hooks.get('session_start')({}, session);
-    await run1.tools.get('delimiter').execute('tc1',
-      { action: 'start', name: 'exploration-1', type: 'expl' }, undefined, undefined, session);
     await run1.tools.get('delimiter').execute('tc2',
-      { action: 'end', name: 'exploration-1', description: 'learned X' }, undefined, undefined, session);
+      { name: 'exploration-1', type: 'expl', description: 'learned X' }, undefined, undefined, session);
     await run1.hooks.get('turn_end')({}, session);
     assert.equal((await status(run1.tools, session)).details.total, 1, 'before the restart: 1 episode');
 
@@ -142,9 +140,9 @@ test('two sessions without id do not share the state', async () => {
     await hooks.get('session_start')({}, a);
     await hooks.get('session_start')({}, b);
 
-    // An episode opened in session A must not appear in B.
+    // An episode recorded in session A must not appear in B.
     await tools.get('delimiter').execute('tc1',
-      { action: 'start', name: 'only-in-a', type: 'expl' }, undefined, undefined, a);
+      { name: 'only-in-a', type: 'expl' }, undefined, undefined, a);
     assert.equal((await status(tools, a)).details.total, 1, 'A sees its own episode');
     assert.equal((await status(tools, b)).details.total, 0, 'B must NOT see the state of A');
   } finally {
@@ -161,7 +159,7 @@ test('state files are pruned when they get old', async () => {
     const run1 = await bootExtension(sandbox);
     await run1.hooks.get('session_start')({}, session);
     await run1.tools.get('delimiter').execute('tc1',
-      { action: 'start', name: 'e', type: 'expl' }, undefined, undefined, session);
+      { name: 'e', type: 'expl' }, undefined, undefined, session);
     await run1.hooks.get('turn_end')({}, session);
 
     const stateDir = path.join(sandbox.dir, '.pi', 'cwl', 'state');

@@ -45,13 +45,20 @@ const record = (id, role, content, extra = {}) =>
 
 const text = (s) => [{ type: 'text', text: s }];
 
-/** Opens and closes an episode with anchors chosen by us. */
+/**
+ * Records and closes ONE episode. With IMPLICIT opens the start anchor is the previous
+ * episode's closing one, so a BOOTSTRAP episode ending on `start` is what makes the episode
+ * under test begin exactly there. Without it (start: null) the first episode begins at the
+ * very start of the session.
+ */
 async function withEpisode(tools, hooks, ctx, { name = 'ep1', type = 'expl', start = 'call-start-1', end = 'call-end-1', description = '' } = {}) {
   await hooks.get('session_start')({}, ctx);
   const d = tools.get('delimiter');
-  const opened = await d.execute(start, { action: 'start', name, type }, undefined, undefined, ctx);
-  assert.equal(opened.details.ok, true, `opening failed: ${JSON.stringify(opened.details)}`);
-  const closed = await d.execute(end, { action: 'end', name, description }, undefined, undefined, ctx);
+  if (start) {
+    const bootstrap = await d.execute(start, { name: 'bootstrap', type: 'expl', description: 'bootstrap' }, undefined, undefined, ctx);
+    assert.equal(bootstrap.details.ok, true, `bootstrap failed: ${JSON.stringify(bootstrap.details)}`);
+  }
+  const closed = await d.execute(end, { name, type, description }, undefined, undefined, ctx);
   assert.equal(closed.details.ok, true, `closing failed: ${JSON.stringify(closed.details)}`);
 }
 
@@ -112,22 +119,20 @@ test('cwl_recall_episode truncates by default and does not bloat the context it 
   } finally { home.restore(); sandbox.cleanup(); }
 });
 
-test('cwl_recall_episode refuses a non-existent or still-open episode', async () => {
+test('cwl_recall_episode refuses an unknown episode', async () => {
+  // NOTE: with implicit opens an episode is never left "still open" — `delimiter` records
+  // and closes it in one call — so the `episode-still-open` branch of the tool now serves
+  // only a LEGACY state file that a previous version left with an open episode.
   const { sandbox, home, realFile } = setup({ name: 'ep-guard' });
   try {
     fs.writeFileSync(realFile, record('r1', 'user', text('nothing')) + '\n');
     const ctx = sessionCtx(realFile);
     const { tools, hooks } = await bootExtension(sandbox);
     await hooks.get('session_start')({}, ctx);
-    await tools.get('delimiter').execute('call-start-1', { action: 'start', name: 'opened', type: 'expl' }, undefined, undefined, ctx);
 
     const unknown = await tools.get('cwl_recall_episode').execute('t', { name: 'does-not-exist' }, undefined, undefined, ctx);
     assert.equal(unknown.details.ok, false);
     assert.equal(unknown.details.error, 'episode-not-found');
-
-    const open = await tools.get('cwl_recall_episode').execute('t', { name: 'opened' }, undefined, undefined, ctx);
-    assert.equal(open.details.ok, false);
-    assert.equal(open.details.error, 'episode-still-open');
   } finally { home.restore(); sandbox.cleanup(); }
 });
 

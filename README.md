@@ -59,15 +59,16 @@ Each level is independently toggleable in `levels`.
 
 ### Tools
 
-**`delimiter`** — marks episode boundaries.
+**`delimiter`** — records and closes ONE episode: the segment of work since the previous
+delimiter (or since the start of the session). The episode opens **implicitly**: there is no
+separate opening call.
 
 | Parameter | Type | Notes |
 |---|---|---|
-| `action` | `"start"` \| `"end"` | Required |
-| `name` | `string` | Required on `start`. Must be unique |
-| `type` | `"expl"` \| `"act"` | Required on `start` |
-| `dependencies` | `string[]` | Names of closed `expl` episodes an `act` depends on |
-| `description` | `string` | Required when closing an `expl`: what you learned |
+| `name` | `string` | Required. Unique: it is how the eviction and `cwl_recall_episode` refer to the segment |
+| `type` | `"expl"` \| `"act"` | Required. `expl` = exploration (reads, searches: not needed after the inference), `act` = a change with persistent effects |
+| `dependencies` | `string[]` | Names of closed `expl` episodes an `act` builds on |
+| `description` | `string` | What you learned. For an `expl` it is the only content that survives eviction |
 
 **`cwl_status`** — current token budget, measured context size, episode counts, evictions performed
 and tokens saved.
@@ -229,15 +230,16 @@ Ogni livello è attivabile/disattivabile indipendentemente in `levels`.
 
 ### Tool
 
-**`delimiter`** — segna i confini di un episodio.
+**`delimiter`** — registra e chiude UN episodio: il segmento di lavoro dal delimiter
+precedente (o dall'inizio della sessione). L'episodio si apre **implicitamente**: non esiste
+una chiamata di apertura separata.
 
 | Parametro | Tipo | Note |
 |---|---|---|
-| `action` | `"start"` \| `"end"` | Obbligatorio |
-| `name` | `string` | Obbligatorio su `start`. Deve essere univoco |
-| `type` | `"expl"` \| `"act"` | Obbligatorio su `start` |
-| `dependencies` | `string[]` | Nomi degli episodi `expl` chiusi da cui un `act` dipende |
-| `description` | `string` | Obbligatorio alla chiusura di un `expl`: cosa hai imparato |
+| `name` | `string` | Obbligatorio. Univoco: e' come l'eviction e `cwl_recall_episode` si riferiscono al segmento |
+| `type` | `"expl"` \| `"act"` | Obbligatorio. `expl` = esplorazione (letture, ricerche: non serve dopo l'inferenza), `act` = una modifica con effetti persistenti |
+| `dependencies` | `string[]` | Nomi degli episodi `expl` chiusi su cui un `act` si basa |
+| `description` | `string` | Cosa hai imparato. Per un `expl` e' l'unico contenuto che sopravvive all'eviction |
 
 **`cwl_status`** — budget corrente, dimensione misurata del contesto, conteggio episodi, eviction
 eseguite e token risparmiati.

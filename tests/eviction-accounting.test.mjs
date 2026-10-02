@@ -82,8 +82,7 @@ test('the EVICTION line declares the MEASURED saving, not the plan estimate', as
   try {
     // A closed episode entirely inside the range: its full eviction
     // is what adds the re-entry marker (cause no.1 of the defect).
-    await tools.get('delimiter').execute('call-s', { action: 'start', name: 'accountancy', type: 'expl' }, undefined, undefined, ctx);
-    await tools.get('delimiter').execute('call-e', { action: 'end', name: 'accountancy', description: 'takeaway' }, undefined, undefined, ctx);
+    await tools.get('delimiter').execute('call-e', { name: 'accountancy', type: 'expl', description: 'takeaway' }, undefined, undefined, ctx);
     const messages = [
       { role: 'user', content: 'prologue' },
       { role: 'toolResult', toolCallId: 'call-s', toolName: 'delimiter', content: [{ type: 'text', text: 'opened' }] },
@@ -120,8 +119,7 @@ test('the EVICTION line is consistent also when the eviction REDUCES instead of 
     debug: true,
   });
   try {
-    await tools.get('delimiter').execute('call-s', { action: 'start', name: 'reduction', type: 'expl' }, undefined, undefined, ctx);
-    await tools.get('delimiter').execute('call-e', { action: 'end', name: 'reduction', description: 'takeaway' }, undefined, undefined, ctx);
+    await tools.get('delimiter').execute('call-e', { name: 'reduction', type: 'expl', description: 'takeaway' }, undefined, undefined, ctx);
     // A huge toolResult inside the episode: the `bulk` level cuts it without
     // removing it, and it is the branch where `truncatedTokens` uses the other estimator.
     const bold = { role: 'toolResult', toolCallId: 'call-big', toolName: 'bash', content: [{ type: 'text', text: 'B'.repeat(60000) }] };
