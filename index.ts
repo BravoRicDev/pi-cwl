@@ -2223,11 +2223,23 @@ const MAX_PROTECTED_SHARE = 0.5;
  * A FOREIGN injected message counts like a prompt. Our OWN do not: a compression summary
  * sits where the compressed messages were, and the index demand rides at the END of the
  * list, so counting either would move the window onto the wrong thing.
+ *
+ * The CLOSING `delimiter` counts as well, and it is the operator's own request: a session
+ * where he writes rarely is made of autonomous work, and a window anchored to `user`
+ * messages alone NEVER slides. MEASURED in the very session where the request was made:
+ * `CONTEXT 363426t ... 254804t in the protected window (last 3 user turns), 0t freely
+ * compressible` — three prompts covering two thirds of the session. A recorded episode is a
+ * chunk of work the agent has FINISHED, so it opens a turn exactly like a prompt does, and
+ * the agent consumes the untouchable window by working.
  */
 function isTurnBoundary(m: AgentMessage): boolean {
   // SAFETY: read-only probe of optional fields; the union does not expose them.
-  const probe = m as unknown as { role?: unknown; customType?: unknown };
+  const probe = m as unknown as { role?: unknown; customType?: unknown; toolName?: unknown };
   if (probe.role === 'user') return true;
+  // The tool RESULT is the boundary, not the assistant message that asked for it: the result is
+  // what says the episode was actually recorded. MEASURED on a real transcript before relying
+  // on it: `toolName` is present on every toolResult record, and 11 of them are `delimiter`.
+  if (probe.role === 'toolResult' && probe.toolName === 'delimiter') return true;
   if (probe.role !== 'custom') return false;
   return typeof probe.customType !== 'string' || !probe.customType.startsWith('cwl-');
 }

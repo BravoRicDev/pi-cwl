@@ -197,3 +197,65 @@ test('OUR injections do not count as turns', async () => {
     home.restore();
   }
 });
+
+/**
+ * THE CLOSING `delimiter` COUNTS AS A TURN.
+ *
+ * The operator's request, word for word: *"the closing delimiter must count as a 'turn' for
+ * the protected interval, so that agents working in total autonomy can also consume the
+ * untouchable window and make compression possible."*
+ *
+ * MEASURED live, in the session where the request was made: a 363,426t context with
+ * `254,804t in the protected window (last 3 user turns), 0t freely compressible`. Three
+ * prompts covered two thirds of the session, because between one prompt and the next there
+ * were hours of autonomous work. Every recorded episode is a chunk of work the agent has
+ * FINISHED: it must advance the window exactly like a prompt does.
+ */
+const listWithClosingDelimiters = () => {
+  const out = [
+    { role: 'user', content: 'operator, days ago ' + 'U'.repeat(300), timestamp: 1 },
+    { role: 'assistant', content: 'the reply from back then ' + 'A'.repeat(300), timestamp: 2 },
+  ];
+  for (let i = 1; i <= 12; i++) {
+    out.push({ role: 'assistant', content: `autonomous work ${i} ` + 'A'.repeat(300), timestamp: 100 + i * 3 });
+    out.push({ role: 'toolResult', toolName: 'bash', toolCallId: `call-out-${i}`, content: `output ${i} ` + 'T'.repeat(300), timestamp: 101 + i * 3 });
+    // The CLOSING delimiter of the chunk just finished. A toolResult that is NOT a delimiter
+    // must not count: the `bash` result above is the counter-example kept in the same list.
+    out.push({ role: 'toolResult', toolName: 'delimiter', toolCallId: `call-ep-${i}`, content: `episode ${i} closed`, timestamp: 102 + i * 3 });
+  }
+  return out;
+};
+
+test('a closing delimiter counts as a turn: the agent consumes the window by working', async () => {
+  const { sandbox, home, hooks, ctx } = await boot();
+  try {
+    const before = logOf(sandbox).length;
+    await hook(hooks, ctx, listWithClosingDelimiters());
+    const log = logOf(sandbox).slice(before);
+    const row = /CONTEXT (\d+)t still above trigger \d+t: (\d+)t in the protected window/.exec(log);
+    assert.ok(row, `the turn does not declare the floor: ${log.trim().split('\n').slice(-3).join(' | ')}`);
+    const share = Number(row[2]) / Number(row[1]);
+    assert.ok(
+      share < 0.5,
+      `the protected window covers ${Math.round(share * 100)}% of the context: the closing delimiters are not counting as ` +
+        'turns, so in a session where the operator writes rarely the window stays anchored to prompts that are days old ' +
+        'and almost everything stays untouchable. Every recorded episode must advance it.',
+    );
+  } finally {
+    home.restore();
+  }
+});
+
+test('with delimiter turns the compression becomes POSSIBLE, not "nothing left to compress"', async () => {
+  // The proof that matters to the operator: the symptom that made him ask is the answer
+  // "nothing left to compress". With the closing delimiters counting, the range exists.
+  const { sandbox, home, tools, hooks, ctx } = await boot();
+  try {
+    await hook(hooks, ctx, listWithClosingDelimiters());
+    const range = await tools.get('cwl_compress_range').execute('t', { summary: 'SUMMARY-DELIM' }, undefined, undefined, ctx);
+    assert.equal(range.details.ok, true,
+      `"nothing left to compress": it is the symptom — ${JSON.stringify(range.details)}`);
+  } finally {
+    home.restore();
+  }
+});
