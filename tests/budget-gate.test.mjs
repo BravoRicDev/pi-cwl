@@ -191,10 +191,10 @@ const logOf = (sandbox) => fs.readFileSync(path.join(sandbox.dir, '.pi', 'cwl', 
 
 test('when the gate is armed but no segment can be recorded, it withholds and says why', async () => {
   // The gate arms as soon as CWL is in use, but it must still refuse to ask for the
-  // impossible. With ONE message there is no segment a new closing could bound
-  // (`canClose` needs a pair of messages) and no compressible range either. The demand
-  // is WITHHELD, and the reason is written to the log: a silence without a reason is
-  // the same defect one level down.
+  // impossible. With ONE message there is no compressible range at all (`compressibleRange`
+  // needs two ELIGIBLE endpoints, and an empty body is not one). The demand is WITHHELD, and
+  // the reason is written to the log: a silence without a reason is the same defect one
+  // level down.
   const { sandbox, home, tools, hooks, ctx } = await boot(overBudgetConfig({ protectedTurns: 10, debug: true }));
   try {
     await tools.get('delimiter').execute('call-e', { name: 'tiny', type: 'act' }, undefined, undefined, ctx);
@@ -232,5 +232,31 @@ test('the demand teaches the SINGLE-CALL contract: no action=start/end', async (
     const text = String(demands[0].content);
     assert.match(text, /delimiter\(name=/, 'the demand must name the single-call contract');
     assert.doesNotMatch(text, /action=/, 'the opening/closing action no longer exists');
+  } finally { home.restore(); sandbox.cleanup(); }
+});
+
+test('the gate withholds when the list is LONG but nothing in it is eligible', async () => {
+  // The case the test above does NOT cover, and the one that actually happened. There, ONE
+  // message made `list.length >= 2` false, so the old predicate agreed by accident. Here the
+  // list is LONG and the gate is armed, but only one message is ELIGIBLE: an empty body hashes
+  // to sha256("") and is not a valid endpoint, so `first === last` and `compressibleRange`
+  // returns null.
+  //
+  // The old guard was `canClose = list.length >= 2`, true for ANY real conversation, so the
+  // demand fired on every turn asking for a `delimiter` that frees nothing — the agent paid
+  // those tokens every time. The honest predicate is the one /cwl_save already used.
+  const { sandbox, home, tools, hooks, ctx } = await boot(overBudgetConfig());
+  try {
+    await tools.get('delimiter').execute('call-w', { name: 'work', type: 'act' }, undefined, undefined, ctx);
+    const messages = [
+      { role: 'user', content: '' },
+      { role: 'user', content: `only ${'P'.repeat(400)}` },
+    ];
+    assert.equal(messages.length >= 2, true, 'the OLD predicate would have called this closable');
+    for (let i = 0; i < 4; i++) {
+      const r = await round(hooks, ctx, messages);
+      assert.equal(gateOf(r).length, 0,
+        `turn ${i + 1}: nothing is eligible, so no call can free anything — the gate must stay silent`);
+    }
   } finally { home.restore(); sandbox.cleanup(); }
 });

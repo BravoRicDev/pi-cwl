@@ -303,6 +303,20 @@ test('inside the pit a new parent gathers the topics after it', async () => {
     assert.match(String(pitPage.content[0].text), new RegExp(alpha.details.id));
     assert.match(String(pitPage.content[0].text), new RegExp(beta.details.id));
 
+    // THE CONTAINER'S OWN ROW. `feature` holds 0 leaves of its own and 2 children, and the page
+    // used to print `0 leaf/leaves (undefined .. undefined)` for it: `nd.leaves[0]` on an empty
+    // array is `undefined`. A page that prints `undefined` is a page a reader cannot trust, and
+    // the number CONTRADICTED the injected block, which says "holds 2 node(s), 4 leaf/leaves" for
+    // the SAME node. The row must carry the numbers the block already paid for.
+    //
+    // The finder targets the CATALOGUE row and not the outline: the outline labels a node by its
+    // NAME (`├ feature [2 sub]`), so only this row carries the id and the word TOPIC.
+    const pageText = String(pitPage.content[0].text);
+    const containerRow = pageText.split('\n').find((line) => line.includes('TOPIC "feature"'));
+    assert.ok(containerRow, `the container has no row on the pit page:\n${pageText}`);
+    assert.match(containerRow, /holds 2 node\(s\), 4 leaf\/leaves/, 'the container row does not say what it holds');
+    assert.doesNotMatch(containerRow, /undefined/, 'the container row printed an undefined endpoint');
+
     // A new root must be placed after the whole existing closure, not merely after the direct
     // pit roots. Give it a later frontier child to make that ordering observable.
     const laterLeaves = [];

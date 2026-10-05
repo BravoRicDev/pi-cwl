@@ -224,6 +224,9 @@ type CwlMessages = {
   oldPage: (id: string, nodes: number, tokens: number, body: string) => string;
   /** One entry of the old node's catalogue: a topic inside the pit, named and tasted. */
   oldTopicLine: (id: string, name: string, shape: string, taste: string) => string;
+  /** The shape of a node that holds NO leaves of its own: what it CONTAINS. Without it the page
+   *  printed "0 leaf/leaves (undefined .. undefined)" and contradicted the injected block. */
+  containerShape: (nodes: number, leaves: number) => string;
   /** The heading of the "consulted leaves" section inside the pit page. */
   oldHot: (listed: number, total: number) => string;
   /** The header of the "superseded syntheses" block on the pit page. */
@@ -446,6 +449,8 @@ const I18N: Record<Lang, CwlMessages> = {
       `[CWL \u00b7 TOPIC "${name}" (${id}) \u2014 ${leaves} leaf/leaves stand behind this description, which never changes (~${saved} tokens saved). To open this topic, call exactly cwl_open({id: "${id}"}); to open one leaf, call cwl_open({id: "<leaf-id>"}).\n\n`,
     topicHolds: (nodes, leaves) =>
       `(holds ${nodes} node(s), ${leaves} leaf/leaves in all \u2014 open them with cwl_open("<id>"))\n`,
+    containerShape: (nodes, leaves) =>
+      `holds ${nodes} node(s), ${leaves} leaf/leaves in all`,
     oldTopicsConcatenated: (topics, chars) =>
       `\n\nThe immutable description(s) of ${topics} topic node(s) were glued to this synthesis, word for word (${chars} characters): they are not rewritten and not to be rewritten.`,
     statusUnlocatable: (n) => `Episodes whose anchors left the context: ${n} (their content is not verifiable)`,
@@ -469,7 +474,7 @@ const I18N: Record<Lang, CwlMessages> = {
     groupManyDone: (groups, already, leaves, nodes) => `Batch of ${groups} group(s): ${groups - already} applied, ${already} already satisfied (nothing to do), ${leaves} leaf/leaves moved and ${nodes} node(s) absorbed. Validated ALL of them before touching anything, so nothing was applied half way.`,
     groupDryRunAdd: (id, name, leaves, nodes, microChars, needChars) => `DRY RUN, nothing was recorded. Topic ${id} "${name}" would receive ${leaves} leaf/leaves and ${nodes} node(s); it holds ${microChars} characters of labels against a floor of ${needChars}.`,
     groupDryRunNew: (id, name, leaves, nodes, microChars, needChars) => `DRY RUN, nothing was recorded. A new topic would be born as ${id} "${name}", taking ${leaves} leaf/leaves and ${nodes} node(s); it holds ${microChars} characters of labels against a floor of ${needChars}.`,
-    oldHead: (id, tokens) => `[CWL OLD NODE ${id} — archived behind this synthesis (~${tokens} tokens). To open this pit and list its contents, call exactly cwl_open({id: "${id}"}); open a listed node or leaf with cwl_open({id: "<id-from-the-page>"}).]\n\n`,
+    oldHead: (id, tokens) => `[CWL OLD NODE ${id} — archived behind this synthesis (~${tokens} tokens). To open this pit and list its contents, call exactly cwl_open({id: "${id}"}); open a listed node or leaf with cwl_open({id: "<id-from-the-page>"}). To SEARCH the archive, call cwl_find({query: "keywords"}): it looks INSIDE the topics of the index, by name, not only in the live transcript.]\n\n`,
     oldHeadDescriptions: (id) => `[CWL OLD NODE — what follows is NOT the merge synthesis but the shorter topic descriptions held by the pit. To read the full synthesis and list its contents, call cwl_open({id: "${id}"}).]\n\n`,
     /** The pit outline: the shape of what the pit holds, for cwl_open and cwl_map. */
     pitOutline: (outline) => `[CWL PIT OUTLINE — the shape of the pit, one line per node. Names and depth only; counts are in cwl_open and cwl_map.]\n${outline}\n`,
@@ -735,6 +740,8 @@ const I18N: Record<Lang, CwlMessages> = {
       `[CWL \u00b7 TOPIC "${name}" (${id}) \u2014 ${leaves} foglia/e stanno dietro questa descrizione, che non cambia mai (~${saved} token risparmiati). Per aprire questo topic, chiama esattamente cwl_open({id: "${id}"}); per aprire una foglia, chiama cwl_open({id: "<id-foglia>"}).\n\n`,
     topicHolds: (nodes, leaves) =>
       `(contiene ${nodes} nodo/i, ${leaves} foglia/e in tutto \u2014 aprili con cwl_open("<id>"))\n`,
+    containerShape: (nodes, leaves) =>
+      `contiene ${nodes} nodo/i, ${leaves} foglia/e in tutto`,
     oldTopicsConcatenated: (topics, chars) =>
       `\n\nLe descrizioni immutabili di ${topics} nodo/i topic sono state incollate a questa sintesi, parola per parola (${chars} caratteri): non vengono riscritte e non vanno riscritte.`,
     statusUnlocatable: (n) => `Episodi le cui ancore sono uscite dal contesto: ${n} (contenuto non verificabile)`,
@@ -758,7 +765,7 @@ const I18N: Record<Lang, CwlMessages> = {
     groupManyDone: (groups, already, leaves, nodes) => `Lotto di ${groups} gruppo/i: ${groups - already} applicati, ${already} gia' soddisfatti (niente da fare), ${leaves} foglia/e spostate e ${nodes} nodo/i assorbiti. Validati TUTTI prima di toccare qualcosa, quindi niente e' stato applicato a meta'.`,
     groupDryRunAdd: (id, name, leaves, nodes, microChars, needChars) => `PROVA, non e' stato registrato niente. Il topic ${id} "${name}" riceverebbe ${leaves} foglia/e e ${nodes} nodo/i; tiene ${microChars} caratteri di etichette contro una soglia di ${needChars}.`,
     groupDryRunNew: (id, name, leaves, nodes, microChars, needChars) => `PROVA, non e' stato registrato niente. Nascerebbe un topic nuovo come ${id} "${name}", prendendo ${leaves} foglia/e e ${nodes} nodo/i; tiene ${microChars} caratteri di etichette contro una soglia di ${needChars}.`,
-    oldHead: (id, tokens) => `[CWL NODO VECCHIO ${id} — materiale archiviato dietro questa sintesi (~${tokens} token). Per aprire il pozzo e vedere cosa contiene, chiama esattamente cwl_open({id: "${id}"}); apri un nodo o una foglia elencata con cwl_open({id: "<id-dalla-pagina>"}).]\n\n`,
+    oldHead: (id, tokens) => `[CWL NODO VECCHIO ${id} — materiale archiviato dietro questa sintesi (~${tokens} token). Per aprire il pozzo e vedere cosa contiene, chiama esattamente cwl_open({id: "${id}"}); apri un nodo o una foglia elencata con cwl_open({id: "<id-dalla-pagina>"}). Per CERCARE nell'archivio, chiama cwl_find({query: "parole chiave"}): cerca DENTRO i topic dell'indice, per nome, non solo nel transcript vivo.]\n\n`,
     oldHeadDescriptions: (id) => `[CWL NODO VECCHIO — quello che segue NON e' la sintesi del riassuntone ma le descrizioni piu' corte dei topic contenuti nel pozzo. Per leggere la sintesi intera e vedere cosa contiene, chiama cwl_open({id: "${id}"}).]\n\n`,
     /** The pit outline: the shape of what the pit holds, for cwl_open and cwl_map. */
     pitOutline: (outline) => `[CWL POZZO FORMA — la forma del pozzo, una riga per nodo. Solo nomi e profondita'; i conteggi sono in cwl_open e cwl_map.]\n${outline}\n`,
@@ -6174,6 +6181,22 @@ function indexNodeViews(st: CwlState): IndexNodeView[] {
    * Build the archive page for cwl_open. Keeping the catalogue rendering here also keeps the
    * registered tool callback small; this page is deliberately untruncated and measured first.
    */
+  /**
+   * The shape of a node as a PAGE prints it. `nd.leaves[0]` on an empty array prints `undefined`,
+   * and a `?? '-'` fallback would print "0 leaf/leaves (- .. -)" for a node that really holds two
+   * nodes and four leaves: a number that CONTRADICTS the injected block, which counts the whole
+   * subtree for the same node. A node with no leaves of its own is a CONTAINER — say what it holds.
+   */
+  function nodeShapeLine(st: CwlState, nd: SpanNode): string {
+    if (nd.leaves.length > 0) {
+      return `${nd.leaves.length} leaf/leaves (${nd.leaves[0]} .. ${nd.leaves[nd.leaves.length - 1]})`;
+    }
+    const inside = containedNodes(st, [nd.id]);
+    if (inside.size <= 1) return '0 leaf/leaves';
+    const held = st.nodes.filter((n) => inside.has(n.id)).reduce((n, x) => n + x.leaves.length, 0);
+    return t('containerShape')(inside.size - 1, held);
+  }
+
   function openPitPage(st: CwlState, cf: typeof DEFAULT_CONFIG, wanted: string) {
     const pit = st.oldNode;
     if (!pit || pit.id !== wanted) return null;
@@ -6185,7 +6208,7 @@ function indexNodeViews(st: CwlState): IndexNodeView[] {
     const outline = pitShape?.outline ?? buildPitOutline(st, pit, true);
     const righe = pitNodes
       .map((nd) => {
-        const shape = `${nd.leaves.length} leaf/leaves (${nd.leaves[0]} .. ${nd.leaves[nd.leaves.length - 1]})`;
+        const shape = nodeShapeLine(st, nd);
         // A TOPIC inside the pit is a catalogue entry: its name and a taste of its
         // description, so the page can be read WITHOUT opening every node.
         if (!nd.description) return `- ${nd.id}: ${shape}`;
@@ -6271,7 +6294,7 @@ function indexNodeViews(st: CwlState): IndexNodeView[] {
           .map((childId) => st.nodes.find((n) => n.id === childId))
           .filter((child): child is SpanNode => Boolean(child))
           .map((child) => {
-            const shape = `${child.leaves.length} leaf/leaves (${child.leaves[0] ?? '-'} .. ${child.leaves[child.leaves.length - 1] ?? '-'})`;
+            const shape = nodeShapeLine(st, child);
             if (!child.description) return `- ${child.id}: ${shape}`;
             const taste = child.description.length > PIT_TOPIC_TASTE ? `${child.description.slice(0, PIT_TOPIC_TASTE)}...` : child.description;
             return t('oldTopicLine')(child.id, child.name ?? '', shape, taste);
@@ -7098,8 +7121,23 @@ function indexNodeViews(st: CwlState): IndexNodeView[] {
     let messages: AgentMessage[] = eventMessages.filter((m) => !isGateMessage(m) && !isInheritedMessage(m) && !isDemandMessage(m));
     let messageSource: 'hook-input' | 'spans-applied' = 'hook-input';
     const originalMessages = messages;
-    applyReadyBackgroundSummary(key, st, cf, originalMessages);
-    applyReadyBackgroundPitSummary(key, st, cf);
+    // AN EVICTION BELOW THE THRESHOLD IS PURE COST. Landing a background summary
+    // rewrites the injected blocks, and the provider cache is a PREFIX cache: the next
+    // request pays a WRITE where it used to pay a READ. When the context is already
+    // under the trigger there is nothing to win — the budget does not need the room —
+    // so the summary is left `ready` and applied at the first turn that actually needs
+    // it, where `applyReadyBackgroundSummary` re-validates it against the live range
+    // anyway. The two calls used to run UNCONDITIONALLY, before the trigger was even
+    // computed: a summary that finished while the session was comfortably under budget
+    // still evicted, invalidating the cache to free room nobody had asked for.
+    // Measured against the same estimate the hook takes one line below, so the gate
+    // and the decision it guards cannot disagree.
+    const roomNeeded = estimateMessageListTokens(messages, st.charTokenRatio)
+      > cf.tokenBudget * cf.thresholdRatio;
+    if (roomNeeded) {
+      applyReadyBackgroundSummary(key, st, cf, originalMessages);
+      applyReadyBackgroundPitSummary(key, st, cf);
+    }
 
     // MEASUREMENT of the cache — the instrument this design never had. The provider
     // cache is a PREFIX cache, and every leaf written here lands where the
@@ -7357,7 +7395,18 @@ function indexNodeViews(st: CwlState): IndexNodeView[] {
       // could bound: at least two messages (an episode ending at index 0 frees nothing).
       // A missing start anchor is NOT a reason to stay silent: the range is then deduced
       // from 0, which the eviction can act on.
-      const canClose = list.length >= 2;
+      // CAN A DELIMITER FREE ANYTHING? A delimiter sets `forceAllNext`, which drops the
+      // protected window to zero, so the honest question is not "are there two messages"
+      // — true for ANY conversation — but "does dropping the protection put material back
+      // on the table". `/cwl_save` already asks it exactly this way, with the same scan and
+      // the same `protectedTurns: 0`; here it used to be `list.length >= 2`, which is
+      // always true, so the guard below never fired and the demand asked every turn for
+      // something that could free nothing. MEASURED in a live session: three consecutive
+      // turns of an unsatisfiable demand while `cwl_compress_range` answered "nothing
+      // left to compress: everything remaining is either inside the protected window or
+      // already compressed". An ask no call can satisfy costs a turn each time it is
+      // repeated, and the agent pays it in the currency it is short of.
+      const canClose = compressibleRange(list, st.spans, 0, st.charTokenRatio) !== null;
       const startH = st.rangeStartHash;
       const endH = st.rangeEndHash;
       // Option B: canCompress is true only if start/end exist AND there is actual material (rangeTokens > 0)
