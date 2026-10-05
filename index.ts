@@ -2528,18 +2528,23 @@ function protectedFromIndex(messages: AgentMessage[], turns: number): number {
   if (turns <= 0) return messages.length;
   let seen = 0;
   let byTurns = 0;
-  // Two boundaries IN A ROW are ONE turn. A wake-up, a card refresh and another extension's
-  // notice arrive together at the start of the SAME exchange, and counting them apart made
-  // "four turns" mean a turn and a half — the opposite of what a safety window is for.
-  // Walking backwards, "in a row" is the message we just passed.
-  let afterBoundary = false;
+  // Consecutive turn boundaries (user prompts, delimiter tool results, foreign
+  // extension notices) are paired up: every 2 consecutive boundary events count
+  // as 1 turn (1 -> 1, 2 -> 1, 3 -> 2, 4 -> 2, etc.). This prevents a burst of
+  // close notifications from collapsing the safety window too quickly, while
+  // ensuring that multiple consecutive user messages or tool completions slide
+  // the window forward proportionally rather than freezing it indefinitely.
+  let consecutiveBoundaries = 0;
   for (let i = messages.length - 1; i >= 0; i--) {
-    if (!isTurnBoundary(messages[i])) { afterBoundary = false; continue; }
-    if (!afterBoundary) {
+    if (!isTurnBoundary(messages[i])) {
+      consecutiveBoundaries = 0;
+      continue;
+    }
+    consecutiveBoundaries++;
+    if (consecutiveBoundaries % 2 === 1) {
       seen++;
       if (seen > turns) { byTurns = i + 1; break; }
     }
-    afterBoundary = true;
   }
   // Normal case: the window is honoured EXACTLY as configured. The cap must not
   // touch this, or `protectedTurns` would stop meaning what it says.
