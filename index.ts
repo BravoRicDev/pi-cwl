@@ -214,20 +214,12 @@ type CwlMessages = {
   groupManyDone: (groups: number, already: number, leaves: number, nodes: number) => string;
   /** A DRY RUN for `cwl_group` when it would BORN a new topic. */
   groupDryRunNew: (id: string, name: string, leaves: number, nodes: number, microChars: number, needChars: number) => string;
-  oldHead: (id: string, nodes: number, tokens: number) => string;
+  oldHead: (id: string, tokens: number) => string;
   /** Said when the block below is the DESCRIPTIONS rather than the synthesis, so the agent knows
    *  where the narrative went. See `PitView.body`. */
   oldHeadDescriptions: (id: string) => string;
-  /**
-   * The injected pit block's SHAPE: names and depth, no counts. Separate from `pitOutline`
-   * because the two answer different questions for different readers, and the one that goes in
-   * the head must not carry a number that moves — see `buildPitHeadShape`.
-   */
-  pitShape: (shape: string) => string;
   /** The consultation outline, counts included: for `cwl_open` and `cwl_map`. */
   pitOutline: (outline: string) => string;
-  /** Says the head shape is a snapshot and the tool is the live answer when they disagree. */
-  pitShapeStaleHint: () => string;
   /** The old-node page: the merge summary and the shape of what it holds. */
   oldPage: (id: string, nodes: number, tokens: number, body: string) => string;
   /** One entry of the old node's catalogue: a topic inside the pit, named and tasted. */
@@ -477,14 +469,10 @@ const I18N: Record<Lang, CwlMessages> = {
     groupManyDone: (groups, already, leaves, nodes) => `Batch of ${groups} group(s): ${groups - already} applied, ${already} already satisfied (nothing to do), ${leaves} leaf/leaves moved and ${nodes} node(s) absorbed. Validated ALL of them before touching anything, so nothing was applied half way.`,
     groupDryRunAdd: (id, name, leaves, nodes, microChars, needChars) => `DRY RUN, nothing was recorded. Topic ${id} "${name}" would receive ${leaves} leaf/leaves and ${nodes} node(s); it holds ${microChars} characters of labels against a floor of ${needChars}.`,
     groupDryRunNew: (id, name, leaves, nodes, microChars, needChars) => `DRY RUN, nothing was recorded. A new topic would be born as ${id} "${name}", taking ${leaves} leaf/leaves and ${nodes} node(s); it holds ${microChars} characters of labels against a floor of ${needChars}.`,
-    oldHead: (id, nodes, tokens) => `[CWL OLD NODE ${id} — ${nodes} older node(s) merged behind this synthesis (~${tokens} tokens). To open this pit and list its contents, call exactly cwl_open({id: "${id}"}); open a listed node or leaf with cwl_open({id: "<id-from-the-page>"}).]\n\n`,
+    oldHead: (id, tokens) => `[CWL OLD NODE ${id} — archived behind this synthesis (~${tokens} tokens). To open this pit and list its contents, call exactly cwl_open({id: "${id}"}); open a listed node or leaf with cwl_open({id: "<id-from-the-page>"}).]\n\n`,
     oldHeadDescriptions: (id) => `[CWL OLD NODE — what follows is NOT the merge synthesis but the shorter topic descriptions held by the pit. To read the full synthesis and list its contents, call cwl_open({id: "${id}"}).]\n\n`,
     /** The pit outline: the shape of what the pit holds, for cwl_open and cwl_map. */
     pitOutline: (outline) => `[CWL PIT OUTLINE — the shape of the pit, one line per node. Names and depth only; counts are in cwl_open and cwl_map.]\n${outline}\n`,
-    /** The shape line injected in the head block: names and depth only, no counts. */
-    pitShape: (shape) => `[CWL PIT SHAPE — snapshot, may be stale]\n${shape}\n`,
-    /** Hint that the head shape is a snapshot and may be stale. */
-    pitShapeStaleHint: () => 'The pit shape is a snapshot: it may be one turn behind the live state. cwl_open and cwl_map give the current shape.',
     oldPage: (id, nodes, tokens, body) => `[CWL old node ${id} — ${nodes} node(s) inside, ~${tokens} tokens. The synthesis first, then one line per node with its SHAPE; cwl_open("<node id>") opens one, and its leaves open in full.]\n\n${body}`,
     oldHot: (listed, total) => `--- Most consulted leaves (${listed} of ${total} in the old node; nothing was deleted, this is only the reading order) ---`,
     oldSupersededHead: (count) => `--- Syntheses this one replaced (${count}, newest first): open one with cwl_open("<id>.s1") — cwl_old overwrites the synthesis instead of extending it, so these are kept readable rather than lost ---`,
@@ -770,14 +758,10 @@ const I18N: Record<Lang, CwlMessages> = {
     groupManyDone: (groups, already, leaves, nodes) => `Lotto di ${groups} gruppo/i: ${groups - already} applicati, ${already} gia' soddisfatti (niente da fare), ${leaves} foglia/e spostate e ${nodes} nodo/i assorbiti. Validati TUTTI prima di toccare qualcosa, quindi niente e' stato applicato a meta'.`,
     groupDryRunAdd: (id, name, leaves, nodes, microChars, needChars) => `PROVA, non e' stato registrato niente. Il topic ${id} "${name}" riceverebbe ${leaves} foglia/e e ${nodes} nodo/i; tiene ${microChars} caratteri di etichette contro una soglia di ${needChars}.`,
     groupDryRunNew: (id, name, leaves, nodes, microChars, needChars) => `PROVA, non e' stato registrato niente. Nascerebbe un topic nuovo come ${id} "${name}", prendendo ${leaves} foglia/e e ${nodes} nodo/i; tiene ${microChars} caratteri di etichette contro una soglia di ${needChars}.`,
-    oldHead: (id, nodes, tokens) => `[CWL NODO VECCHIO ${id} — ${nodes} nodo/i piu' vecchi accorpati dietro questa sintesi (~${tokens} token). Per aprire il pozzo e vedere cosa contiene, chiama esattamente cwl_open({id: "${id}"}); apri un nodo o una foglia elencata con cwl_open({id: "<id-dalla-pagina>"}).]\n\n`,
+    oldHead: (id, tokens) => `[CWL NODO VECCHIO ${id} — materiale archiviato dietro questa sintesi (~${tokens} token). Per aprire il pozzo e vedere cosa contiene, chiama esattamente cwl_open({id: "${id}"}); apri un nodo o una foglia elencata con cwl_open({id: "<id-dalla-pagina>"}).]\n\n`,
     oldHeadDescriptions: (id) => `[CWL NODO VECCHIO — quello che segue NON e' la sintesi del riassuntone ma le descrizioni piu' corte dei topic contenuti nel pozzo. Per leggere la sintesi intera e vedere cosa contiene, chiama cwl_open({id: "${id}"}).]\n\n`,
     /** The pit outline: the shape of what the pit holds, for cwl_open and cwl_map. */
     pitOutline: (outline) => `[CWL POZZO FORMA — la forma del pozzo, una riga per nodo. Solo nomi e profondita'; i conteggi sono in cwl_open e cwl_map.]\n${outline}\n`,
-    /** The shape line injected in the head block: names and depth only, no counts. */
-    pitShape: (shape) => `[CWL POZZO FORMA — snapshot, potrebbe essere indietro]\n${shape}\n`,
-    /** Hint that the head shape is a snapshot and may be stale. */
-    pitShapeStaleHint: () => "La forma del pozzo e' uno snapshot: potrebbe essere un turno indietro rispetto allo stato reale. cwl_open e cwl_map danno la forma attuale.",
     oldPage: (id, nodes, tokens, body) => `[CWL nodo vecchio ${id} — ${nodes} nodo/i dentro, ~${tokens} token. Prima la sintesi, poi una riga per nodo con la sua FORMA; cwl_open("<id nodo>") ne apre uno, e le sue foglie si aprono intere.]\n\n${body}`,
     oldHot: (listed, total) => `--- Foglie piu' consultate (${listed} di ${total} nel nodo vecchio; niente e' stato cancellato, questo e' solo l'ordine di lettura) ---`,
     oldSupersededHead: (count) => `--- Sintesi sostituite da questa (${count}, dalla piu' recente): aprine una con cwl_open("<id>.s1") — cwl_old sostituisce la sintesi invece di estenderla, quindi queste restano leggibili invece di andare perse ---`,
@@ -1865,7 +1849,7 @@ function bodiesPath(key: string): string {
  * nodes own the leaves; nothing else matters.
  */
 function pitLeafIds(st: CwlState): Set<string> {
-  const inPit = new Set(st.oldNode?.nodes ?? []);
+  const inPit = containedNodes(st, st.oldNode?.nodes ?? []);
   const out = new Set<string>();
   for (const nd of st.nodes) {
     if (!inPit.has(nd.id)) continue;
@@ -3244,12 +3228,11 @@ function indexShape(
   const pv = pitView(st);
   let headChars = pv?.body.length ?? 0;
   if (pv) {
-    // Counted through the SAME i18n functions that build the block, so the number and the text
-    // cannot drift apart: `claim` is 0 here because the claim is a function of the state and is
-    // settled inside the applier, and a claim is digits that the block carries either way.
-    headChars += t('oldHead')(pv.id, pv.nodes, 0).length;
+    // Counted through the SAME i18n functions that build the block. The heading contains no
+    // live node count or outline: either would change when cataloguing inside the pit and
+    // invalidate the provider prefix cache even though the synthesis itself did not change.
+    headChars += t('oldHead')(pv.id, 0).length;
     if (pv.mode === 'descriptions') headChars += t('oldHeadDescriptions')(pv.id).length;
-    if (pv.headShape) headChars += t('pitShape')(pv.headShape).length;
   }
   for (const nd of st.nodes) {
     if (childIds.has(nd.id) || inPit.has(nd.id)) continue;
@@ -3284,8 +3267,6 @@ function indexShape(
  */
 interface PitView {
   id: string;
-  /** How many young nodes are behind the synthesis. */
-  nodes: number;
   summary: string;
   /**
    * What the head injects for the pit: `summary`, or the descriptions it contains when those
@@ -3311,8 +3292,6 @@ interface PitView {
   at: number;
   /** The shape WITH counts: for `cwl_open` and `cwl_map`. Never injected. */
   outline: string | null;
-  /** Names and depth only: safe for the injected block. `null` when it would add nothing. */
-  headShape: string | null;
 }
 
 /**
@@ -3346,7 +3325,7 @@ function pitDescriptions(st: CwlState): string {
 function pitView(st: CwlState): PitView | null {
   const pit = st.oldNode;
   if (!pit || !pit.summary) return null;
-  const inPit = new Set(pit.nodes);
+  const inPit = containedNodes(st, pit.nodes);
   const leaves = new Set<string>();
   for (const nd of st.nodes) {
     if (!inPit.has(nd.id)) continue;
@@ -3359,17 +3338,15 @@ function pitView(st: CwlState): PitView | null {
   const useInternal = internal.length > 0 && internal.length < pit.summary.length;
   return {
     id: pit.id,
-    nodes: pit.nodes.length,
     summary: pit.summary,
     body: useInternal ? internal : pit.summary,
     mode: useInternal ? 'descriptions' : 'synthesis',
     otherChars: useInternal ? pit.summary.length : internal.length,
     leaves,
     at: pit.at,
-    // ONE walk, TWO renderings. They are not two views of one call: they are two different
-    // answers to two different questions, and the only thing they share is the walk.
+    // The outline is a consultation response, not part of the injected prefix. Its shape can
+    // change as the archive is catalogued, so keep it available to cwl_open/cwl_map only.
     outline: buildPitOutline(st, pit, true),
-    headShape: buildPitHeadShape(st, pit),
   };
 }
 
@@ -3580,20 +3557,6 @@ function buildPitOutline(st: CwlState, pit: OldNode, counts: boolean): string | 
 }
 
 /**
- * What the injected block may carry: NAMES AND DEPTH only.
- *
- * A leaf count moves on every `cwl_group`, a child count on every containment, and the pit
- * block sits at the top of the context: changing it invalidates the provider prefix cache for
- * the whole conversation. Names and depth move only at a merge, and a merge rewrites this very
- * block anyway — so this is the variant that adds no new invalidation event, in either mode of
- * the body (`synthesis` is rewritten by `cwl_old` alone; `descriptions` already changes whenever
- * anything inside the pit changes).
- */
-function buildPitHeadShape(st: CwlState, pit: OldNode): string | null {
-  return buildPitOutline(st, pit, false);
-}
-
-/**
  * Decides which leaves a node owns and how many are still waiting for a micro.
  *
  * The rule, in order: the LAST `LOOSE_LEAVES` leaves by creation stay loose; every
@@ -3776,7 +3739,12 @@ function mergeBudget(
   st: CwlState,
   cf: CwlConfig,
 ): { absorbed: SpanNode[]; freedChars: number; needChars: number; synthesisChars: number; ok: boolean } {
-  const inPit = new Set(st.oldNode?.nodes ?? []);
+  // TRANSITIVE, and here it must be: `absorbed` becomes `pit.nodes.push(...)`, so a node the
+  // pit ALREADY holds by containment would be listed twice - once as a root and once as an
+  // absorbed node - and the archive would claim a node it holds only once. The same closure
+  // `indexShape`, `refreshNodes` and `buildPitOutline` use, so the budget and the index line
+  // can never disagree about what is young.
+  const inPit = containedNodes(st, st.oldNode?.nodes ?? []);
   const young = st.nodes.filter((nd) => !inPit.has(nd.id));
   const absorbed = young.length >= cf.mergeNodesAt && young.length > 1
     ? young.slice(0, young.length - 1)
@@ -4376,9 +4344,8 @@ function applySpans(
       role: 'custom',
       customType: 'cwl-compressed',
       content:
-        t('oldHead')(pit.id, pit.nodes, claim)
+        t('oldHead')(pit.id, claim)
         + (pit.mode === 'descriptions' ? t('oldHeadDescriptions')(pit.id) : '')
-        + (pit.headShape ? t('pitShape')(pit.headShape) : '')
         + pit.body,
       display: false,
       // STATIC TRACE: the time of the EVENT that created this block, never `Date.now()`. The
@@ -4480,19 +4447,7 @@ function applySpans(
       pitBlockDone = true;
       // SAFETY: same contract as the per-leaf notice below — Pi accepts `custom` in the
       // context hook although the AgentMessage union does not declare it.
-      const buildPit = (claim: number): AgentMessage => ({
-        role: 'custom',
-        customType: 'cwl-compressed',
-        content: t('oldHead')(pit.id, pit.nodes, claim) + (pit.mode === 'descriptions' ? t('oldHeadDescriptions')(pit.id) : '') + pit.body,
-        display: false,
-        // STATIC TRACE: the time of the EVENT that created this block, never `Date.now()`.
-        // This block sits in the MIDDLE of the list, so a value that changes per turn makes
-        // the block differ from itself and invalidates every cached token after it. The
-        // provider payload carries only `role` + `content` (measured on both builders), so a
-        // drifting timestamp does not break the cache TODAY — but the trace of an event must
-        // say when the event happened, not when the turn was rendered.
-        timestamp: pit.at,
-      } as unknown as AgentMessage);
+      const buildPit = (claim: number): AgentMessage => pitBlock(claim)!;
       let gainPit = Math.max(0, removed - estimateMessageTokens(buildPit(0)));
       for (let k = 0; k < 3; k++) {
         const next = Math.max(0, removed - estimateMessageTokens(buildPit(gainPit)));
@@ -6216,6 +6171,52 @@ function indexNodeViews(st: CwlState): IndexNodeView[] {
   });
 
   /**
+   * Build the archive page for cwl_open. Keeping the catalogue rendering here also keeps the
+   * registered tool callback small; this page is deliberately untruncated and measured first.
+   */
+  function openPitPage(st: CwlState, cf: typeof DEFAULT_CONFIG, wanted: string) {
+    const pit = st.oldNode;
+    if (!pit || pit.id !== wanted) return null;
+    const inPit = containedNodes(st, pit.nodes);
+    const pitNodes = st.nodes.filter((nd) => inPit.has(nd.id));
+    // The OUTLINE, counts included: this page is the place where a reader asks what the
+    // archive holds, and there is no cache here to protect.
+    const pitShape = pitView(st);
+    const outline = pitShape?.outline ?? buildPitOutline(st, pit, true);
+    const righe = pitNodes
+      .map((nd) => {
+        const shape = `${nd.leaves.length} leaf/leaves (${nd.leaves[0]} .. ${nd.leaves[nd.leaves.length - 1]})`;
+        // A TOPIC inside the pit is a catalogue entry: its name and a taste of its
+        // description, so the page can be read WITHOUT opening every node.
+        if (!nd.description) return `- ${nd.id}: ${shape}`;
+        const taste = nd.description.length > PIT_TOPIC_TASTE ? `${nd.description.slice(0, PIT_TOPIC_TASTE)}...` : nd.description;
+        return t('oldTopicLine')(nd.id, nd.name ?? '', shape, taste);
+      })
+      .join('\n');
+    const pitLeaves = pitNodes
+      .flatMap((nd) => nd.leaves)
+      .map((id) => st.spans.find((s) => idOfSpan(s) === id))
+      .filter((s): s is CompressedSpan => Boolean(s));
+    const hot = [...pitLeaves]
+      .sort((a, b) => (b.opens ?? 0) - (a.opens ?? 0) || (b.lastOpen ?? 0) - (a.lastOpen ?? 0) || b.at - a.at)
+      .slice(0, NODE_PAGE_MAX);
+    const hotLines = hot
+      .map((s) => `- ${idOfSpan(s)} (opened ${s.opens ?? 0}x): ${s.micro ?? '(no micro yet)'}`)
+      .join('\n');
+    const supersededLines = (pit.superseded ?? [])
+      .map((old, i) => t('oldSupersededLine')(`${pit.id}.s${i + 1}`, old.length))
+      .join('\n');
+    const body = `${pit.summary}\n\n${outline ? t('pitOutline')(outline) + '\n' : ''}${righe}\n\n${t('oldHot')(hot.length, pitLeaves.length)}\n${hotLines}`
+      + (supersededLines ? `\n\n${t('oldSupersededHead')(pit.superseded?.length ?? 0)}\n${supersededLines}` : '');
+    const tokens = estimateTokens(body);
+    debugLog(cf, `OPEN ${pit.id}: merge summary + ${pitNodes.length} node(s), ${pitLeaves.length} leaf/leaves inside, most opened ${hot[0]?.opens ?? 0}x (${hot.filter((s) => (s.opens ?? 0) > 0).length} ever opened) — ${tokens}t`);
+    return {
+      content: [{ type: 'text' as const, text: t('oldPage')(pit.id, pitNodes.length, tokens, body) }],
+      details: { ok: true, id: pit.id, kind: 'old', nodes: pitNodes.length, leaves: pitLeaves.length, opened: hot.filter((s) => (s.opens ?? 0) > 0).length, tokens },
+    };
+  }
+
+  /**
    * cwl_open: read back a compressed span (a "leaf") IN FULL.
    *
    * A summary lives ONLY in the state — the transcript holds the ORIGINAL
@@ -6239,61 +6240,8 @@ function indexNodeViews(st: CwlState): IndexNodeView[] {
       const st = getState(key);
       const cf = getConfig(key);
       const wanted = String(params.id ?? '').trim();
-      // The OLD node first: its page is the merge summary plus what it holds — one line
-      // per young node inside, with the SHAPE (how many leaves, and the first and last
-      // leaf id), so a reader can choose what to open without opening it.
-      if (st.oldNode && st.oldNode.id === wanted) {
-        const inPit = new Set(st.oldNode.nodes);
-        // The OUTLINE, counts included: this page is the place where a reader asks what the
-        // archive holds, and there is no cache here to protect. `pitView.outline` is built with
-        // `counts: true` for exactly this reason — the head gets the same walk WITHOUT counts.
-        const pitShape = pitView(st);
-        const outline = pitShape?.outline ?? buildPitOutline(st, st.oldNode, true);
-        const righe = st.nodes
-          .filter((nd) => inPit.has(nd.id))
-          .map((nd) => {
-            const shape = `${nd.leaves.length} leaf/leaves (${nd.leaves[0]} .. ${nd.leaves[nd.leaves.length - 1]})`;
-            // A TOPIC inside the pit is a catalogue entry: its name and a taste of its
-            // description, so the page can be read WITHOUT opening every node. Its id stays
-            // because that is what cwl_group takes to add more leaves to it.
-            if (!nd.description) return `- ${nd.id}: ${shape}`;
-            const taste = nd.description.length > PIT_TOPIC_TASTE ? `${nd.description.slice(0, PIT_TOPIC_TASTE)}...` : nd.description;
-            return t('oldTopicLine')(nd.id, nd.name ?? '', shape, taste);
-          })
-          .join('\n');
-        // The page's second half: the leaves CONSULTED, most opened first. The rule the
-        // operator asked for — not "the most recent", which are still in the young nodes
-        // and in the loose leaves anyway (their reasoning trail is already in the
-        // context), but the ones that LOOK stale and are still being reached for.
-        // With an empty history the order degrades to the most recently absorbed, which
-        // is a sane default rather than a criterion. Every one is cap 30, like a node.
-        const pitLeaves = st.nodes
-          .filter((nd) => inPit.has(nd.id))
-          .flatMap((nd) => nd.leaves)
-          .map((id) => st.spans.find((s) => idOfSpan(s) === id))
-          .filter((s): s is CompressedSpan => Boolean(s));
-        const hot = [...pitLeaves]
-          .sort((a, b) => (b.opens ?? 0) - (a.opens ?? 0) || (b.lastOpen ?? 0) - (a.lastOpen ?? 0) || b.at - a.at)
-          .slice(0, NODE_PAGE_MAX);
-        const hotLines = hot
-          .map((s) => `- ${idOfSpan(s)} (opened ${s.opens ?? 0}x): ${s.micro ?? '(no micro yet)'}`)
-          .join('\n');
-        // The syntheses this one replaced stay OPENABLE, a page each: `<pit id>.s1` is the
-        // one replaced last. Listed here with their size, so the pit page stays a page while
-        // nothing the archive held is lost. This is the "superseded by" the operator asked
-        // for: the CURRENT synthesis is the one in the context, the others are one call away.
-        const supersededLines = (st.oldNode.superseded ?? [])
-          .map((old, i) => t('oldSupersededLine')(`${st.oldNode?.id ?? ''}.s${i + 1}`, old.length))
-          .join('\n');
-        const body = `${st.oldNode.summary}\n\n${outline ? t('pitOutline')(outline) + '\n' : ''}${righe}\n\n${t('oldHot')(hot.length, pitLeaves.length)}\n${hotLines}`
-          + (supersededLines ? `\n\n${t('oldSupersededHead')(st.oldNode.superseded?.length ?? 0)}\n${supersededLines}` : '');
-        const tokens = estimateTokens(body);
-        debugLog(cf, `OPEN ${st.oldNode.id}: merge summary + ${st.oldNode.nodes.length} node(s), ${pitLeaves.length} leaf/leaves inside, most opened ${hot[0]?.opens ?? 0}x (${hot.filter((s) => (s.opens ?? 0) > 0).length} ever opened) — ${tokens}t`);
-        return {
-          content: [{ type: 'text', text: t('oldPage')(st.oldNode.id, st.oldNode.nodes.length, tokens, body) }],
-          details: { ok: true, id: st.oldNode.id, kind: 'old', nodes: st.oldNode.nodes.length, leaves: pitLeaves.length, opened: hot.filter((s) => (s.opens ?? 0) > 0).length, tokens },
-        };
-      }
+      const pitPage = openPitPage(st, cf, wanted);
+      if (pitPage) return pitPage;
       // A superseded synthesis has its own page: `<pit id>.s1` is the most recently replaced
       // one. Read on demand, which is why the pit page can afford to stay small.
       const superseded = /^(.*)\.s(\d+)$/.exec(wanted);
@@ -6507,7 +6455,7 @@ function indexNodeViews(st: CwlState): IndexNodeView[] {
         };
       }
       refreshNodes(st, cf);
-      const inPit = new Set(st.oldNode?.nodes ?? []);
+      const inPit = containedNodes(st, st.oldNode?.nodes ?? []);
       const young = st.nodes.filter((nd) => !inPit.has(nd.id));
       if (young.length === 0) {
         return {
@@ -6806,7 +6754,8 @@ function indexNodeViews(st: CwlState): IndexNodeView[] {
 
       const byId = new Map(st.spans.map((s) => [idOfSpan(s), s]));
       const nodeOf = (id: string): SpanNode | undefined => st.nodes.find((nd) => nd.leaves.includes(id));
-      const inPit = new Set(st.oldNode?.nodes ?? []);
+      // Membership is transitive: a child held by a pit topic is already archived too.
+      const inPit = containedNodes(st, st.oldNode?.nodes ?? []);
       const buffer = st.nodes[st.nodes.length - 1];
       const ids = (Array.isArray(params.leaves) ? params.leaves : []).filter((s) => typeof s === 'string');
       const nodeIds = (Array.isArray(params.nodes) ? params.nodes : []).filter((s) => typeof s === 'string');
@@ -7520,7 +7469,8 @@ function indexNodeViews(st: CwlState): IndexNodeView[] {
     // and the only one able to write the merge summary never called cwl_old. The mechanism
     // was tested and could not fire in a real session — so the demand goes where the
     // compression demand already goes: into the context.
-    const young = st.nodes.filter((nd) => !new Set(st.oldNode?.nodes ?? []).has(nd.id)).length;
+    const inPit = containedNodes(st, st.oldNode?.nodes ?? []);
+    const young = st.nodes.filter((nd) => !inPit.has(nd.id)).length;
     const pitAutoFallback = st.backgroundPitFallbackAfterTurn >= 0 && st.turns >= st.backgroundPitFallbackAfterTurn;
     const pitAutoRequest = pitSnapshot(st, cf);
     const pitJobStarted = pitAutoRequest && !pitAutoFallback

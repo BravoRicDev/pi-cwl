@@ -97,6 +97,23 @@ async function makeLeaves(sandbox, tools, hooks, ctx, n) {
   return stateOf(sandbox).spans.map((s) => s.id);
 }
 
+/** A genuinely later span, born after the archive is created. */
+async function oneMoreLeaf(sandbox, hooks, ctx, tools, n) {
+  const before = stateOf(sandbox).spans.length;
+  await hook(hooks, ctx, conversation(1, n + 3));
+  const res = await tools.get('cwl_compress_range').execute(
+    't', { summary: `LATE-${n} ` + 'x'.repeat(300) }, undefined, undefined, ctx,
+  );
+  assert.equal(res.details.ok, true, `late leaf was refused: ${JSON.stringify(res.details)}`);
+  const spans = stateOf(sandbox).spans;
+  assert.equal(spans.length, before + 1, `late leaf was not added: ${JSON.stringify(res.details)}`);
+  const id = spans[spans.length - 1].id;
+  const micro = await tools.get('cwl_micro').execute('t', { id, text: `LATE-MICRO-${n} of a later event` }, undefined, undefined, ctx);
+  assert.equal(micro.details.ok, true, `late micro failed: ${JSON.stringify(micro.details)}`);
+  await hook(hooks, ctx, conversation(1, n + 10));
+  return id;
+}
+
 test('a topic absorbs the topic after it, and the child block leaves the head', async () => {
   const { sandbox, home, tools, hooks, ctx } = await boot();
 
@@ -205,7 +222,7 @@ test('inside the pit a new parent gathers the topics after it', async () => {
   const { sandbox, home, tools, hooks, ctx } = await boot();
 
   try {
-    const ids = await makeLeaves(sandbox, tools, hooks, ctx, 10);
+    const ids = await makeLeaves(sandbox, tools, hooks, ctx, 11);
     const merged = await tools.get('cwl_old').execute('t', { text: 'SYNTHESIS of the first stories' }, undefined, undefined, ctx);
     assert.equal(merged.details.ok, true, `the merge was refused: ${JSON.stringify(merged.details)}`);
     assert.ok((stateOf(sandbox).oldNode.nodes ?? []).length > 0, 'the pit was born with no node inside');
@@ -222,6 +239,14 @@ test('inside the pit a new parent gathers the topics after it', async () => {
 
     // The parent is born INSIDE the pit, over the two young topics. No synthesis is written and
     // the pit's own synthesis is not touched: that is the whole saving of this operation.
+    // This fixture's short synthesis wins over the longer internal descriptions, so a shape/count
+    // accidentally added to the injected header would be the only changing part of this block.
+    const beforePitBlock = (await hook(hooks, ctx, conversation(1, 12)))
+      .find((m) => m.role === 'custom' && m.customType === 'cwl-compressed' && String(m.content).includes('CWL OLD NODE'));
+    assert.ok(beforePitBlock, 'the pit block is not injected before cataloguing');
+    assert.doesNotMatch(String(beforePitBlock.content), /what follows is NOT the merge synthesis/i);
+    assert.doesNotMatch(String(beforePitBlock.content), /PIT SHAPE|older node\(s\) merged/i);
+
     const feature = await tools.get('cwl_group').execute(
       't', {
         pit: true, nodes: [alpha.details.id, beta.details.id],
@@ -242,11 +267,98 @@ test('inside the pit a new parent gathers the topics after it', async () => {
     );
     assert.equal(parent.leaves.length, 0, 'the parent should hold nodes, not leaves of its own');
 
-    const out = injected(await hook(hooks, ctx, conversation(1, 12)));
+    const afterContext = await hook(hooks, ctx, conversation(1, 12));
+    const out = injected(afterContext);
     assert.match(out, /TOPIC "feature"/, 'the parent block is not in the head');
     assert.doesNotMatch(out, /TOPIC "alpha"/, 'a contained topic is still injected');
     assert.doesNotMatch(out, /TOPIC "beta"/, 'a contained topic is still injected');
+    assert.doesNotMatch(out, /MICRO-7|MICRO-8/, 'a nested pit leaf is injected a second time outside the pit block');
     assert.match(out, /holds 2 node\(s\), 4 leaf\/leaves/, 'the shape line does not count the subtree');
+    const afterPitBlock = afterContext.find((m) => m.role === 'custom' && m.customType === 'cwl-compressed' && String(m.content).includes('CWL OLD NODE'));
+    assert.ok(afterPitBlock, 'the pit block disappeared after cataloguing');
+    assert.equal(afterPitBlock.content, beforePitBlock.content, 'cataloguing changed the injected pit prefix although the synthesis did not change');
+
+    // Consultation renders the full containment closure even though the injected block does
+    // not pay for a changing outline. Its reported node count must describe that same closure,
+    // not just the direct roots in oldNode.nodes.
+    const pitBeforeOpen = stateOf(sandbox);
+    const held = new Set(pitBeforeOpen.oldNode.nodes ?? []);
+    let grew = true;
+    while (grew) {
+      grew = false;
+      for (const nd of pitBeforeOpen.nodes) {
+        if (!held.has(nd.id)) continue;
+        for (const child of nd.children ?? []) {
+          if (held.has(child)) continue;
+          held.add(child);
+          grew = true;
+        }
+      }
+    }
+    const expectedPitNodes = pitBeforeOpen.nodes.filter((nd) => held.has(nd.id)).length;
+    const pitPage = await tools.get('cwl_open').execute('t', { id: st.oldNode.id }, undefined, undefined, ctx);
+    assert.equal(pitPage.details.ok, true, `opening the pit failed: ${JSON.stringify(pitPage.details)}`);
+    assert.equal(pitPage.details.nodes, expectedPitNodes, 'the pit page count omitted nested descendants');
+    assert.ok(String(pitPage.content[0].text).includes(`${expectedPitNodes} node(s) inside`), 'the rendered pit heading disagrees with its node list');
+    assert.match(String(pitPage.content[0].text), new RegExp(alpha.details.id));
+    assert.match(String(pitPage.content[0].text), new RegExp(beta.details.id));
+
+    // A new root must be placed after the whole existing closure, not merely after the direct
+    // pit roots. Give it a later frontier child to make that ordering observable.
+    const laterLeaves = [];
+    for (const n of [40, 50, 60]) laterLeaves.push(await oneMoreLeaf(sandbox, hooks, ctx, tools, n));
+    const gamma = await tools.get('cwl_group').execute(
+      't', { leaves: laterLeaves, name: 'gamma', description: 'GAMMA is a later frontier topic' }, undefined, undefined, ctx,
+    );
+    assert.equal(gamma.details.ok, true, `gamma was not born: ${JSON.stringify(gamma.details)}`);
+    const gammaAfterBirth = stateOf(sandbox);
+    const gammaNode = gammaAfterBirth.nodes.find((nd) => nd.id === gamma.details.id);
+    assert.ok(gammaNode, `gamma is absent from state: ${JSON.stringify(gamma.details)}`);
+    assert.equal(gammaNode.leaves.length, 3, `gamma's source leaves were not all grouped: ${JSON.stringify({ result: gamma.details, node: gammaNode })}`);
+    const beforeLaterParent = stateOf(sandbox);
+    const heldBeforeLaterParent = new Set(beforeLaterParent.oldNode.nodes ?? []);
+    let closureGrew = true;
+    while (closureGrew) {
+      closureGrew = false;
+      for (const nd of beforeLaterParent.nodes) {
+        if (!heldBeforeLaterParent.has(nd.id)) continue;
+        for (const child of nd.children ?? []) {
+          if (heldBeforeLaterParent.has(child)) continue;
+          heldBeforeLaterParent.add(child);
+          closureGrew = true;
+        }
+      }
+    }
+    const lastHeldIndex = Math.max(...beforeLaterParent.nodes
+      .map((nd, index) => heldBeforeLaterParent.has(nd.id) ? index : -1));
+    const gammaIndex = beforeLaterParent.nodes.findIndex((nd) => nd.id === gamma.details.id);
+    assert.ok(gammaIndex > lastHeldIndex, 'the later child is not after the existing pit closure');
+    const laterParent = await tools.get('cwl_group').execute(
+      't', { pit: true, nodes: [gamma.details.id], name: 'later', description: 'LATER follows the existing archive' }, undefined, undefined, ctx,
+    );
+    assert.equal(laterParent.details.ok, true, `the later pit parent was refused: ${JSON.stringify(laterParent.details)}`);
+    const afterLaterParent = stateOf(sandbox);
+    assert.equal(afterLaterParent.nodes.findIndex((nd) => nd.id === laterParent.details.id), lastHeldIndex + 1,
+      'the new pit root was inserted before an existing contained descendant');
+
+    // The membership checks must also recognize descendants: description rewrites and pit
+    // cataloguing work on nested nodes/leaves, and a later merge never absorbs them again.
+    const rewritten = await tools.get('cwl_group').execute(
+      't', { pit: true, node: alpha.details.id, description: 'ALPHA updated inside the pit' }, undefined, undefined, ctx,
+    );
+    assert.equal(rewritten.details.ok, true, `rewriting a nested pit topic failed: ${JSON.stringify(rewritten.details)}`);
+    assert.equal(rewritten.details.inPit, true);
+    const nestedLeaves = [...(parent.children ?? [])]
+      .flatMap((id) => st.nodes.find((nd) => nd.id === id)?.leaves ?? [])
+      .slice(0, 3);
+    const catalogue = await tools.get('cwl_group').execute(
+      't', { pit: true, leaves: nestedLeaves, name: 'nested-catalogue', description: 'Nested leaves catalogued' }, undefined, undefined, ctx,
+    );
+    assert.equal(catalogue.details.ok, true, `cataloguing nested pit leaves failed: ${JSON.stringify(catalogue.details)}`);
+    const nextMerge = await tools.get('cwl_old').execute('t', { text: 'another merge' }, undefined, undefined, ctx);
+    const mergedNodes = Array.isArray(nextMerge.details.nodes) ? nextMerge.details.nodes : [];
+    assert.ok(!mergedNodes.some((id) => [alpha.details.id, beta.details.id].includes(id)),
+      'a nested pit node was treated as young and absorbed a second time');
   } finally {
 
     home.restore(); sandbox.cleanup();
@@ -312,7 +424,7 @@ test('rewriting a pit topic description does not leak the i18n source', async ()
   // FUNCTION (`() => string`), and every other i18n entry in a reply is called.
   const { sandbox, home, tools, hooks, ctx } = await boot();
   try {
-    const ids = await makeLeaves(sandbox, tools, hooks, ctx, 14);
+    await makeLeaves(sandbox, tools, hooks, ctx, 14);
     const merged = await tools.get('cwl_old').execute('t', { text: 'SYNTHESIS of the first stories' }, undefined, undefined, ctx);
     assert.equal(merged.details.ok, true, `the merge was refused: ${JSON.stringify(merged.details)}`);
     const inPit = stateOf(sandbox).nodes.filter((nd) => (stateOf(sandbox).oldNode.nodes ?? []).includes(nd.id)).flatMap((nd) => nd.leaves);
