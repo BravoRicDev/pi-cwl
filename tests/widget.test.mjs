@@ -83,7 +83,7 @@ test('the widget draws the index shape and never enters the context', async () =
     assert.equal(last[0], 'cwl-index', `the widget has an unexpected id: ${last[0]}`);
     assert.match(
       String(last[1][0]),
-      /pit \d+n\/\d+l │ topics \d+n\/\d+l │ buffer \d+n\/\d+l │ ordinary \d+n\/\d+l/,
+      /pit \d+n\/\d+l │ topics \d+n\/\d+l │ buffer \d+n\/\d+l │ plain \d+n\/\d+l/,
       `the drawn line is not the index shape: ${last[1]}`,
     );
     assert.match(String(last[1][0]), /^CWL ▸ /, `the drawn line lost its prefix: ${last[1]}`);

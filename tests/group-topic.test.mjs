@@ -94,14 +94,14 @@ const statusText = async (tools, ctx) =>
 const openPage = async (tools, ctx, id) =>
   text(await tools.get('cwl_open').execute('t', { id }, undefined, undefined, ctx));
 
-/** The young part of the index line — `topics 2n/9l │ buffer 1n/0l │ ordinary 0n/0l` — summed:
+/** The young part of the index line — `topics 2n/9l │ buffer 1n/0l │ plain 0n/0l` — summed:
  *  the nodes and the labels the head is made of outside the pit. The line keeps the three
  *  apart because the head pays for them differently (a topic costs ONE description, the buffer
- *  is the working area, an ordinary node costs the labels of its leaves); what the tests below
+ *  is the working area, a plain node costs the labels of its leaves); what the tests below
  *  watch is their SUM, so a grouping shows up as leaves moving from one group to another. */
 const youngOf = (line) => {
   const m = String(line).match(
-    /topics (\d+)n\/(\d+)l │ buffer (\d+)n\/(\d+)l │ ordinary (\d+)n\/(\d+)l/,
+    /topics (\d+)n\/(\d+)l │ buffer (\d+)n\/(\d+)l │ plain (\d+)n\/(\d+)l/,
   );
   return m
     ? { nodes: Number(m[1]) + Number(m[3]) + Number(m[5]), leaves: Number(m[2]) + Number(m[4]) + Number(m[6]) }
@@ -422,11 +422,11 @@ test('the index line counts the topics', async () => {
     assert.equal(born.details.ok, true, `the topic was not born: ${JSON.stringify(born.details)}`);
     const line = await statusText(tools, ctx);
     // The three groups, checked APART: a topic holds its labels and injects ONE description, the
-    // buffer survives behind it, and nothing is left in the ordinary group. Asserting only a
+    // buffer survives behind it, and nothing is left in the plain group. Asserting only a
     // total would not say which of the three moved.
     assert.match(line, /topics 1n\/9l/, `the topic is not counted with the labels it holds: ${line}`);
     assert.match(line, /buffer 1n\/0l/, `the buffer behind the topic disappeared from the line: ${line}`);
-    assert.match(line, /ordinary 0n\/0l/, `the labels of the topic are still counted as ordinary: ${line}`);
+    assert.match(line, /plain 0n\/0l/, `the labels of the topic are still counted as plain: ${line}`);
   } finally {
     home.restore();
   }
@@ -444,7 +444,7 @@ test('the index line keeps all its sections, in order', async () => {
     // measurement away without a single failure.
     assert.match(
       line,
-      /pit \d+n\/\d+l │ topics \d+n\/\d+l │ buffer \d+n\/\d+l │ ordinary \d+n\/\d+l │ loose \d+ │ head ~[\d,.]+t │ \d+ evict │ [\d,.]+ saved/,
+      /pit \d+n\/\d+l │ topics \d+n\/\d+l │ buffer \d+n\/\d+l │ plain \d+n\/\d+l │ loose \d+ │ head ~[\d,.]+t │ \d+ evict │ [\d,.]+ saved/,
       `the index line lost its shape: ${line}`,
     );
   } finally {
@@ -487,7 +487,7 @@ test('a topic survives a restart: the file carries the catalogue', async () => {
     // The SHAPE must not move across the restart: a topic is a young node too (it is outside
     // the pit), so the count has to match, not vanish. Compared as a STRING, because
     // `youngOf` hands back a parsed shape, not a primitive. What proves the fix is the name.
-    const youngShape = (line) => (String(line).match(/topics (\d+)n\/(\d+)l │ buffer (\d+)n\/(\d+)l │ ordinary (\d+)n\/(\d+)l/) ?? []).slice(1).join('/');
+    const youngShape = (line) => (String(line).match(/topics (\d+)n\/(\d+)l │ buffer (\d+)n\/(\d+)l │ plain (\d+)n\/(\d+)l/) ?? []).slice(1).join('/');
     assert.equal(youngShape(after), youngShape(before), `the shape of the index moved across the restart: ${youngShape(before)} -> ${youngShape(after)}`);
     const page = await openPage(run2.tools, ctx, born.details.id);
     assert.ok(page.includes(DESCRIPTION), `the description did not survive the restart: ${page.slice(0, 200)}`);

@@ -218,6 +218,16 @@ type CwlMessages = {
   /** Said when the block below is the DESCRIPTIONS rather than the synthesis, so the agent knows
    *  where the narrative went. See `PitView.body`. */
   oldHeadDescriptions: (id: string) => string;
+  /**
+   * The injected pit block's SHAPE: names and depth, no counts. Separate from `pitOutline`
+   * because the two answer different questions for different readers, and the one that goes in
+   * the head must not carry a number that moves — see `buildPitHeadShape`.
+   */
+  pitShape: (shape: string) => string;
+  /** The consultation outline, counts included: for `cwl_open` and `cwl_map`. */
+  pitOutline: (outline: string) => string;
+  /** Says the head shape is a snapshot and the tool is the live answer when they disagree. */
+  pitShapeStaleHint: () => string;
   /** The old-node page: the merge summary and the shape of what it holds. */
   oldPage: (id: string, nodes: number, tokens: number, body: string) => string;
   /** One entry of the old node's catalogue: a topic inside the pit, named and tasted. */
@@ -425,7 +435,7 @@ const I18N: Record<Lang, CwlMessages> = {
     oldTooSmall: (leaves, microChars, needChars) =>
       `\n\nNothing was recorded: the ${leaves} leaf/leaves that would leave the context hold ${microChars} characters, and a merge must free at least ${needChars}. A merge COSTS a synthesis: the pit's summary is rewritten, so what leaves has to be worth more than what replaces it. Compress more first, or merge when the nodes are full.`,
     indexLine: (pitNodes, pitLeaves, topicNodes, topicLeaves, bufferNodes, bufferLeaves, plainNodes, plainLeaves, loose, headTokens, evictions, savedTokens) =>
-      `pit ${pitNodes}n/${pitLeaves}l │ topics ${topicNodes}n/${topicLeaves}l │ buffer ${bufferNodes}n/${bufferLeaves}l │ ordinary ${plainNodes}n/${plainLeaves}l │ loose ${loose} │ head ~${headTokens}t │ ${evictions} evict │ ${savedTokens} saved`,
+      `pit ${pitNodes}n/${pitLeaves}l │ topics ${topicNodes}n/${topicLeaves}l │ buffer ${bufferNodes}n/${bufferLeaves}l │ plain ${plainNodes}n/${plainLeaves}l │ loose ${loose} │ head ~${headTokens}t │ ${evictions} evict │ ${savedTokens} saved`,
     groupRefused: (why, detail) =>
       `\n\nGrouping refused (${why}${detail ? `: ${detail}` : ''}). Nothing was recorded. Leaves can be taken from the buffer, from the loose ones, and from ordinary nodes (a TOPIC is not a source: its description stands for its leaves), and they must be consecutive in time. A leaf already inside the old node cannot come back (the pit's synthesis stands for it), and a leaf without a micro would not appear in any head: write the micro first. A description is IMMUTABLE while its topic is OUTSIDE the old node, because there it IS the index; inside the old node it can be rewritten, and there it moves nothing.`,
     groupTooSmall: (leaves, microChars, needChars) =>
@@ -469,6 +479,12 @@ const I18N: Record<Lang, CwlMessages> = {
     groupDryRunNew: (id, name, leaves, nodes, microChars, needChars) => `DRY RUN, nothing was recorded. A new topic would be born as ${id} "${name}", taking ${leaves} leaf/leaves and ${nodes} node(s); it holds ${microChars} characters of labels against a floor of ${needChars}.`,
     oldHead: (id, nodes, tokens) => `[CWL OLD NODE ${id} — ${nodes} older node(s) merged behind this synthesis (~${tokens} tokens). To open this pit and list its contents, call exactly cwl_open({id: "${id}"}); open a listed node or leaf with cwl_open({id: "<id-from-the-page>"}).]\n\n`,
     oldHeadDescriptions: (id) => `[CWL OLD NODE — what follows is NOT the merge synthesis but the shorter topic descriptions held by the pit. To read the full synthesis and list its contents, call cwl_open({id: "${id}"}).]\n\n`,
+    /** The pit outline: the shape of what the pit holds, for cwl_open and cwl_map. */
+    pitOutline: (outline) => `[CWL PIT OUTLINE — the shape of the pit, one line per node. Names and depth only; counts are in cwl_open and cwl_map.]\n${outline}\n`,
+    /** The shape line injected in the head block: names and depth only, no counts. */
+    pitShape: (shape) => `[CWL PIT SHAPE — snapshot, may be stale]\n${shape}\n`,
+    /** Hint that the head shape is a snapshot and may be stale. */
+    pitShapeStaleHint: () => 'The pit shape is a snapshot: it may be one turn behind the live state. cwl_open and cwl_map give the current shape.',
     oldPage: (id, nodes, tokens, body) => `[CWL old node ${id} — ${nodes} node(s) inside, ~${tokens} tokens. The synthesis first, then one line per node with its SHAPE; cwl_open("<node id>") opens one, and its leaves open in full.]\n\n${body}`,
     oldHot: (listed, total) => `--- Most consulted leaves (${listed} of ${total} in the old node; nothing was deleted, this is only the reading order) ---`,
     oldSupersededHead: (count) => `--- Syntheses this one replaced (${count}, newest first): open one with cwl_open("<id>.s1") — cwl_old overwrites the synthesis instead of extending it, so these are kept readable rather than lost ---`,
@@ -629,13 +645,13 @@ const I18N: Record<Lang, CwlMessages> = {
       findFound: (n, query, body) => `${n} result(s) for "${query}":\n${body}`,
       findNoMatch: (query) => `No result for "${query}". Try fewer or different words: labels are written in the language of the work.`,
       findNotLoaded: 'The recall index is not loaded in this session yet.',
-      mapDesc: 'The map of the CWL index WITH the IDs: every node, its kind (pit, topic, buffer, legacy), how many leaves and children it holds, and what it costs in the head. Leaf IDs are listed only for the OPEN nodes (the buffer and the loose leaves); for a topic, read its leaves with cwl_node.',
+      mapDesc: 'The map of the CWL index WITH the IDs: every node, its kind (pit, topic, buffer, plain), how many leaves and children it holds, and what it costs in the head. Leaf IDs are listed only for the OPEN nodes (the buffer and the loose leaves); for a topic, read its leaves with cwl_node.',
       mapNode: 'Optional node id: show only that subtree. Without it, the whole index.',
       mapSnippet: 'cwl_map: the map of the CWL index with the node IDs',
       mapHeader: (nodes, leaves, chars) => `${nodes} node(s), ${leaves} leaf/leaves, head ~${chars}t`,
       mapLine: (id, kind, name, leaves, children, chars) => `${id} │ ${kind}${name ? ` "${name}"` : ''} │ ${leaves} leaf/leaves${children > 0 ? ` │ holds ${children} node(s)` : ''} │ ${chars} chars`,
       mapLeaves: (ids) => `  leaves: ${ids}`,
-      nodeDesc: 'One node of the CWL index in full: metadata, the whole description, the nodes it holds, and its leaves as ID plus the first line of the label. Works on ANY node: a topic, a legacy node, the buffer, the pit.',
+      nodeDesc: 'One node of the CWL index in full: metadata, the whole description, the nodes it holds, and its leaves as ID plus the first line of the label. Works on ANY node: a topic, a plain node, the buffer, the pit.',
       nodeId: 'The node id, as shown by cwl_map or cwl_status.',
       nodeLimit: 'How many leaves to show (default: all). Use it with cursor to walk a long topic without pulling all of it into the context.',
       nodeCursor: 'Where to start: the nextCursor of the previous page (default: 0).',
@@ -646,7 +662,7 @@ const I18N: Record<Lang, CwlMessages> = {
       nodeLeaf: (id, micro) => `  ${id} │ ${micro}`,
       nodeChild: (ids) => `holds: ${ids}`,
       nodeNotFound: (id) => `No node with id "${id}". List them with cwl_map.`,
-      pendingDesc: 'What is NOT yet in a topic: the young legacy nodes and the buffer, with their leaves and the total characters. It is the inventory for creating a topic: if the total is below the needed size, a topic is refused.',
+      pendingDesc: 'What is NOT yet in a topic: the young plain nodes and the buffer, with their leaves and the total characters. It is the inventory for creating a topic: if the total is below the needed size, a topic is refused.',
       pendingSnippet: 'cwl_pending: the leaves still to be ordered (young nodes + buffer), with the character count',
       pendingHeader: (nodes, leaves, chars, need) => `${nodes} node(s) still to order, ${leaves} leaf/leaves, ${chars} chars (a topic needs ~${need})`,
       pendingLine: (id, kind, leaves, chars) => `${id} │ ${kind} │ ${leaves} leaf/leaves │ ${chars} chars`,
@@ -712,7 +728,7 @@ const I18N: Record<Lang, CwlMessages> = {
     oldTooSmall: (leaves, microChars, needChars) =>
       `\n\nNon e\' stato registrato niente: le ${leaves} foglia/e che uscirebbero dal contesto tengono ${microChars} caratteri, e un accorpamento deve liberarne almeno ${needChars}. Un accorpamento COSTA una sintesi: la sintesi del pozzo viene riscritta, quindi cio\' che esce deve valere piu\' di cio\' che lo sostituisce. Comprimi altro prima, o accorpa quando i nodi sono pieni.`,
     indexLine: (pitNodes, pitLeaves, topicNodes, topicLeaves, bufferNodes, bufferLeaves, plainNodes, plainLeaves, loose, headTokens, evictions, savedTokens) =>
-      `pozzo ${pitNodes}n/${pitLeaves}f │ topic ${topicNodes}n/${topicLeaves}f │ buffer ${bufferNodes}n/${bufferLeaves}f │ giovani ${plainNodes}n/${plainLeaves}f │ sciolte ${loose} │ testa ~${headTokens}t │ ${evictions} eviction │ ${savedTokens} risparmiati`,
+      `pozzo ${pitNodes}n/${pitLeaves}f │ topic ${topicNodes}n/${topicLeaves}f │ buffer ${bufferNodes}n/${bufferLeaves}f │ plain ${plainNodes}n/${plainLeaves}f │ sciolte ${loose} │ testa ~${headTokens}t │ ${evictions} eviction │ ${savedTokens} risparmiati`,
     groupRefused: (why, detail) =>
       `\n\nRaggruppamento rifiutato (${why}${detail ? `: ${detail}` : ''}). Non e' stato registrato niente. Si possono raggruppare o spostare le foglie del buffer, quelle sciolte e quelle dei nodi ordinari (un TOPIC non e' una sorgente: la sua descrizione sta per le sue foglie), e devono essere consecutive nel tempo. Una foglia gia' dentro il nodo vecchio non puo' tornare indietro (la sintesi del pozzo sta per lei), e una foglia senza micro non comparirebbe in nessuna testa: scrivi prima il micro. Una descrizione e' IMMUTABILE finche' il suo topic e' FUORI dal nodo vecchio, perche' li' e' l'indice; dentro il nodo vecchio si puo' riscrivere, e li' non muove niente.`,
     groupTooSmall: (leaves, microChars, needChars) =>
@@ -756,6 +772,12 @@ const I18N: Record<Lang, CwlMessages> = {
     groupDryRunNew: (id, name, leaves, nodes, microChars, needChars) => `PROVA, non e' stato registrato niente. Nascerebbe un topic nuovo come ${id} "${name}", prendendo ${leaves} foglia/e e ${nodes} nodo/i; tiene ${microChars} caratteri di etichette contro una soglia di ${needChars}.`,
     oldHead: (id, nodes, tokens) => `[CWL NODO VECCHIO ${id} — ${nodes} nodo/i piu' vecchi accorpati dietro questa sintesi (~${tokens} token). Per aprire il pozzo e vedere cosa contiene, chiama esattamente cwl_open({id: "${id}"}); apri un nodo o una foglia elencata con cwl_open({id: "<id-dalla-pagina>"}).]\n\n`,
     oldHeadDescriptions: (id) => `[CWL NODO VECCHIO — quello che segue NON e' la sintesi del riassuntone ma le descrizioni piu' corte dei topic contenuti nel pozzo. Per leggere la sintesi intera e vedere cosa contiene, chiama cwl_open({id: "${id}"}).]\n\n`,
+    /** The pit outline: the shape of what the pit holds, for cwl_open and cwl_map. */
+    pitOutline: (outline) => `[CWL POZZO FORMA — la forma del pozzo, una riga per nodo. Solo nomi e profondita'; i conteggi sono in cwl_open e cwl_map.]\n${outline}\n`,
+    /** The shape line injected in the head block: names and depth only, no counts. */
+    pitShape: (shape) => `[CWL POZZO FORMA — snapshot, potrebbe essere indietro]\n${shape}\n`,
+    /** Hint that the head shape is a snapshot and may be stale. */
+    pitShapeStaleHint: () => "La forma del pozzo e' uno snapshot: potrebbe essere un turno indietro rispetto allo stato reale. cwl_open e cwl_map danno la forma attuale.",
     oldPage: (id, nodes, tokens, body) => `[CWL nodo vecchio ${id} — ${nodes} nodo/i dentro, ~${tokens} token. Prima la sintesi, poi una riga per nodo con la sua FORMA; cwl_open("<id nodo>") ne apre uno, e le sue foglie si aprono intere.]\n\n${body}`,
     oldHot: (listed, total) => `--- Foglie piu' consultate (${listed} di ${total} nel nodo vecchio; niente e' stato cancellato, questo e' solo l'ordine di lettura) ---`,
     oldSupersededHead: (count) => `--- Sintesi sostituite da questa (${count}, dalla piu' recente): aprine una con cwl_open("<id>.s1") — cwl_old sostituisce la sintesi invece di estenderla, quindi queste restano leggibili invece di andare perse ---`,
@@ -912,13 +934,13 @@ const I18N: Record<Lang, CwlMessages> = {
       findFound: (n, query, body) => `${n} risultato/i per "${query}":\n${body}`,
       findNoMatch: (query) => `Nessun risultato per "${query}". Prova con meno parole o parole diverse: le etichette sono scritte nella lingua del lavoro.`,
       findNotLoaded: 'L\'indice di recall non \u00e8 ancora caricato in questa sessione.',
-      mapDesc: 'La mappa dell\'indice CWL CON gli ID: ogni nodo, il suo tipo (pozzo, topic, buffer, legacy), quante foglie e quanti nodi contiene, e quanto costa in testa. Gli id delle foglie compaiono solo per i nodi APERTI (il buffer e le foglie sciolte); per un topic, leggi le sue foglie con cwl_node.',
+      mapDesc: 'La mappa dell\'indice CWL CON gli ID: ogni nodo, il suo tipo (pozzo, topic, buffer, plain), quante foglie e quanti nodi contiene, e quanto costa in testa. Gli id delle foglie compaiono solo per i nodi APERTI (il buffer e le foglie sciolte); per un topic, leggi le sue foglie con cwl_node.',
       mapNode: 'Id opzionale di un nodo: mostra solo quel sottoalbero. Senza, tutto l\'indice.',
       mapSnippet: 'cwl_map: la mappa dell\'indice CWL con gli id dei nodi',
       mapHeader: (nodes, leaves, chars) => `${nodes} nodo/i, ${leaves} foglia/e, testa ~${chars}t`,
       mapLine: (id, kind, name, leaves, children, chars) => `${id} \u2502 ${kind}${name ? ` "${name}"` : ''} \u2502 ${leaves} foglia/e${children > 0 ? ` \u2502 contiene ${children} nodo/i` : ''} \u2502 ${chars} caratteri`,
       mapLeaves: (ids) => `  foglie: ${ids}`,
-      nodeDesc: 'Un nodo dell\'indice CWL per intero: metadati, descrizione completa, i nodi che contiene, e le sue foglie come ID piu\' la prima riga dell\'etichetta. Funziona su QUALSIASI nodo: un topic, un nodo legacy, il buffer, il pozzo.',
+      nodeDesc: 'Un nodo dell\'indice CWL per intero: metadati, descrizione completa, i nodi che contiene, e le sue foglie come ID piu\' la prima riga dell\'etichetta. Funziona su QUALSIASI nodo: un topic, un nodo plain, il buffer, il pozzo.',
       nodeId: 'L\'id del nodo, come lo mostrano cwl_map o cwl_status.',
       nodeLimit: 'Quante foglie mostrare (default: tutte). Usalo con cursor per scorrere un topic lungo senza tirarlo tutto nel contesto.',
       nodeCursor: 'Da dove partire: il nextCursor della pagina precedente (default: 0).',
@@ -929,7 +951,7 @@ const I18N: Record<Lang, CwlMessages> = {
       nodeLeaf: (id, micro) => `  ${id} \u2502 ${micro}`,
       nodeChild: (ids) => `contiene: ${ids}`,
       nodeNotFound: (id) => `Nessun nodo con id "${id}". Elencali con cwl_map.`,
-      pendingDesc: 'Cio\' che NON \u00e8 ancora in un topic: i nodi young legacy e il buffer, con le loro foglie e i caratteri totali. \u00c8 l\'inventario per creare un topic: se il totale \u00e8 sotto la soglia, il topic viene rifiutato.',
+      pendingDesc: 'Cio\' che NON \u00e8 ancora in un topic: i nodi young plain e il buffer, con le loro foglie e i caratteri totali. \u00c8 l\'inventario per creare un topic: se il totale \u00e8 sotto la soglia, il topic viene rifiutato.',
       pendingSnippet: 'cwl_pending: le foglie ancora da mettere in ordine (nodi young + buffer), con i caratteri',
       pendingHeader: (nodes, leaves, chars, need) => `${nodes} nodo/i ancora da ordinare, ${leaves} foglia/e, ${chars} caratteri (un topic ne serve ~${need})`,
       pendingLine: (id, kind, leaves, chars) => `${id} \u2502 ${kind} \u2502 ${leaves} foglia/e \u2502 ${chars} caratteri`,
@@ -3214,7 +3236,21 @@ function indexShape(
   // 17.599 characters counted against 23.057 actually injected, i.e. 76% of the truth, short
   // by ~1.364 token. The operator's eye caught it ("head does not look realistic, it is much
   // more") before any test did.
-  let headChars = pitView(st)?.body.length ?? 0;
+  //
+  // ONE view, reused. This called `pitView(st)` and then called it twice more inline, and it
+  // charged only the BODY — so the heading the block carries, and now the shape it carries,
+  // were missing from the number. That is the same undercount as the 76% one above, one layer
+  // down: a line that reports the head while charging less than the head.
+  const pv = pitView(st);
+  let headChars = pv?.body.length ?? 0;
+  if (pv) {
+    // Counted through the SAME i18n functions that build the block, so the number and the text
+    // cannot drift apart: `claim` is 0 here because the claim is a function of the state and is
+    // settled inside the applier, and a claim is digits that the block carries either way.
+    headChars += t('oldHead')(pv.id, pv.nodes, 0).length;
+    if (pv.mode === 'descriptions') headChars += t('oldHeadDescriptions')(pv.id).length;
+    if (pv.headShape) headChars += t('pitShape')(pv.headShape).length;
+  }
   for (const nd of st.nodes) {
     if (childIds.has(nd.id) || inPit.has(nd.id)) continue;
     if (nd.description) headChars += nd.description.length;
@@ -3273,6 +3309,10 @@ interface PitView {
    * and a value regenerated per turn would make it differ from itself.
    */
   at: number;
+  /** The shape WITH counts: for `cwl_open` and `cwl_map`. Never injected. */
+  outline: string | null;
+  /** Names and depth only: safe for the injected block. `null` when it would add nothing. */
+  headShape: string | null;
 }
 
 /**
@@ -3326,6 +3366,10 @@ function pitView(st: CwlState): PitView | null {
     otherChars: useInternal ? pit.summary.length : internal.length,
     leaves,
     at: pit.at,
+    // ONE walk, TWO renderings. They are not two views of one call: they are two different
+    // answers to two different questions, and the only thing they share is the walk.
+    outline: buildPitOutline(st, pit, true),
+    headShape: buildPitHeadShape(st, pit),
   };
 }
 
@@ -3480,6 +3524,73 @@ function containedInNodes(nodes: SpanNode[], roots: Iterable<string>): Set<strin
     for (const child of byId.get(id)?.children ?? []) stack.push(child);
   }
   return seen;
+}
+
+/**
+ * The SHAPE of the pit, for the reader who wants to know what is inside without opening it.
+ *
+ * `counts` is what makes this a consultation answer and not a head line: a head line must not
+ * carry a number that moves, and the two callers are split for exactly that reason. With counts
+ * it answers "what is in there and how much"; without, it answers only "what is in there" and
+ * stays byte-identical across a `cwl_group(pit:true)`, which is the property that keeps the
+ * injected block from invalidating the provider prefix cache on every regrouping.
+ *
+ * The closure is `containedNodes`, the SAME one `indexShape`, `refreshNodes`, `topicView` and
+ * `cwl_pending` use. A fourth definition of "in the pit" would be a fourth truth.
+ *
+ * Three defects this shape had to be written against, each of them a way of losing or killing:
+ * the root test looked at SIBLINGS instead of the parent, so a pit node under a non-pit parent
+ * silently vanished from the map of an archive that still held it; `walk` had no visited set, so
+ * a containment cycle recursed until the stack died — inside the context hook, the worst place
+ * to die; and an id absent from `st.nodes` (absorbed between the closure and this walk) was
+ * dereferenced instead of skipped.
+ */
+function buildPitOutline(st: CwlState, pit: OldNode, counts: boolean): string | null {
+  const byId = new Map(st.nodes.map((nd) => [nd.id, nd]));
+  const inPit = containedNodes(st, pit.nodes);
+  if (inPit.size === 0) return null;
+  // A ROOT is in the pit and its PARENT is not. NOT "a sibling of mine is not": that test
+  // dropped a root whose parent also held another pit node.
+  const roots = [...inPit].filter((id) => {
+    const nd = byId.get(id);
+    if (!nd) return false;
+    for (const parent of st.nodes) {
+      if ((parent.children ?? []).includes(id) && inPit.has(parent.id)) return false;
+    }
+    return true;
+  });
+  if (roots.length === 0) return null;
+  // `seen` on the way IN, not on the way out.
+  const seen = new Set<string>();
+  const out: string[] = [];
+  const walk = (id: string, depth: number): void => {
+    if (seen.has(id)) return;
+    seen.add(id);
+    const nd = byId.get(id);
+    if (!nd) return; // absorbed between the closure and this walk: skip, never crash
+    const kids = (nd.children ?? []).filter((c) => inPit.has(c) && byId.has(c));
+    const label = nd.name ?? id;
+    const n = counts && nd.leaves.length > 0 ? ` (${nd.leaves.length}f)` : '';
+    const sub = counts && kids.length > 0 ? ` [${kids.length} sub]` : '';
+    out.push('  '.repeat(depth) + `├ ${label}${n}${sub}`);
+    for (const c of kids) walk(c, depth + 1);
+  };
+  for (const r of roots) walk(r, 0);
+  return out.join('\n');
+}
+
+/**
+ * What the injected block may carry: NAMES AND DEPTH only.
+ *
+ * A leaf count moves on every `cwl_group`, a child count on every containment, and the pit
+ * block sits at the top of the context: changing it invalidates the provider prefix cache for
+ * the whole conversation. Names and depth move only at a merge, and a merge rewrites this very
+ * block anyway — so this is the variant that adds no new invalidation event, in either mode of
+ * the body (`synthesis` is rewritten by `cwl_old` alone; `descriptions` already changes whenever
+ * anything inside the pit changes).
+ */
+function buildPitHeadShape(st: CwlState, pit: OldNode): string | null {
+  return buildPitOutline(st, pit, false);
 }
 
 /**
@@ -4254,6 +4365,28 @@ function applySpans(
   // no topic holds): a prefix that changes only when an event changes it, which is the position
   // the cache prefers. Claim 0, because nothing is removed HERE, so the fixed point the normal
   // path iterates is already at its answer.
+  // A single constructor for all three sites where the pit block is built. If you split
+  // this into two, the third site is left behind.
+  const pitBlock = (claim: number): AgentMessage | null => {
+    if (!pit) return null;
+    // SAFETY: Pi accepts `custom` in the context hook although the AgentMessage union does
+    // not declare it. The invariant TypeScript cannot check: this list is handed to Pi and
+    // never re-validated on this side.
+    return {
+      role: 'custom',
+      customType: 'cwl-compressed',
+      content:
+        t('oldHead')(pit.id, pit.nodes, claim)
+        + (pit.mode === 'descriptions' ? t('oldHeadDescriptions')(pit.id) : '')
+        + (pit.headShape ? t('pitShape')(pit.headShape) : '')
+        + pit.body,
+      display: false,
+      // STATIC TRACE: the time of the EVENT that created this block, never `Date.now()`. The
+      // block can sit at the TOP of the list as well as in the middle, and a per-turn value
+      // would make it differ from itself and invalidate every cached token after it.
+      timestamp: pit.at,
+    } as unknown as AgentMessage;
+  };
   const inherited: AgentMessage[] = [];
   /** The leaves that resolved HERE: a block that has one of them has a place to stand. */
   const resolvedIds = new Set(resolved.map((r) => idOfSpan(r.sp)));
@@ -4264,17 +4397,13 @@ function applySpans(
   {
     const covered = new Set<string>(topics.keys());
     if (pit) {
+      // The pit's leaves are spoken for by its block: without this they would also be injected
+      // one label at a time, and the archive would pay for itself twice.
       for (const id of pit.leaves) covered.add(id);
       // A block goes to the top ONLY when it has no resolvable leaf: with no inherited
       // material at all every block has one, so nothing is prepended and the behaviour of a
       // normal session is untouched.
-      if (pitDoneAtTop) inherited.push({
-        role: 'custom',
-        customType: 'cwl-compressed',
-        content: t('oldHead')(pit.id, pit.nodes, 0) + (pit.mode === 'descriptions' ? t('oldHeadDescriptions')(pit.id) : '') + pit.body,
-        display: false,
-        timestamp: pit.at,
-      } as unknown as AgentMessage);
+      if (pitDoneAtTop) inherited.push(pitBlock(0)!);
     }
     for (const tv of topics.values()) {
       if (topicsDoneAtTop.has(tv.node.id)) continue;
@@ -5488,7 +5617,7 @@ export default function (pi: ExtensionAPI) {
 interface IndexNodeView {
   id: string;
   name: string | null;
-  kind: 'pit' | 'topic' | 'buffer' | 'legacy';
+  kind: 'pit' | 'topic' | 'buffer' | 'plain';
   leaves: string[];
   children: string[];
   /** What this node costs in the head: its description, or the micros of its leaves. */
@@ -5558,7 +5687,7 @@ function indexNodeViews(st: CwlState): IndexNodeView[] {
     views.push({
       id: nd.id,
       name: nd.name ?? null,
-      kind: nd.description ? 'topic' : nd.id === bufferId ? 'buffer' : 'legacy',
+      kind: nd.description ? 'topic' : nd.id === bufferId ? 'buffer' : 'plain',
       leaves: [...nd.leaves],
       children: [...(nd.children ?? [])],
       chars: held
@@ -6115,6 +6244,11 @@ function indexNodeViews(st: CwlState): IndexNodeView[] {
       // leaf id), so a reader can choose what to open without opening it.
       if (st.oldNode && st.oldNode.id === wanted) {
         const inPit = new Set(st.oldNode.nodes);
+        // The OUTLINE, counts included: this page is the place where a reader asks what the
+        // archive holds, and there is no cache here to protect. `pitView.outline` is built with
+        // `counts: true` for exactly this reason — the head gets the same walk WITHOUT counts.
+        const pitShape = pitView(st);
+        const outline = pitShape?.outline ?? buildPitOutline(st, st.oldNode, true);
         const righe = st.nodes
           .filter((nd) => inPit.has(nd.id))
           .map((nd) => {
@@ -6151,7 +6285,7 @@ function indexNodeViews(st: CwlState): IndexNodeView[] {
         const supersededLines = (st.oldNode.superseded ?? [])
           .map((old, i) => t('oldSupersededLine')(`${st.oldNode?.id ?? ''}.s${i + 1}`, old.length))
           .join('\n');
-        const body = `${st.oldNode.summary}\n\n${righe}\n\n${t('oldHot')(hot.length, pitLeaves.length)}\n${hotLines}`
+        const body = `${st.oldNode.summary}\n\n${outline ? t('pitOutline')(outline) + '\n' : ''}${righe}\n\n${t('oldHot')(hot.length, pitLeaves.length)}\n${hotLines}`
           + (supersededLines ? `\n\n${t('oldSupersededHead')(st.oldNode.superseded?.length ?? 0)}\n${supersededLines}` : '');
         const tokens = estimateTokens(body);
         debugLog(cf, `OPEN ${st.oldNode.id}: merge summary + ${st.oldNode.nodes.length} node(s), ${pitLeaves.length} leaf/leaves inside, most opened ${hot[0]?.opens ?? 0}x (${hot.filter((s) => (s.opens ?? 0) > 0).length} ever opened) — ${tokens}t`);
@@ -8063,6 +8197,13 @@ function indexNodeViews(st: CwlState): IndexNodeView[] {
         // back the very ids that the description was written to replace.
         if (!nd.description && nd.leaves.length > 0) {
           lines.push(t('consult').mapLeaves(nd.leaves.join(' ')));
+        }
+        // The pit row otherwise says "22 nodes, 0 leaves" and stops: one flat line for an
+        // archive of 22 nodes tells the reader nothing about WHAT is in it. Here there is no
+        // cache to protect, so this is where the counts are allowed.
+        if (nd.kind === 'pit' && st.oldNode) {
+          const outline = pitView(st)?.outline ?? buildPitOutline(st, st.oldNode, true);
+          if (outline) lines.push(t('pitOutline')(outline));
         }
       }
       // The loose leaves are not nodes, but they ARE part of the index: the head injects
