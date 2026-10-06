@@ -7560,14 +7560,26 @@ function indexNodeViews(st: CwlState): IndexNodeView[] {
     // and the only one able to write the merge summary never called cwl_old. The mechanism
     // was tested and could not fire in a real session — so the demand goes where the
     // compression demand already goes: into the context.
+    // SOTTO SOGLIA LE EVICTION E LA MANUTENZIONE NON DEVONO FARE NULLA.
+    // L'operatore ha stabilito: "le EVICTION non devono fare assolutamente nulla se siamo
+    // sotto soglia, vedo che rompono la cache. Devono agire solo quando la soglia viene superata
+    // per dare più respiro ed evitare overflow non hanno nessun beneficio prima di quel momento,
+    // invalidano la cache per niente."
+    // Sotto soglia (!roomNeeded):
+    //  - zero background summaries schedulati (non sprecare chiamate LLM in background);
+    //  - zero richieste di merge dell'indice (indexDue): un merge riscriverebbe l'header del pozzo
+    //    invalidando la prefix cache del provider per spazio che nessuno ha chiesto;
+    //  - zero richieste di topic (topicDue) e di micro (leavesDue);
+    //  - zero messaggi custom di demand appesi alla fine del contesto, così il prompt rimane
+    //    stabile turno dopo turno preservando la cache di prefisso ed evitando loop.
     const inPit = containedNodes(st, st.oldNode?.nodes ?? []);
     const young = st.nodes.filter((nd) => !inPit.has(nd.id)).length;
     const pitAutoFallback = st.backgroundPitFallbackAfterTurn >= 0 && st.turns >= st.backgroundPitFallbackAfterTurn;
-    const pitAutoRequest = pitSnapshot(st, cf);
+    const pitAutoRequest = roomNeeded ? pitSnapshot(st, cf) : null;
     const pitJobStarted = pitAutoRequest && !pitAutoFallback
       ? scheduleBackgroundPitSummary(key, st, cf, pitAutoRequest, ctx)
       : false;
-    const mergeRequest = plan.due > 0 && !pitJobStarted ? t('indexDue')(young, cf.mergeNodesAt) : null;
+    const mergeRequest = roomNeeded && plan.due > 0 && !pitJobStarted ? t('indexDue')(young, cf.mergeNodesAt) : null;
     // The topic invitation exists because the INDEX ITSELF closes the window it depends on:
     // a leaf inside a node can never be moved again, so a topic that is not born while its
     // leaves are still in the buffer is lost for good. Until now the agent learned the size
@@ -7579,12 +7591,9 @@ function indexNodeViews(st: CwlState): IndexNodeView[] {
       ? buffer.leaves.reduce((n, id) => n + (microCharsById.get(id) ?? 0), 0)
       : 0;
     const topicNeedChars = Math.max(Math.round(cf.mergeMinRatio * MERGE_SYNTHESIS_CHARS), cf.mergeMinChars);
-    // The invitation fires ONLY when the guard would pass: `bufferMicroChars >= topicNeedChars`.
-    // One that cannot be acted on would teach the agent nothing and cost a demand per turn.
-    // `!buffer.name` only guards a state written by an older version — a topic can never be
-    // the first node, because it cannot act as a buffer.
+    // The invitation fires ONLY when room is needed AND the guard would pass.
     const topicRequest =
-      buffer && !buffer.name && buffer.leaves.length > cf.topicInviteAt && bufferMicroChars >= topicNeedChars
+      roomNeeded && buffer && !buffer.name && buffer.leaves.length > cf.topicInviteAt && bufferMicroChars >= topicNeedChars
         ? t('topicDue')(buffer.id, buffer.leaves.length, bufferMicroChars, topicNeedChars)
         : null;
     if (topicRequest && buffer) {
@@ -7604,17 +7613,8 @@ function indexNodeViews(st: CwlState): IndexNodeView[] {
     if (mergeRequest) {
       debugLog(cf, `OLD NODE due: ${cf.mergeNodesAt}+ young nodes — the oldest ones should merge: write the merge summary with cwl_old`);
     }
-    // The FIRST step of the index needs the agent too, and it was the step with NO voice: the
-    // leaves without a micro were listed in the LOG and nothing in the context asked for them,
-    // so with zero nodes `plan.due` is 0, the merge demand never appears, and the mechanism
-    // cannot start at all. MEASURED live, right after the reload that made the index run:
-    // `NODES: 0 node(s) [none], 40 leaf/leaves waiting for a micro — their body is still in
-    // the context` at every single turn, 45 spans, 90.415t of summaries still in the context,
-    // and no demand anywhere. The request names a FEW ids instead of all forty: it stays
-    // small, it rides at the end of every turn until the work is done, and the agent does the
-    // rest next turn.
     const microRequest =
-      plan.waiting > 0
+      roomNeeded && plan.waiting > 0
         ? t('leavesDue')(plan.waiting, plan.waitingIds.slice(0, MICRO_DEMAND_IDS).join(' '))
         : null;
     if (microRequest) {
