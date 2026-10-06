@@ -3397,8 +3397,16 @@ function topicView(st: CwlState): Map<string, TopicView> {
     return cur;
   };
   const view = new Map<string, TopicView>();
+  // A TOPIC INSIDE THE PIT IS ALREADY SPOKEN FOR by the pit's block, so it must not enter this
+  // map. It did: every topic the archive holds got its own `topicHead` block IN ADDITION to the
+  // pit's synthesis, and the head paid for the same material twice. MEASURED on a live session:
+  // the pit held 22 topics with a description, so 22 descriptions rode along with a block that
+  // already stood for all of them. `covered` never hid them — that filter guards the SPAN loop
+  // in `applySpans`, not the topic loop. Transitive, because a pit node may itself contain nodes.
+  const inPit = containedNodes(st, st.oldNode?.nodes ?? []);
   for (const nd of st.nodes) {
     if (!nd.description) continue;
+    if (inPit.has(nd.id)) continue;
     const root = byId.get(rootOf(nd.id));
     if (!root) continue;
     const subtree = containedNodes(st, root.children ?? []);
@@ -3647,11 +3655,31 @@ function refreshNodes(
   // the same synthesis. Without the closure a child of a pit node would be treated as young
   // and its leaves would walk back into the head.
   const inPitIds = containedNodes(st, st.oldNode?.nodes ?? []);
+  // ONE LEAF, ONE NODE — the FIRST one that holds it, in the chronological order of `st.nodes`.
+  // A leaf with two owners is paid for TWICE: `st.nodes` is walked in order and every node
+  // injects its own block, so the buffer's micro rides into the head while the topic or the pit
+  // that also holds that leaf already stands for it. It also breaks the tools, because the two
+  // lists contradict each other: `cwl_group` refused ten leaves with `leaf-in-the-pit` while the
+  // buffer kept listing them. MEASURED on a live session, both shapes: `nd-69506c4e` and the
+  // buffer `nd-f2b9e7a0` held the same ten leaves, and so did a pit node.
+  // "First wins" is not arbitrary: `st.nodes` is the index's chronological order, so the first
+  // holder is the one whose POSITION matches the leaf's place in time. The pit is at the front,
+  // so the archive beats a young node; an older chunk beats the buffer it was split out of.
+  // The root cause is fixed where it was born (`cwl_group` re-partitioning); this is the REPAIR,
+  // so a state already written by the old code heals on the next pass instead of staying wrong.
+  const taken = new Set<string>();
   for (const nd of st.nodes) {
+    const inPit = inPitIds.has(nd.id);
     nd.leaves = nd.leaves.filter((id) => {
       const leaf = byId.get(id);
       if (!leaf) return false; // pruned: the node can no longer stand for it
-      return inPitIds.has(nd.id) ? true : Boolean(leaf.micro);
+      if (taken.has(id)) return false; // another node, earlier in the index, already stands for it
+      // The PIT keeps its leaves even without a micro: the synthesis stands for them, and a
+      // micro that disappears must not empty a topic. A young node needs the micro, because
+      // its leaves are exactly what the head shows one by one.
+      if (!inPit && !leaf.micro) return false;
+      taken.add(id);
+      return true;
     });
   }
   // A node that lost its leaves dies — EXCEPT the LAST one, the buffer attached to the
@@ -6999,7 +7027,21 @@ function indexNodeViews(st: CwlState): IndexNodeView[] {
         : Math.max(0, st.nodes.length - 1);
       const olderNodes = chunkNodes(older);
       const newerNodes = chunkNodes(newer);
-      for (const nd of st.nodes) nd.leaves = nd.leaves.filter((x) => !moving.has(x));
+      // THE INVOLVED NODES ARE REPLACED BY THE CHUNKS, so at the frontier they are EMPTIED —
+      // not merely stripped of the moving leaves. Their leftovers were just re-partitioned
+      // into the chunk nodes above, and leaving them in place as well put the SAME leaf in two
+      // nodes at once. MEASURED on a live session: `nd-69506c4e` and the buffer `nd-f2b9e7a0`
+      // held the same ten leaves, byte for byte. A leaf with two owners is paid for TWICE —
+      // the buffer is the working area in the HEAD, so its micro is injected while the topic's
+      // description already stands for it — and it breaks the tools too: `cwl_group` refuses
+      // those leaves with `leaf-in-the-pit`, and the node they were re-partitioned into can
+      // never let them go.
+      // Inside the PIT no chunk is inserted (the branch below splices only the topic), so there
+      // the leftovers must STAY where they are: emptying those nodes would delete them.
+      const involvedSet = new Set(involved);
+      for (const nd of st.nodes) {
+        nd.leaves = !wantPit && involvedSet.has(nd) ? [] : nd.leaves.filter((x) => !moving.has(x));
+      }
       const node: SpanNode = {
         id,
         leaves: [...uniqueIds],

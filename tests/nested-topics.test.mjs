@@ -269,11 +269,18 @@ test('inside the pit a new parent gathers the topics after it', async () => {
 
     const afterContext = await hook(hooks, ctx, conversation(1, 12));
     const out = injected(afterContext);
-    assert.match(out, /TOPIC "feature"/, 'the parent block is not in the head');
+    // THE PIT WINS, and this is a DECISION, not an accident: a topic that lives INSIDE the pit
+    // injects NOTHING of its own. The pit block stands for the whole archive — that is what a
+    // synthesis IS — and paying a `topicHead` on top of it is paying twice for the same material.
+    // MEASURED on a live session: the pit held 22 topics with a description and the head carried
+    // the synthesis (2187 chars) PLUS 22 blocks, which cost more than the synthesis itself; and
+    // `indexShape` never counted them, so the index line understated the head by more than half.
+    // The names are not lost: they live in `cwl_open` on the pit page, which the block itself
+    // tells the reader to call, and the page is checked below.
+    assert.doesNotMatch(out, /TOPIC "feature"/, 'a topic inside the pit injected its own block on top of the pit block');
     assert.doesNotMatch(out, /TOPIC "alpha"/, 'a contained topic is still injected');
     assert.doesNotMatch(out, /TOPIC "beta"/, 'a contained topic is still injected');
     assert.doesNotMatch(out, /MICRO-7|MICRO-8/, 'a nested pit leaf is injected a second time outside the pit block');
-    assert.match(out, /holds 2 node\(s\), 4 leaf\/leaves/, 'the shape line does not count the subtree');
     const afterPitBlock = afterContext.find((m) => m.role === 'custom' && m.customType === 'cwl-compressed' && String(m.content).includes('CWL OLD NODE'));
     assert.ok(afterPitBlock, 'the pit block disappeared after cataloguing');
     assert.equal(afterPitBlock.content, beforePitBlock.content, 'cataloguing changed the injected pit prefix although the synthesis did not change');
@@ -305,9 +312,9 @@ test('inside the pit a new parent gathers the topics after it', async () => {
 
     // THE CONTAINER'S OWN ROW. `feature` holds 0 leaves of its own and 2 children, and the page
     // used to print `0 leaf/leaves (undefined .. undefined)` for it: `nd.leaves[0]` on an empty
-    // array is `undefined`. A page that prints `undefined` is a page a reader cannot trust, and
-    // the number CONTRADICTED the injected block, which says "holds 2 node(s), 4 leaf/leaves" for
-    // the SAME node. The row must carry the numbers the block already paid for.
+    // array is `undefined`. A page that prints `undefined` is a page a reader cannot trust. The
+    // row must carry what the container really holds — and this page is now the ONLY place that
+    // says it, because the injected block no longer pays for a topic inside the pit.
     //
     // The finder targets the CATALOGUE row and not the outline: the outline labels a node by its
     // NAME (`├ feature [2 sub]`), so only this row carries the id and the word TOPIC.
