@@ -1211,10 +1211,34 @@ function estimateTokens(text: string, ratio: number = DEFAULT_CHAR_TOKEN_RATIO):
   return Math.ceil(text.length / r);
 }
 
+/**
+ * The characters `JSON.stringify` wraps around a message's OWN content, and the tokens that
+ * envelope actually costs.
+ *
+ * `JSON.stringify({ role: 'user', content: '' }).length` is 26, and the estimator was
+ * tokenizing those characters as if they were TEXT: so the estimate moved with the JSON KEY
+ * NAMES, and renaming a field was a silent change to every budget decision in this file.
+ * MEASURED before this change, in a live session: the per-message overhead came out at about
+ * 7.75t and it was declared nowhere.
+ *
+ * The two numbers answer two different questions and are kept apart on purpose:
+ * `MESSAGE_ENVELOPE_CHARS` is what the serialization ADDS and therefore has to be SUBTRACTED;
+ * `MESSAGE_ENVELOPE_TOKENS` is the flat charge that replaces it. The first is structural, the
+ * second is a calibration — and changing either is now a change to a number in this file.
+ */
+const MESSAGE_ENVELOPE_CHARS = 26;
+const MESSAGE_ENVELOPE_TOKENS = 7;
+
 function estimateMessageTokens(msg: unknown, ratio: number = DEFAULT_CHAR_TOKEN_RATIO): number {
   try {
-    const s = JSON.stringify(msg);
-    return estimateTokens(s, ratio);
+    const serialized = JSON.stringify(msg);
+    // The envelope is CUT OFF the string, not subtracted from a number: `estimateTokens`
+    // measures the LENGTH of the text it is handed, so passing it a number left `.length`
+    // undefined and turned the entire estimate into NaN. MEASURED: 37 of 182 tests red, every
+    // one of them reporting `NaNt` tokens, all from this single call — and `tsc` names the
+    // mistake in one line, which is why the typecheck is not skippable.
+    const payload = serialized.length > MESSAGE_ENVELOPE_CHARS ? serialized.slice(MESSAGE_ENVELOPE_CHARS) : '';
+    return estimateTokens(payload, ratio) + MESSAGE_ENVELOPE_TOKENS;
   } catch {
     return 0;
   }
@@ -1523,13 +1547,6 @@ interface CwlState {
   /** Turn of the last failed gate, used for the cooldown. */
   lastGateViolationTurn: number;
   /**
-   * Whether the demand was APPENDED to the context in this turn. `turn_end` counts an
-   * attempt only when this is true: a turn where the demand was withheld is not a
-   * failure of the agent, and charging it as one is how the gate gave up on a request
-   * it had never delivered.
-   */
-  demandShown: boolean;
-  /**
    * The eviction LATCH: closed above `trigger * HYSTERESIS_RATIO`, opened below `trigger`, and
    * holding its state in between. It exists because the provider cache is a PREFIX cache: with
    * a single threshold the context oscillates around it, and every crossing buys a cache
@@ -1680,7 +1697,6 @@ function newState(): CwlState {
     gateAttempts: 0,
     lastGateViolationTurn: -1,
     gateWithheld: '',
-    demandShown: false,
     evicting: false,
     autoWidenTurn: -1,
     rangeStartHash: null,
@@ -2179,8 +2195,6 @@ function isInheritedMessage(m: AgentMessage): boolean {
 }
 /** Turns over budget before the agent is asked to act on its own. */
 const GATE_AFTER_TURNS = 2;
-/** How many turns the agent gets before the demand is dropped. */
-const GATE_MAX_ATTEMPTS = 3;
 /** Turns of silence after a failed demand, so it does not nag forever. */
 const GATE_COOLDOWN_TURNS = 5;
 
@@ -2667,7 +2681,14 @@ function protectedFromIndex(messages: AgentMessage[], turns: number): number {
   // reasoning net finding every message protected, and the gate looping on an
   // impossible demand. Here the OLDEST part is freed so progress is always
   // possible.
-  return Math.floor(messages.length * MAX_PROTECTED_SHARE);
+  // `ceil` and not `floor`, because this is the INDEX protection starts from: the protected
+  // part is `length - index`, so `floor` gave MORE than the documented half on every odd
+  // length — 3 messages -> index 1 -> 2 protected, that is 67% against a cap of 50% — and the
+  // cap written in this function's own doc was quietly false. MEASURED consequence, and the
+  // reason this is not cosmetic: on a short list the degenerate branch and a narrow window used
+  // to land on the SAME index, so the auto-widen could lower the configured window without
+  // moving the protected floor at all — 8 turns, 219t of protected window on every single one.
+  return Math.ceil(messages.length * MAX_PROTECTED_SHARE);
 }
 
 /**
@@ -7595,7 +7616,6 @@ function indexNodeViews(st: CwlState): IndexNodeView[] {
           // The background job replaces the compression invitation. It is not a gate
           // failure because no demand was shown; the old hook resumes only next turn
           // after both background attempts have failed.
-          st.demandShown = false;
           st.gateWithheld = '';
           persistIfUsed();
           return rememberOutgoing(list);
@@ -7618,8 +7638,8 @@ function indexNodeViews(st: CwlState): IndexNodeView[] {
       // every turn naming a call to make: it rewrote the tail of the prompt on every turn, it
       // cost tokens in the currency the session was short of, and it made the agent do work
       // the extension can do by itself — the background summarizer scheduled a few lines
-      // above, which writes the micro as well as the summary. `st.demandShown` stays false,
-      // so `turn_end` never charges the agent for an attempt it was never given.
+      // above, which writes the micro as well as the summary. And because no demand is ever
+      // delivered, `turn_end` can never charge the agent for an attempt it was not given.
       debugLog(cf, `GATE above the latch and no background job started (canClose=${canClose}, canCompress=${canCompress}) — no demand is injected: the channel is silent by design`);
       return rememberOutgoing(list);
     };
@@ -8223,25 +8243,25 @@ function indexNodeViews(st: CwlState): IndexNodeView[] {
           st.gateArmedTurn = st.turns;
           st.gateAttempts = 0;
           debugLog(cf, `GATE armed at turn ${st.turns} (over budget since turn ${st.overBudgetSince})`);
-        } else if (st.gateArmedTurn < st.turns) {
-          // ONE attempt = one turn in which the demand was really SHOWN and went
-          // unanswered. Counting the turn regardless is what produced "unanswered for
-          // 3 turns" immediately after a turn in which the gate had withheld the
-          // demand: the agent was blamed for ignoring a request it never received.
-          if (st.demandShown) {
-            st.gateAttempts += 1;
-            if (st.gateAttempts >= GATE_MAX_ATTEMPTS) {
-              st.lastGateViolationTurn = st.turns;
-              st.gateArmedTurn = -1;
-              debugLog(cf, `GATE dropped after ${GATE_MAX_ATTEMPTS} attempts; cooldown ${GATE_COOLDOWN_TURNS} turns`);
-              if (ctx?.hasUI) ctx.ui.notify(t('gateGiveUp')(GATE_MAX_ATTEMPTS), 'warning');
-            }
-          }
         }
+        // NOTHING IS COUNTED AS AN ATTEMPT HERE ANY MORE, and it is deliberate. An attempt
+        // used to be "a turn in which the demand was really SHOWN and went unanswered": no
+        // demand is written into the context any more — it rewrote the tail of the prompt on
+        // every turn, in the currency the session was short of — so no turn can qualify.
+        // `gateAttempts` keeps the 0 that arming set it to, and the give-up branch that used to
+        // live here is REMOVED rather than kept behind a `false`: a branch nobody can reach is
+        // a branch nobody can test.
+        //
+        // `demandShown` was the flag that writer set, and it goes with it. No assignment to
+        // `true` survived anywhere, so persisting it would have written `false` into the state
+        // file on every turn for ever — a field that cannot vary is worse than no field, because
+        // it looks like evidence. What stays in the state tells the truth: zero attempts, no
+        // violation, not in cooldown. The give-up budget itself went with the branch: a demand
+        // channel that comes back brings its own counter, and until then GATE_COOLDOWN_TURNS is
+        // read against a `lastGateViolationTurn` that can only ever be -1 — which is why the
+        // cooldown is inert as well, and correctly so: there is no dropped demand to wait out.
       }
     }
-    // Spent by the turn that just ended, whether or not it counted as an attempt.
-    st.demandShown = false;
 
     // Persist the DECISIONS (episode graph + traced compressions) at the end of
     // every turn. They cannot be recomputed from the transcript, so a crash or

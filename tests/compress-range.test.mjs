@@ -271,8 +271,12 @@ test('bulk results are not repaired by position: the guarantee is by id', async 
       { role: 'user', content: text('turn 1') },
       // Last valid endpoint below the floor: the range ends here.
       { role: 'assistant', content: [{ type: 'text', text: text('A thinks') }, { type: 'toolCall', id: 'ca', name: 'bash', arguments: { command: 'ls' } }] },
-      // Index >= floor: it stays outside, with its pair intact.
-      { role: 'assistant', content: [{ type: 'text', text: text('B thinks') }, { type: 'toolCall', id: 'cb', name: 'bash', arguments: { command: 'ls' } }] },
+      // Index >= floor: it stays outside, with its pair intact. NO text block, and that is
+      // not a detail of style: the measured layout this test reproduces has `assistant
+      // toolCall x1 <- in between, without results`, and a text block would make B an ELIGIBLE
+      // ENDPOINT, so the range would grow to end on B itself (measured: it did, and it ate
+      // B's pair). A toolCall-only assistant cannot end a range.
+      { role: 'assistant', content: [{ type: 'toolCall', id: 'cb', name: 'bash', arguments: { command: 'ls' } }] },
       // The result of A arrives AFTER the assistant B: its call is inside the
       // range and disappears, so this result is orphan and must be discarded.
       { role: 'toolResult', toolCallId: 'ca', content: [{ type: 'text', text: text('output from A') }] },

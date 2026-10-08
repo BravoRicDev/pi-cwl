@@ -14,8 +14,8 @@
  * The operator removed it: "togliere qualsiasi avviso che chiede all'agente di comprimere".
  * The substitute is the background job scheduled a few lines above the old injection — the
  * summarizer that writes the micro together with the summary — plus the deterministic
- * eviction. `st.demandShown` stays false, so `turn_end` never charges the agent for an
- * attempt it was never given, and the gate never "gives up" on a demand nobody saw.
+ * eviction. And since no demand is ever delivered, `turn_end` can never charge the agent for
+ * an attempt it was not given: the counter stays at zero and the gate has nothing to give up on.
  *
  * So the gate still EXISTS and still ARMS: it is the thing that decides WHEN the automatic
  * compaction fires. What it must never do again is speak.
@@ -141,12 +141,11 @@ test('the gate NEVER writes into the context, and it still ARMS and says why it 
       )}`,
     );
 
-    // Nobody is charged for an attempt they were never given. This is what keeps
-    // `GATE_MAX_ATTEMPTS` from counting turns in which the agent was told nothing.
-    // Only the COUNTER is asserted here, not `st.demandShown`: that flag is deliberately
-    // NOT persisted (it is a per-turn thing, spent by the turn that just ended), so reading
-    // it back from the state file would assert on `undefined` — the file is not the truth
-    // about it.
+    // Nobody is charged for an attempt they were never given, and the COUNTER is now the only
+    // thing there is to assert: the flag that used to record "this turn's demand was really
+    // delivered" is GONE, together with the one assignment that could ever set it, because it
+    // could only ever be false. Asserting on a removed field would be asserting on
+    // `undefined`, which is not the same as asserting that no attempt was made.
     assert.equal(st.gateAttempts, 0, 'the attempt counter moved without a demand being shown');
 
     const log = logOf(sandbox);
