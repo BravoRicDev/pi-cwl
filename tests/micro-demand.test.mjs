@@ -1,22 +1,31 @@
 /**
- * THE INDEX'S FIRST STEP MUST ASK, NOT JUST RECORD.
+ * THE MICRO NO LONGER ASKS: IT IS SAID IN THE LOG, AND WRITTEN IN THE BACKGROUND.
+ *
+ * HISTORY, because the reversal matters and a test that loses its "why" gets deleted by the
+ * next person who finds it inconvenient.
  *
  * MEASURED LIVE, right after the reload that let the index run:
  *
  *     NODES: 0 node(s) [none], 40 leaf/leaves waiting for a micro — their body is still in
  *     the context
  *
- * on EVERY turn, with 45 spans and 90.415t of summaries still in the context. That is: the code
- * ran, but the mechanism could NOT start. The chain is: leaves without a micro do not
- * enter a node -> zero nodes -> `plan.due` is zero -> the merge request
- * (`indexDue`) NEVER appears. And nobody talked about the micro: the count ended up in the LOG, not
- * in the context. The extension knew it, the operator could read it, and the only one who can
- * write a micro — the agent — received no question.
+ * on EVERY turn, with 45 spans and 90.415t of summaries still in the context. The code ran,
+ * but the mechanism could not start: leaves without a micro do not enter a node -> zero
+ * nodes -> `plan.due` is zero -> the merge request (`indexDue`) NEVER appeared. And nobody
+ * talked about the micro: the count ended up in the LOG, not in the context.
  *
- * It is exactly the defect that `bd0734c` closed for `cwl_old` (the big summary), left
- * open on the step BEFORE. The request must say two things to be actionable: that
- * `cwl_micro` must be called, and ON WHICH leaves — without the ids the agent has to guess which one, or
- * go read the state file.
+ * The answer THEN was to put the request in the context (`bd0734c` closed it for `cwl_old`,
+ * this covers the step BEFORE). The operator has since taken the other decision, and it is
+ * the current contract: NO request that asks the agent to compress may enter the context.
+ * The micro is written by the BACKGROUND SUMMARIZER, which produces the micro together with
+ * the summary — that is why a leaf can be born ready for a node without a turn from anyone.
+ *
+ * So what this test pins is no longer the presence of a message. It pins three things:
+ *  1. the ABSENCE of the demand, in the very scenario that used to produce it;
+ *  2. that the CONDITION still exists in the state (leaves without a micro), so the test
+ *     cannot pass by accident on an empty fixture;
+ *  3. that the condition is still SAID OUT LOUD in the log. A mechanism that stops talking
+ *     silently is a mechanism nobody can diagnose, and this one already cost a session once.
  */
 import assert from 'node:assert/strict';
 import test from 'node:test';
@@ -56,6 +65,9 @@ const stateOf = (sandbox) => {
   return JSON.parse(fs.readFileSync(path.join(dir, file), 'utf8'));
 };
 
+// Not exported by `_helpers.mjs`: every test that reads the log defines it in house.
+const logOf = (sandbox) => fs.readFileSync(path.join(sandbox.dir, '.pi', 'cwl', 'cwl.log'), 'utf8');
+
 const conversation = (from, to) => {
   const out = [];
   for (let i = from; i <= to; i++) {
@@ -65,7 +77,7 @@ const conversation = (from, to) => {
   return out;
 };
 
-test('the micro request reaches the agent, and names the leaf', async () => {
+test('the micro request NEVER enters the context: the leaves wait in silence, and the log says so', async () => {
   const { sandbox, home, tools, hooks, ctx } = await boot();
   try {
     // SEVEN leaves, not one. With `looseLeaves` = 5 the last five stay LOOSE and do not
@@ -86,29 +98,40 @@ test('the micro request reaches the agent, and names the leaf', async () => {
       'seven leaves are needed: with five or fewer they are all loose and none is waiting for a micro',
     );
 
-    // The turn after: the older leaves are no longer loose, they have no micro, and
-    // the agent must KNOW it.
+    // The turn after: the older leaves are no longer loose, they have no micro, and the
+    // extension knows it. The agent is NOT told, by decision.
     const out = await hook(hooks, ctx, conversation(1, 10));
     const requests = out.filter((m) => m.customType === 'cwl-demand');
-    assert.ok(
-      requests.length > 0,
-      'no request in the context: the leaves without a micro end up only in the LOG, so the agent does not know it must ' +
-        `write them and the mechanism never starts (0 nodes -> plan.due = 0 -> the merge request never appears). Messages: ${out
-          .map((m) => m.customType || m.role)
-          .join(', ')}`,
+    assert.equal(
+      requests.length,
+      0,
+      `no demand may enter the context any more: the operator removed every request that asks the agent to compress, `
+        + `and the micro is written by the background summarizer. Messages: ${out.map((m) => m.customType || m.role).join(', ')}`,
     );
 
-    const text = requests.map((m) => String(m.content)).join('\n');
-    assert.ok(
-      text.includes('cwl_micro'),
-      `the request does not name the tool to use, so it is not actionable: ${text.slice(0, 200)}`,
+    // (2) The CONDITION is still there. Without this the test would pass on any fixture at
+    // all, including one that never produces a leaf without a micro.
+    const waiting = stateOf(sandbox).spans.filter((sp) => !String(sp.micro ?? '').trim());
+    assert.equal(
+      waiting.length,
+      7,
+      `the fixture must still produce leaves WITHOUT a micro, or this test proves nothing: ${JSON.stringify(
+        stateOf(sandbox).spans.map((sp) => ({ id: sp.id, micro: sp.micro ?? null })),
+      )}`,
     );
 
-    const id = stateOf(sandbox).spans[0].id;
-    assert.ok(
-      text.includes(id),
-      `the request does not name the leaf ${id}: without the id the agent has to guess which one, or go read the ` +
-        `state file. Text: ${text.slice(0, 300)}`,
+    // (3) And it is still said out loud, in the log. Nothing is lost by the demand leaving
+    // the context as long as this row is here: the operator can still see it.
+    const log = logOf(sandbox);
+    assert.match(
+      log,
+      /MICRO due: \d+ leaf\/leaves waiting for a micro/,
+      `the condition must still be stated in the LOG — a mechanism that goes silent cannot be diagnosed: ${log.trim().split('\n').slice(-4).join(' | ')}`,
+    );
+    assert.match(
+      log,
+      /LOG ONLY now/,
+      `the log row must say that it is the only channel left, so nobody reads it as "the agent was asked": ${log.trim().split('\n').slice(-4).join(' | ')}`,
     );
   } finally {
     home.restore();

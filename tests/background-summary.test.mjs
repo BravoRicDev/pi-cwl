@@ -58,6 +58,8 @@ function persistedState(sandbox) {
   return JSON.parse(fs.readFileSync(path.join(stateDir, file), 'utf8'));
 }
 
+const logOf = (sandbox) => fs.readFileSync(path.join(sandbox.dir, '.pi', 'cwl', 'cwl.log'), 'utf8');
+
 const result = (micro, summary) => ({
   stopReason: 'stop',
   content: [{ type: 'text', text: JSON.stringify({ micro, summary }) }],
@@ -140,12 +142,32 @@ test('two background failures defer the old hook fallback until the next trigger
     assert.equal(calls, 2);
     assert.equal(persistedState(sandbox).backgroundSummary.status, 'exhausted');
 
-    let fallback = null;
-    for (let turn = 0; turn < 4 && !hasGate(fallback); turn++) {
-      fallback = await hooks.get('context')({ messages }, ctx);
-      if (!hasGate(fallback)) await hooks.get('turn_end')({}, ctx);
+    // The fallback is DEFERRED, not delivered. It is a marker in the state that tells the hook
+    // to stop scheduling background summaries for this range, written together with the turn it
+    // becomes active from. Under the new contract it injects NO demand into the context, so what
+    // has to be asserted is the marker and the silence — a message would be the old contract.
+    const marker = persistedState(sandbox).backgroundFallbackAfterTurn;
+    assert.ok(
+      marker >= 0,
+      'the exhausted request deferred no hook fallback at all: nothing would take over from it',
+    );
+    assert.match(
+      logOf(sandbox),
+      /BACKGROUND summary exhausted: .+hook fallback from turn \d+/,
+      'the fallback was deferred without saying when or why',
+    );
+
+    let last = null;
+    for (let turn = 0; turn < 4; turn++) {
+      last = await hooks.get('context')({ messages }, ctx);
+      await hooks.get('turn_end')({}, ctx);
     }
-    assert.equal(hasGate(fallback), true, 'the existing gate demand resumes on a later trigger');
+    assert.equal(
+      hasGate(last),
+      false,
+      'the hook fallback injected a demand: the context is closed by the operator, the budget no longer writes into it',
+    );
+    assert.equal(calls, 2, 'the fallback granted a third completion for the same range');
   } finally {
     await hooks.get('session_shutdown')?.({}, ctx);
     home.restore();
@@ -269,7 +291,11 @@ test('a restart keeps the attempt count: the limit of two survives the process',
       await second.hooks.get('turn_end')({}, ctx2);
     }
     assert.equal(calls, 2, 'a restart must not grant a third completion for the same range');
-    assert.equal(hasGate(last), true, 'after the restart the existing hook fallback resumes');
+    assert.equal(
+      hasGate(last),
+      false,
+      'a demand was injected after the restart: the fallback is a marker in the state, not a message in the context',
+    );
   } finally {
     await hooks.get('session_shutdown')?.({}, ctx);
     home.restore();

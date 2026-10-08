@@ -7,12 +7,15 @@
  * prima di quel momento, invalidano la cache per niente."
  *
  * Questo test verifica che:
- *  1. Sotto soglia (roomNeeded === false), anche se ci sono nodi giovani pronti per
- *     il merge (young >= mergeNodesAt), foglie in attesa di micro, o un buffer pronto
- *     per un topic, CWL NON inietta alcun messaggio di demand nel contesto. La prefix
- *     cache resta intatta e l'agente non viene disturbato.
- *  2. Non appena la soglia viene superata (roomNeeded === true), la demand di merge
- *     entra nel contesto per permettere all'agente di liberare spazio.
+ *  1. Sotto soglia, anche se ci sono nodi giovani pronti per il merge (young >=
+ *     mergeNodesAt), foglie in attesa di micro, o un buffer pronto per un topic, CWL NON
+ *     inietta alcun messaggio nel contesto: la prefix cache resta intatta.
+ *  2. E che SOPRA soglia NON ne inietta nessuno comunque. Questa era la meta' opposta del
+ *     test fino alla decisione dell'operatore ("togliere qualsiasi avviso che chiede
+ *     all'agente di comprimere"): la demand non e' piu' un canale, sopra o sotto. Cio' che
+ *     resta e' il LOG, ed e' quello che il test pretende adesso — perche' un meccanismo che
+ *     smette di parlare in silenzio e' un meccanismo che nessuno puo' diagnosticare.
+ *  3. Che il gate non scriva piu' nel contesto nemmeno il proprio messaggio custom.
  */
 import assert from 'node:assert/strict';
 import test from 'node:test';
@@ -69,7 +72,12 @@ const conversation = (from, to) => {
 const demandRequest = (msgs) =>
   msgs.filter((m) => m && m.customType === 'cwl-demand').map((m) => String(m.content)).join('\n');
 
-test('sotto soglia: zero richieste di merge o micro nel contesto (preserva prefix cache)', async () => {
+// Not exported by `_helpers.mjs`: every test that reads the log defines it in house.
+const logOf = (sandbox) => fs.readFileSync(path.join(sandbox.dir, '.pi', 'cwl', 'cwl.log'), 'utf8');
+
+const isGate = (msgs) => msgs.filter((m) => m && m.customType === 'cwl-budget-gate').length;
+
+test('sopra E sotto soglia: zero richieste nel contesto (preserva prefix cache)', async () => {
   // 1. Creiamo nodi giovani in una sessione
   const { sandbox, home, tools, hooks, ctx } = await boot(600);
   try {
@@ -86,11 +94,30 @@ test('sotto soglia: zero richieste di merge o micro nel contesto (preserva prefi
     }
 
     // SOPRA SOGLIA: conversation(1, 12) genera ~1200 token > 300 trigger.
-    // La demand entra nel contesto per permettere all'agente di liberare spazio.
+    // La demand NON entra nel contesto nemmeno qui, e nemmeno il messaggio custom del gate.
+    // La CONDIZIONE pero' deve restare detta nel LOG: e' l'unico canale rimasto, ed e' la
+    // meta' silenziosa di questa storia che una volta e' costata una sessione.
+    const logBefore = logOf(sandbox).length;
     const overMsgs = await hook(hooks, ctx, conversation(1, 12));
     const overText = demandRequest(overMsgs);
-    assert.ok(overText.length > 0, 'sopra soglia la richiesta di merge deve entrare nel contesto');
-    assert.match(overText, /cwl_old/, 'la demand deve indicare cwl_old');
+    assert.equal(
+      overText.length,
+      0,
+      `sopra soglia nessuna richiesta deve entrare nel contesto (trovata: ${overText.slice(0, 200)})`,
+    );
+    assert.equal(isGate(overMsgs), 0, 'sopra soglia il gate non deve iniettare il proprio messaggio custom');
+
+    const overRows = logOf(sandbox).slice(logBefore);
+    assert.match(
+      overRows,
+      /OLD NODE due: 2\+ young nodes/,
+      `la condizione di merge deve restare detta nel LOG, col numero di nodi: ${overRows.trim().split('\n').slice(-4).join(' | ')}`,
+    );
+    assert.match(
+      overRows,
+      /LOG ONLY now/,
+      `la riga di log deve dire che il log e' l'unico canale rimasto: ${overRows.trim().split('\n').slice(-4).join(' | ')}`,
+    );
 
     // Ora riavviamo l'estensione nello stesso sandbox MA con budget alto (100_000, trigger 50_000).
     // Lo stato persiste sul disco con i suoi nodi giovani pronti per il merge.
@@ -114,6 +141,7 @@ test('sotto soglia: zero richieste di merge o micro nel contesto (preserva prefi
 
     const demandMsgs = underMsgs.filter((m) => m && m.customType === 'cwl-demand');
     assert.equal(demandMsgs.length, 0, 'nessun custom message cwl-demand deve essere presente sotto soglia');
+    assert.equal(isGate(underMsgs), 0, 'sotto soglia nemmeno il gate deve scrivere nel contesto');
   } finally {
     home.restore();
     sandbox.cleanup();

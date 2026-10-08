@@ -1,17 +1,32 @@
 /**
- * Level B: the gate that asks the AGENT to compact.
+ * Level B: the gate that USED TO ask the AGENT to compact.
  *
- * Why it exists. Deterministic eviction is blind: it cuts by age, not by
- * meaning. The gate is the only channel that can get a semantic decision out of
- * the model.
+ * WHAT IT WAS. Deterministic eviction is blind: it cuts by age, not by meaning. The gate
+ * was the only channel that could get a semantic decision out of the model, and it did it
+ * by appending a custom message to the end of every turn, naming a call to make. The gate
+ * closed by EFFECT and not by echo — an invented confirmation is worth nothing, only the
+ * measured context counts — and it was never a guarantee: the Level A parachute is what
+ * actually holds the context.
  *
- * Key difference from anti-amnesia: there the gate closes when the model
- * ECHOES a `[CARD OK]` token; here it closes by EFFECT, because the thing we
- * want (fewer tokens) is directly measurable. An invented confirmation is worth
- * nothing: only the measured context counts.
+ * WHAT IT IS NOW, and this is the decision these tests pin. MEASURED in a live session:
+ * that message rewrote the tail of the prompt on EVERY turn, it cost tokens in the currency
+ * the session was short of, and it made the agent do work the extension can do by itself.
+ * The operator removed it: "togliere qualsiasi avviso che chiede all'agente di comprimere".
+ * The substitute is the background job scheduled a few lines above the old injection — the
+ * summarizer that writes the micro together with the summary — plus the deterministic
+ * eviction. `st.demandShown` stays false, so `turn_end` never charges the agent for an
+ * attempt it was never given, and the gate never "gives up" on a demand nobody saw.
  *
- * The gate is a PREFERENCE, never a guarantee: if the model ignores it, the
- * Level A parachute is what keeps holding the context.
+ * So the gate still EXISTS and still ARMS: it is the thing that decides WHEN the automatic
+ * compaction fires. What it must never do again is speak.
+ *
+ * Three promises are pinned below:
+ *  1. no `cwl-budget-gate` message ever reaches the context, in the very scenarios that
+ *     used to produce one;
+ *  2. the gate still ARMS (`st.gateArmedTurn`), and when it cannot do anything it says WHY
+ *     in the log — a silence without a reason is the same defect one level down;
+ *  3. the two new mechanisms that replaced it behave: the HYSTERESIS latch and the
+ *     auto-widen of the protected window.
  */
 import assert from 'node:assert/strict';
 import test from 'node:test';
@@ -19,8 +34,8 @@ import * as fs from 'node:fs';
 import * as path from 'node:path';
 import { makeSandbox, bootExtension, withHome, sessionCtx } from './_helpers.mjs';
 
-// No active level: so NOTHING gets compacted deterministically and the context
-// stays above budget, which is the condition in which the gate must act.
+// No active level: so NOTHING gets compacted deterministically and the context stays above
+// budget, which is the condition in which the gate must act.
 const overBudgetConfig = (extra = {}) => ({
   tokenBudget: 100,
   thresholdRatio: 0.5,
@@ -28,7 +43,7 @@ const overBudgetConfig = (extra = {}) => ({
   gate: true,
   levels: { stripReasoning: false, stripBulkOutput: false, stripIntermediate: false, removeEpisode: false },
   showWidget: false,
-  debug: false,
+  debug: true,
   ...extra,
 });
 
@@ -47,6 +62,16 @@ const heavy = (n = 6) =>
   Array.from({ length: n }, (_, i) => ({ role: 'user', content: `message ${i} ${'P'.repeat(400)}` }));
 
 const gateOf = (res) => (res?.messages ?? []).filter((m) => m.customType === 'cwl-budget-gate');
+
+const logOf = (sandbox) => fs.readFileSync(path.join(sandbox.dir, '.pi', 'cwl', 'cwl.log'), 'utf8');
+
+const stateOf = (sandbox) => {
+  const dir = path.join(sandbox.dir, '.pi', 'cwl', 'state');
+  const file = fs.readdirSync(dir).find((f) => f.endsWith('.json'));
+  assert.ok(file, 'the session state was not created');
+  return JSON.parse(fs.readFileSync(path.join(dir, file), 'utf8'));
+};
+
 /** A full round: context hook + end of turn. */
 async function round(hooks, ctx, messages) {
   const res = await hooks.get('context')({ messages }, ctx);
@@ -54,91 +79,225 @@ async function round(hooks, ctx, messages) {
   return res;
 }
 
-test('the gate injects the compact request when the budget does not drop', async () => {
-  const { sandbox, home, hooks, ctx } = await boot(overBudgetConfig());
-  try {
-    const messages = heavy();
-    // Turns 1 and 2: above budget but the gate is not armed yet.
-    const r1 = await round(hooks, ctx, messages);
-    assert.equal(gateOf(r1).length, 0, 'the gate must not ask for anything on the first turn');
-    const r2 = await round(hooks, ctx, messages);
-    assert.equal(gateOf(r2).length, 0, 'the gate must not ask for anything on the second turn');
+/**
+ * The gate arms only when it has something the agent COULD do (`actionable` =
+ * `rangeStartHash !== null || graph.count > 0`). A segment recorded with `delimiter` is the
+ * cheapest way to be in that state, and `protectedTurns: 10` keeps the material protected so
+ * the fixture does not collapse under its own eviction.
+ */
+/** The tokens the LAST floor row measured for a total, and the trigger it was compared to. */
+function measuredTotal(fragment) {
+  const rows = [...fragment.matchAll(/CONTEXT (\d+)t estimated total still above trigger (\d+)t/g)];
+  if (rows.length === 0) return null;
+  const last = rows[rows.length - 1];
+  return { tokens: Number(last[1]), trigger: Number(last[2]) };
+}
 
-    // Turn 3: turn_end armed the gate, so the next hook raises it.
-    const r3 = await round(hooks, ctx, messages);
-    const demands = gateOf(r3);
-    assert.equal(demands.length, 1, 'the gate should have injected the request');
-    const text = String(demands[0].content);
-    assert.match(text, /cwl_compress/, 'the request does not say what to do');
-  } finally { home.restore(); sandbox.cleanup(); }
-});
+/**
+ * The size of the payload that must land INSIDE the hysteresis band. The band is
+ * (trigger, trigger * 1.15] = (50, 57.5] tokens here, and the estimate is not `chars / 4`:
+ * MEASURED, `estimateMessageListTokens` adds roughly 7.75t of per-message overhead, so the
+ * nominal 54t of 216 characters is really about 62t — ABOVE the band, which would test a
+ * second closing instead of the hold. The test verifies where it landed and fails loudly
+ * rather than adjusting itself to whatever the code happens to do.
+ */
+const BAND_CHARS = 180;
 
-test('the request does not pile up: it is replaced, not stacked', async () => {
-  const { sandbox, home, hooks, ctx } = await boot(overBudgetConfig());
+async function armedFixture(extra = {}) {
+  const booted = await boot(overBudgetConfig({ protectedTurns: 10, ...extra }));
+  await booted.tools.get('delimiter').execute(
+    'call-e', { name: 'work-in-progress', type: 'act' }, undefined, undefined, booted.ctx,
+  );
+  return booted;
+}
+
+const shortConversation = () => [
+  { role: 'user', content: `question ${'P'.repeat(400)}` },
+  { role: 'assistant', content: `reply ${'R'.repeat(400)}` },
+  { role: 'user', content: `more ${'Q'.repeat(400)}` },
+];
+
+test('the gate NEVER writes into the context, and it still ARMS and says why it is silent', async () => {
+  const { sandbox, home, hooks, ctx } = await armedFixture();
   try {
-    // The hook's RESPONSE is chained into the NEXT one, as Pi does: it is the
-    // only way to notice a pile-up. Always passing the same starting array, the
-    // previous request would never enter the next round, and a missing filter
-    // would stay invisible.
-    let cur = heavy();
-    for (let i = 0; i < 5; i++) {
-      const res = await hooks.get('context')({ messages: cur }, ctx);
-      cur = res?.messages ?? cur;
-      assert.ok(gateOf(res).length <= 1,
-        `round ${i}: the context holds ${gateOf(res).length} requests together`);
-      await hooks.get('turn_end')({}, ctx);
+    const messages = shortConversation();
+    for (let i = 0; i < 6; i++) {
+      const r = await round(hooks, ctx, messages);
+      assert.equal(
+        gateOf(r).length,
+        0,
+        `turn ${i + 1}: the gate is no longer a channel — nothing may be injected. Messages: ${
+          (r?.messages ?? []).map((m) => m.customType || m.role).join(', ')}`,
+      );
     }
-    assert.equal(gateOf({ messages: cur }).length, 1,
-      'after arming the request must be there, and be a single one');
+
+    // The gate is not dead: it armed. Losing this would mean the automatic compaction
+    // never fires either, which is the real failure hiding behind a silent channel.
+    const st = stateOf(sandbox);
+    assert.ok(
+      st.gateArmedTurn >= 0,
+      `the gate never armed: the channel went silent AND the automatic compaction was never triggered. State: ${JSON.stringify(
+        { gateArmedTurn: st.gateArmedTurn, overBudgetSince: st.overBudgetSince, evicting: st.evicting },
+      )}`,
+    );
+
+    // Nobody is charged for an attempt they were never given. This is what keeps
+    // `GATE_MAX_ATTEMPTS` from counting turns in which the agent was told nothing.
+    // Only the COUNTER is asserted here, not `st.demandShown`: that flag is deliberately
+    // NOT persisted (it is a per-turn thing, spent by the turn that just ended), so reading
+    // it back from the state file would assert on `undefined` — the file is not the truth
+    // about it.
+    assert.equal(st.gateAttempts, 0, 'the attempt counter moved without a demand being shown');
+
+    const log = logOf(sandbox);
+    assert.match(log, /GATE armed at turn \d+/, 'the arming was not recorded in the log');
+
+    // And the silence is EXPLAINED. Either the gate withheld with a reason, or it went
+    // through to the by-design row. Both are acceptable; a bare silence is not.
+    assert.ok(
+      /GATE withheld: .+/.test(log) || /the channel is silent by design/.test(log),
+      `the gate stayed silent without saying why: a silence without a reason is the same defect one level down. Log tail: ${
+        log.trim().split('\n').slice(-5).join(' | ')}`,
+    );
   } finally { home.restore(); sandbox.cleanup(); }
 });
 
-test('the gate closes by EFFECT: context under budget = no request', async () => {
-  const { sandbox, home, hooks, ctx } = await boot(overBudgetConfig());
+test('gate=false: the channel is off and the gate never even arms', async () => {
+  const { sandbox, home, tools, hooks, ctx } = await boot(overBudgetConfig({ gate: false, protectedTurns: 10 }));
   try {
-    const messages = heavy();
-    for (let i = 0; i < 3; i++) await round(hooks, ctx, messages);
-    const active = await round(hooks, ctx, messages);
-    assert.equal(gateOf(active).length, 1, 'the gate should have been active');
-
-    // The context drops below the threshold (trigger = 100 * 0.5 = 50 tokens).
-    const light = [{ role: 'user', content: 'short' }];
-    const under = await hooks.get('context')({ messages: light }, ctx);
-    assert.equal(gateOf(under).length, 0, 'under budget the request must not appear');
-
-    // And the gate is DISARMED: the next hook, again above budget, must not ask
-    // for anything. Without the disarm it would stay armed and ask again
-    // immediately, which is exactly what this test must catch.
-    const after = await hooks.get('context')({ messages: messages }, ctx);
-    assert.equal(gateOf(after).length, 0,
-      'the gate stayed armed after being satisfied');
-  } finally { home.restore(); sandbox.cleanup(); }
-});
-
-test('after N attempts without an answer the gate gives up (with cooldown)', async () => {
-  const { sandbox, home, hooks, ctx } = await boot(overBudgetConfig());
-  try {
-    const messages = heavy();
-    // You reach the active gate, then let the attempts go by.
-    for (let i = 0; i < 3; i++) await round(hooks, ctx, messages);
-    assert.equal(gateOf(await round(hooks, ctx, messages)).length, 1, 'gate not active');
-
-    // GATE_MAX_ATTEMPTS = 3: the limit is exceeded.
-    for (let i = 0; i < 5; i++) await round(hooks, ctx, messages);
-    const r = await round(hooks, ctx, messages);
-    assert.equal(gateOf(r).length, 0,
-      'after the maximum number of attempts the gate must fall silent instead of insisting forever');
-  } finally { home.restore(); sandbox.cleanup(); }
-});
-
-test('with gate=false no request is ever injected', async () => {
-  const { sandbox, home, hooks, ctx } = await boot(overBudgetConfig({ gate: false }));
-  try {
+    // The delimiter is not decoration: `saveState` only writes when the session has USED CWL
+    // (a recorded segment or a leaf), so without it there is no state file to read and the
+    // assertion below would be testing the file system instead of the gate.
+    await tools.get('delimiter').execute('call-g', { name: 'off', type: 'act' }, undefined, undefined, ctx);
     const messages = heavy();
     for (let i = 0; i < 6; i++) {
       const r = await round(hooks, ctx, messages);
       assert.equal(gateOf(r).length, 0, 'gate=false must disable the channel entirely');
     }
+    assert.equal(stateOf(sandbox).gateArmedTurn, -1, 'gate=false must not arm the gate');
+  } finally { home.restore(); sandbox.cleanup(); }
+});
+
+test('under budget the gate stays off and the latch stays open', async () => {
+  // 100_000 with a ratio of 0.5 is a trigger of 50_000: 6 heavy messages are nowhere near it.
+  const { sandbox, home, tools, hooks, ctx } = await boot(overBudgetConfig({ tokenBudget: 100_000 }));
+  try {
+    // See the note in the test above: the state file only exists once CWL has been used.
+    await tools.get('delimiter').execute('call-u', { name: 'under', type: 'act' }, undefined, undefined, ctx);
+    const messages = heavy();
+    for (let i = 0; i < 6; i++) {
+      const r = await round(hooks, ctx, messages);
+      assert.equal(gateOf(r).length, 0, 'under budget nothing may be injected');
+    }
+    const st = stateOf(sandbox);
+    assert.equal(st.gateArmedTurn, -1, 'under budget the gate must not arm');
+    assert.equal(st.evicting, false, 'under budget the latch must be open');
+    assert.equal(st.overBudgetSince, -1, 'under budget the "over since" marker must be cleared');
+  } finally { home.restore(); sandbox.cleanup(); }
+});
+
+test('the latch is HYSTERESIS: inside the band it HOLDS instead of crossing twice', async () => {
+  // Trigger = 100 * 0.5 = 50 tokens; the latch closes above 50 * 1.15 = 57.5 and reopens
+  // below 50. Between the two the previous decision stands — that is the whole point of the
+  // latch, and the reason a turn of stale measurement cannot make it oscillate.
+  const { sandbox, home, tools, hooks, ctx } = await boot(overBudgetConfig());
+  try {
+    // See the note in the tests above: the state file only exists once CWL has been used.
+    await tools.get('delimiter').execute('call-l', { name: 'latch', type: 'act' }, undefined, undefined, ctx);
+    // Way above: it closes.
+    await round(hooks, ctx, heavy());
+    assert.equal(stateOf(sandbox).evicting, true, 'far above the trigger the latch must close');
+
+    // Inside the band, and it was CLOSED: it must stay closed. Where it landed is MEASURED
+    // back from the log, not assumed from the character count.
+    const bandBefore = logOf(sandbox).length;
+    await round(hooks, ctx, [{ role: 'user', content: 'P'.repeat(BAND_CHARS) }]);
+    const inBand = measuredTotal(logOf(sandbox).slice(bandBefore));
+    assert.ok(inBand, 'the payload is not above the trigger at all, so it cannot test the band — raise BAND_CHARS');
+    assert.ok(
+      inBand.tokens > inBand.trigger && inBand.tokens <= inBand.trigger * 1.15,
+      `the fixture is NOT inside the band (${inBand.tokens}t against a trigger of ${inBand.trigger}t, band ends at `
+        + `${inBand.trigger * 1.15}t): it would be testing a second closing instead of the hold. Adjust BAND_CHARS.`,
+    );
+    assert.equal(
+      stateOf(sandbox).evicting,
+      true,
+      'inside the band the latch must HOLD its previous value: closing and reopening inside the band is exactly the '
+        + 'oscillation the latch exists to prevent',
+    );
+
+    // Well below: it reopens.
+    await round(hooks, ctx, [{ role: 'user', content: 'short' }]);
+    assert.equal(stateOf(sandbox).evicting, false, 'below the trigger the latch must reopen');
+
+    // Inside the band again, and it was OPEN: it must stay open. Here the row's ABSENCE is the
+    // evidence, and it is the only evidence that can exist: with the latch held OPEN the hook
+    // takes the "not over budget" path and never reaches `declareFloor`, which is called only
+    // once the latch has closed. That the payload really IS in the band was MEASURED on the
+    // first pass with the same list — the estimate depends on the list and the ratio alone.
+    const bandBefore2 = logOf(sandbox).length;
+    await round(hooks, ctx, [{ role: 'user', content: 'P'.repeat(BAND_CHARS) }]);
+    const rows2 = logOf(sandbox).slice(bandBefore2);
+    assert.equal(
+      measuredTotal(rows2),
+      null,
+      `the payload was treated as OVER the latch although it is inside the band and the latch was open: ${
+        rows2.trim().split('\n').slice(-3).join(' | ')}`,
+    );
+    assert.equal(
+      stateOf(sandbox).evicting,
+      false,
+      'inside the band the latch must HOLD the OPEN value too: it is a latch, not a second threshold',
+    );
+  } finally { home.restore(); sandbox.cleanup(); }
+});
+
+test('the wide window is granted for a SINGLE turn and costs a turn every four', async () => {
+  // The auto-widen is the substitute the operator chose: when the gate fires, the protected
+  // window drops to one turn for THAT turn only, so the eviction has something to bite on.
+  // It cannot fire on the first over-budget turn (`overBudgetSince` is still -1 there), and
+  // it cannot fire twice inside AUTO_WIDEN_EVERY_TURNS turns.
+  const { sandbox, home, hooks, ctx } = await armedFixture();
+  try {
+    // `heavy()`, and not a three-message conversation: `protectedFromIndex` has a DEGENERATE
+    // case (fewer user turns in the list than the window asked for) that returns a share of
+    // the list instead of the configured window, and with only two user turns that share is
+    // the SAME floor for any window — so the widen would be invisible by construction. Six
+    // user turns make the two windows genuinely different (~3 messages protected against 1).
+    const messages = heavy();
+    const seen = [];
+    for (let i = 0; i < 8; i++) {
+      await round(hooks, ctx, messages);
+      const st = stateOf(sandbox);
+      seen.push({ turn: i + 1, widen: st.autoWidenTurn, overSince: st.overBudgetSince });
+    }
+
+    const widened = seen.filter((s) => s.widen >= 0);
+    assert.ok(
+      widened.length >= 1,
+      `the widen never fired in 8 over-budget turns, so the protected window is never opened and the eviction has ` +
+        `nothing to act on: ${JSON.stringify(seen)}`,
+    );
+
+    // NEVER twice inside the cooldown window. `autoWidenTurn` PERSISTS its value into the
+    // turns that FOLLOW the one it fired on, so the fires are the DISTINCT values of that
+    // field: comparing consecutive rows would measure how long the flag stayed set.
+    const fires = [...new Set(widened.map((s) => s.widen))];
+    for (let i = 1; i < fires.length; i++) {
+      assert.ok(
+        fires[i] - fires[i - 1] >= 4,
+        `the widen fired again after ${fires[i] - fires[i - 1]} turn(s): it may only cost a turn every 4. ${JSON.stringify(seen)}`,
+      );
+    }
+
+    // The protected window really shrinks on the widen turn — the flag must not be inert.
+    const rows = [...logOf(sandbox).matchAll(/still above trigger \d+t: (\d+)t in the protected window/g)]
+      .map((m) => Number(m[1]));
+    assert.ok(rows.length >= 3, `the protected-window rows are missing from the log: ${logOf(sandbox).slice(-400)}`);
+    assert.ok(
+      Math.min(...rows) < Math.max(...rows),
+      `the widen changed the flag but not the window: every row measured the same protected quota (${JSON.stringify(rows)})`,
+    );
   } finally { home.restore(); sandbox.cleanup(); }
 });
 
@@ -147,11 +306,9 @@ test('with NOTHING to do the gate does not ask: it must never ask the impossible
   //  - no episode was open (all 4 closed)  -> option 1 unavailable
   //  - cwl_compress_range answered "nothing left to compress"
   //    -> option 2 unavailable
-  // So it asked for something impossible every turn, burning context.
-  //
-  // Here: just TWO messages. Before the window there is not enough material
-  // to form a range (a pair is needed), and no episode is open:
-  // there is really nothing to do.
+  // So it asked for something impossible every turn, burning context. The demand is gone,
+  // but the promise that survives is the one that matters: the gate must still refuse to
+  // trigger work that cannot be done, and must say why it withheld.
   const { sandbox, home, hooks, ctx } = await boot(overBudgetConfig({ protectedTurns: 10 }));
   try {
     const messages = [
@@ -160,91 +317,43 @@ test('with NOTHING to do the gate does not ask: it must never ask the impossible
     ];
     for (let i = 0; i < 8; i++) {
       const r = await round(hooks, ctx, messages);
-      assert.equal(gateOf(r).length, 0,
-        `turn ${i}: the gate asked to compact without having anything to propose`);
+      assert.equal(
+        gateOf(r).length,
+        0,
+        `turn ${i}: the gate asked to compact without having anything to propose`,
+      );
     }
+    // WHAT KEEPS THE IMPOSSIBLE ASK AWAY HERE is not the withholding branch but the ARMING
+    // guard: with no recorded segment and no stored range, `actionable` is false, so the gate
+    // never arms at all — MEASURED on this very fixture: the log says
+    // `RANGE source=hook-input none` and `GATE armed` never appears. Asserting the
+    // `GATE withheld` row HERE would be asserting a branch the code never reaches; the real
+    // guard is the one below, and the withholding branch has its own test further down, with
+    // a segment recorded.
+    //
+    // The probe is the LOG and not the state file, and that is not a shortcut: `saveState`
+    // only writes once the session has USED CWL, and this fixture deliberately has nothing
+    // recorded — so there is no state file here, and an assertion on one would fail on the
+    // file system instead of on the gate.
+    assert.doesNotMatch(
+      logOf(sandbox),
+      /GATE armed/,
+      'the gate armed while it had nothing to propose: it would then ask for something no call can do',
+    );    // A demand that was never DELIVERED is not a failure of the agent.
+    assert.doesNotMatch(logOf(sandbox), /GATE dropped/, 'the gate gave up on a demand it never delivered');
   } finally { home.restore(); sandbox.cleanup(); }
 });
 
-test('with an episode recorded the gate asks, and proposes only the available option', async () => {
-  const { sandbox, home, tools, hooks, ctx } = await boot(overBudgetConfig({ protectedTurns: 10 }));
-  try {
-    // One recorded episode is enough for the gate to arm (CWL is in use).
-    await tools.get('delimiter').execute('call-e', { name: 'work-in-progress', type: 'act' }, undefined, undefined, ctx);
-    const messages = [
-      { role: 'user', content: `question ${'P'.repeat(400)}` },
-      { role: 'assistant', content: `reply ${'R'.repeat(400)}` },
-      { role: 'user', content: `more ${'Q'.repeat(400)}` },
-    ];
-    for (let i = 0; i < 3; i++) await round(hooks, ctx, messages);
-    const r = await round(hooks, ctx, messages);
-    const demands = gateOf(r);
-    assert.equal(demands.length, 1, 'the gate must ask to record a segment');
-    const text = String(demands[0].content);
-    assert.match(text, /delimiter/, 'it must propose recording a segment');
-    assert.doesNotMatch(text, /cwl_compress_range/,
-      'it must not propose an option that is not available (no compressible range)');
-  } finally { home.restore(); sandbox.cleanup(); }
-});
-
-const logOf = (sandbox) => fs.readFileSync(path.join(sandbox.dir, '.pi', 'cwl', 'cwl.log'), 'utf8');
-
-test('when the gate is armed but no segment can be recorded, it withholds and says why', async () => {
-  // The gate arms as soon as CWL is in use, but it must still refuse to ask for the
-  // impossible. With ONE message there is no compressible range at all (`compressibleRange`
-  // needs two ELIGIBLE endpoints, and an empty body is not one). The demand is WITHHELD, and
-  // the reason is written to the log: a silence without a reason is the same defect one
-  // level down.
-  const { sandbox, home, tools, hooks, ctx } = await boot(overBudgetConfig({ protectedTurns: 10, debug: true }));
-  try {
-    await tools.get('delimiter').execute('call-e', { name: 'tiny', type: 'act' }, undefined, undefined, ctx);
-    const messages = [
-      { role: 'user', content: `question ${'P'.repeat(400)}` },
-    ];
-    for (let i = 0; i < 6; i++) {
-      const r = await round(hooks, ctx, messages);
-      assert.equal(gateOf(r).length, 0,
-        `turn ${i}: the gate asked for a segment that cannot exist`);
-    }
-    assert.match(logOf(sandbox), /GATE withheld: no segment can be recorded/,
-      'the withheld demand was not explained in the log');
-    // A demand that was never DELIVERED is not a failure of the agent.
-    assert.doesNotMatch(logOf(sandbox), /GATE dropped/,
-      'the gate gave up on a demand it never delivered');
-  } finally { home.restore(); sandbox.cleanup(); }
-});
-
-test('the demand teaches the SINGLE-CALL contract: no action=start/end', async () => {
-  // The counter-proof, and a guard on the contract: with implicit opens the demand must
-  // NAME the one call that exists. A leftover `action="end"` would send the agent to a
-  // call whose parameter no longer exists.
-  const { sandbox, home, tools, hooks, ctx } = await boot(overBudgetConfig({ protectedTurns: 10 }));
-  try {
-    await tools.get('delimiter').execute('call-e', { name: 'work', type: 'act' }, undefined, undefined, ctx);
-    const messages = [
-      { role: 'user', content: `question ${'P'.repeat(400)}` },
-      { role: 'assistant', content: `reply ${'R'.repeat(400)}` },
-      { role: 'user', content: `more work ${'Q'.repeat(400)}` },
-    ];
-    for (let i = 0; i < 3; i++) await round(hooks, ctx, messages);
-    const demands = gateOf(await round(hooks, ctx, messages));
-    assert.equal(demands.length, 1, 'the material is there: the gate must ask');
-    const text = String(demands[0].content);
-    assert.match(text, /delimiter\(name=/, 'the demand must name the single-call contract');
-    assert.doesNotMatch(text, /action=/, 'the opening/closing action no longer exists');
-  } finally { home.restore(); sandbox.cleanup(); }
-});
-
-test('the gate withholds when the list is LONG but nothing in it is eligible', async () => {
-  // The case the test above does NOT cover, and the one that actually happened. There, ONE
-  // message made `list.length >= 2` false, so the old predicate agreed by accident. Here the
-  // list is LONG and the gate is armed, but only one message is ELIGIBLE: an empty body hashes
-  // to sha256("") and is not a valid endpoint, so `first === last` and `compressibleRange`
-  // returns null.
+test('the gate withholds when no background job can start and nothing is compressible', async () => {
+  // The case the test above does NOT cover, and the one that actually happened. There, a
+  // SHORT list made the old predicate agree by accident. Here the list is LONG and the gate
+  // is armed, but only one message is ELIGIBLE: an empty body hashes to sha256("") and is not
+  // a valid endpoint, so `first === last` and `compressibleRange` returns null.
   //
   // The old guard was `canClose = list.length >= 2`, true for ANY real conversation, so the
-  // demand fired on every turn asking for a `delimiter` that frees nothing — the agent paid
-  // those tokens every time. The honest predicate is the one /cwl_save already used.
+  // demand fired on every turn asking for a `delimiter` that frees nothing. The honest
+  // predicate is the scan `/cwl_save` already used, and with the channel silent what is left
+  // to verify is that the gate still REFUSES to burn a turn on it.
   const { sandbox, home, tools, hooks, ctx } = await boot(overBudgetConfig());
   try {
     await tools.get('delimiter').execute('call-w', { name: 'work', type: 'act' }, undefined, undefined, ctx);
@@ -255,8 +364,19 @@ test('the gate withholds when the list is LONG but nothing in it is eligible', a
     assert.equal(messages.length >= 2, true, 'the OLD predicate would have called this closable');
     for (let i = 0; i < 4; i++) {
       const r = await round(hooks, ctx, messages);
-      assert.equal(gateOf(r).length, 0,
-        `turn ${i + 1}: nothing is eligible, so no call can free anything — the gate must stay silent`);
+      assert.equal(
+        gateOf(r).length,
+        0,
+        `turn ${i + 1}: nothing is eligible, so no call can free anything — the gate must stay silent`,
+      );
     }
+    // Here the segment IS recorded, so the gate arms and the withholding branch IS reached:
+    // the silence must come with a reason attached, or the next session pays the same
+    // diagnosis again from scratch.
+    assert.match(
+      logOf(sandbox),
+      /GATE withheld: .+/,
+      `the gate went silent without saying why: ${logOf(sandbox).trim().split('\n').slice(-5).join(' | ')}`,
+    );
   } finally { home.restore(); sandbox.cleanup(); }
 });

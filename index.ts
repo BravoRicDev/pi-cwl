@@ -1530,6 +1530,20 @@ interface CwlState {
    */
   demandShown: boolean;
   /**
+   * The eviction LATCH: closed above `trigger * HYSTERESIS_RATIO`, opened below `trigger`, and
+   * holding its state in between. It exists because the provider cache is a PREFIX cache: with
+   * a single threshold the context oscillates around it, and every crossing buys a cache
+   * invalidation to free a handful of tokens. See `latchEviction`.
+   */
+  evicting: boolean;
+  /**
+   * The turn in which the automatic widening last fired. It stays active for the WHOLE turn
+   * (a tool loop calls the context hook many times per request, and a flag that lasted one
+   * CALL would be overwritten by the next call's narrower range) and may fire again only
+   * `AUTO_WIDEN_EVERY_TURNS` turns later; -1 = never, so the first one can fire at once.
+   */
+  autoWidenTurn: number;
+  /**
    * Why the demand was withheld the last time it was impossible, or '' when the
    * last check found something doable. Not bookkeeping for its own sake: the
    * silence of a withheld demand proved nothing once, and a diagnosis died on it.
@@ -1667,6 +1681,8 @@ function newState(): CwlState {
     lastGateViolationTurn: -1,
     gateWithheld: '',
     demandShown: false,
+    evicting: false,
+    autoWidenTurn: -1,
     rangeStartHash: null,
     rangeEndHash: null,
     rangeStartTurn: -1,
@@ -1809,6 +1825,9 @@ interface PersistedState {
   lastGateViolationTurn?: number;
   /** Optional on load: a state written before this field existed has none. */
   gateWithheld?: string;
+  /** Optional on load: the latch and the widening turn, absent in an older state file. */
+  evicting?: boolean;
+  autoWidenTurn?: number;
   /** Optional on load: a state written before this field existed has none. */
   looseFrom?: number;
   charTokenRatio?: number;
@@ -1962,6 +1981,8 @@ function saveState(key: string, st: CwlState, opts?: { ownerPid?: number }): voi
       gateAttempts: st.gateAttempts,
       lastGateViolationTurn: st.lastGateViolationTurn,
       gateWithheld: st.gateWithheld,
+      evicting: st.evicting,
+      autoWidenTurn: st.autoWidenTurn,
       charTokenRatio: st.charTokenRatio,
       systemOverheadTokens: st.systemOverheadTokens,
       providerContextTokens: st.providerContextTokens,
@@ -2036,6 +2057,10 @@ function loadPersistedState(key: string): CwlState | null {
     st.gateAttempts = typeof data.gateAttempts === 'number' ? data.gateAttempts : 0;
     st.lastGateViolationTurn = typeof data.lastGateViolationTurn === 'number' ? data.lastGateViolationTurn : -1;
     st.gateWithheld = typeof data.gateWithheld === 'string' ? data.gateWithheld : '';
+    // `=== true` and not a truthiness test: an older state file has no field at all, and a
+    // latch that started CLOSED would evict on the first turn of a resumed session.
+    st.evicting = data.evicting === true;
+    st.autoWidenTurn = typeof data.autoWidenTurn === 'number' ? data.autoWidenTurn : -1;
     st.backgroundFallbackAfterTurn = typeof data.backgroundFallbackAfterTurn === 'number'
       ? data.backgroundFallbackAfterTurn
       : -1;
@@ -2158,6 +2183,78 @@ const GATE_AFTER_TURNS = 2;
 const GATE_MAX_ATTEMPTS = 3;
 /** Turns of silence after a failed demand, so it does not nag forever. */
 const GATE_COOLDOWN_TURNS = 5;
+
+/**
+ * The two thresholds of the eviction latch, and why there are two.
+ *
+ * The provider cache is a PREFIX cache: an eviction rewrites the injected blocks, so the next
+ * request pays a WRITE where it used to pay a READ. With ONE threshold the context oscillates
+ * around it — a compaction frees room, the next turns spend it, the extension evicts again —
+ * and every crossing buys a cache invalidation to free a handful of tokens. MEASURED as the
+ * operator's own complaint: "vedo che rompono la cache".
+ *
+ * So the thresholds are separated: the latch CLOSES above `trigger * HYSTERESIS_RATIO` and
+ * only OPENS again below `trigger`. Between them nothing happens, which is the point — the
+ * band is the price of not thrashing.
+ */
+const HYSTERESIS_RATIO = 1.15;
+
+/**
+ * The automatic widening: how often it may fire, and how far it widens.
+ *
+ * `protectedTurns` bounds the compression window — the last N user turns are inviolable — and
+ * widening it is the ONLY lever that offers the background summarizer more material. It used
+ * to be pulled by the AGENT: the extension demanded a `delimiter` (zero protected turns) and
+ * the agent paid a turn to answer. Zero is too far anyway — it takes away the ground the agent
+ * is standing on — so the extension now pulls it ITSELF, to ONE protected turn, at most once
+ * every `AUTO_WIDEN_EVERY_TURNS` turns, and only while the latch is closed.
+ */
+const AUTO_WIDEN_EVERY_TURNS = 4;
+const AUTO_WIDEN_PROTECTED_TURNS = 1;
+
+/**
+ * The number the budget gate decides on — the MEASURED one whenever the provider gave one.
+ *
+ * The gate used to decide on `estimateMessageListTokens(...)`, a character estimate, while
+ * `st.providerContextTokens` held the figure the provider actually reported. Two numbers for
+ * one decision: when the estimate drifted, the gate fired late or early, and the number that
+ * decided was not the number on screen.
+ *
+ * `providerContextTokens` counts the WHOLE context — system prompt and tool schemas included —
+ * and those tokens are exactly what CWL can never evict. They are subtracted, which is the
+ * decision the operator already took (the budget must govern ONLY what CWL has discretion
+ * over) and the reason `systemOverheadTokens` exists at all. Without that subtraction the gate
+ * would demand room it cannot produce.
+ *
+ * `systemOverheadTokens` is required to be non-zero for the measured path: it is the only
+ * calibrated estimate of the fixed part, and subtracting an unknown would silently turn this
+ * into "the whole provider context", which is NOT the decision above.
+ *
+ * One turn behind is honest, not hidden: the provider reports usage WITH the request, so the
+ * freshest measurement at the top of the hook is the previous turn's. The latch absorbs the
+ * lag — a threshold crossing is what moves it, and one turn of stale input cannot cross twice.
+ */
+function governingHistoryTokens(
+  st: CwlState,
+  messages: readonly unknown[],
+): { tokens: number; source: 'measured' | 'estimated' } {
+  if (st.providerContextTokens > 0 && st.systemOverheadTokens > 0) {
+    const measured = st.providerContextTokens - st.systemOverheadTokens;
+    if (measured > 0) return { tokens: measured, source: 'measured' };
+  }
+  return { tokens: estimateMessageListTokens(messages, st.charTokenRatio), source: 'estimated' };
+}
+
+/**
+ * The eviction latch: CLOSES above `trigger * HYSTERESIS_RATIO`, OPENS below `trigger`, and
+ * holds its state in between. It returns the decision so that no caller can read the latch
+ * without having just updated it.
+ */
+function latchEviction(st: CwlState, tokens: number, trigger: number): boolean {
+  if (tokens < trigger) st.evicting = false;
+  else if (tokens > trigger * HYSTERESIS_RATIO) st.evicting = true;
+  return st.evicting;
+}
 
 /**
  * Reduces a message according to the requested stripping level.
@@ -7174,9 +7271,37 @@ function indexNodeViews(st: CwlState): IndexNodeView[] {
     // still evicted, invalidating the cache to free room nobody had asked for.
     // Measured against the same estimate the hook takes one line below, so the gate
     // and the decision it guards cannot disagree.
-    const roomNeeded = estimateMessageListTokens(messages, st.charTokenRatio)
-      > cf.tokenBudget * cf.thresholdRatio;
-    if (roomNeeded) {
+    // THE BUDGET DECISION, taken ONCE and taken here. `trigger`, the number compared against
+    // it and the latch all live together: a decision read in two places from two different
+    // formulas is how the gate and the eviction it guards came to disagree about one turn.
+    const trigger = cf.tokenBudget * cf.thresholdRatio;
+    const governing = governingHistoryTokens(st, messages);
+    const overBudget = latchEviction(st, governing.tokens, trigger);
+    // THE AUTOMATIC WIDENING, for the WHOLE turn. Widening the compression window is the only
+    // lever that offers the background summarizer more material, and it used to be pulled by
+    // the agent — the extension demanded a `delimiter` and the agent paid a turn to answer.
+    // The extension pulls it itself now, to ONE protected turn, at most once every
+    // `AUTO_WIDEN_EVERY_TURNS`. Keyed on the TURN and not on the call: this hook runs many
+    // times per request in a tool loop, and a one-call flag would be overwritten by the next
+    // call's narrower range, so the wider window the summarizer was promised would never
+    // reach `storeRange`.
+    // `st.overBudgetSince >= 0` is the second condition and it is deliberate: the widening
+    // starts from the SECOND consecutive turn over the latch, not from the turn that merely
+    // notices the budget. Narrowing the window charges a price — turns 2 and 3 back become
+    // evictable — and on the noticing turn there is no job yet to feed with the wider range,
+    // so the price would buy nothing. It is also what keeps the floor row honest: on a turn
+    // where nothing is widened it reports the CONFIGURED window, not a guess.
+    if (overBudget && st.overBudgetSince >= 0 && cf.protectedTurns > AUTO_WIDEN_PROTECTED_TURNS
+      && st.autoWidenTurn !== st.turns
+      && (st.autoWidenTurn < 0 || st.turns - st.autoWidenTurn >= AUTO_WIDEN_EVERY_TURNS)) {
+      st.autoWidenTurn = st.turns;
+      debugLog(cf, `AUTO-WIDEN turn ${st.turns}: the protected window narrows to ${AUTO_WIDEN_PROTECTED_TURNS} turn(s) for this turn, so the background summarizer is offered more material`);
+    }
+    const widenActive = st.autoWidenTurn === st.turns;
+    // The ONE window this hook uses: the stored range, the safety floor and the eviction pass
+    // all read it, so they cannot disagree about what is protected.
+    const protTurns = st.forceAllNext ? 0 : (widenActive ? AUTO_WIDEN_PROTECTED_TURNS : cf.protectedTurns);
+    if (overBudget) {
       applyReadyBackgroundSummary(key, st, cf, originalMessages);
       applyReadyBackgroundPitSummary(key, st, cf);
     }
@@ -7282,8 +7407,8 @@ function indexNodeViews(st: CwlState): IndexNodeView[] {
     // 1. Measure the real context
     let currentTokens = estimateMessageListTokens(messages, st.charTokenRatio);
     st.lastMeasuredTokens = currentTokens + st.systemOverheadTokens;
-
-    const trigger = cf.tokenBudget * cf.thresholdRatio;
+    // `trigger` is NOT recomputed here: it is one number for the whole turn, resolved at the
+    // top of the hook together with the latch that compares against it.
 
     /**
      * Says OUT LOUD why the context is still above the trigger, with four numbers
@@ -7304,7 +7429,7 @@ function indexNodeViews(st: CwlState): IndexNodeView[] {
      */
     const declareFloor = (list: AgentMessage[], tokens: number): void => {
       if (tokens <= trigger) return;
-      const floor = protectedFromIndex(list, cf.protectedTurns);
+      const floor = protectedFromIndex(list, protTurns);
       // The spans recorded where their content ended up, in the list they built
       // (see applySpans.insideOut). Re-resolving is impossible here: this list has
       // already been through the spans, so a span whose END anchor was an
@@ -7357,7 +7482,7 @@ function indexNodeViews(st: CwlState): IndexNodeView[] {
       // span), so it is subtracted from it: the four numbers must partition the
       // context EXACTLY, and the test checks that identity.
       const free = Math.min(st.rangeTokens, outside);
-      debugLog(cf, `CONTEXT ${tokens}t estimated total still above trigger ${Math.round(trigger)}t: ${protectedTokens}t in the protected window (last ${cf.protectedTurns} user turns), ${spanTokens}t inside the spans (${countedFrom}), ${free}t freely compressible, ${outside - free}t elsewhere, ${st.systemOverheadTokens}t fixed overhead`);
+      debugLog(cf, `CONTEXT ${tokens}t estimated total still above trigger ${Math.round(trigger)}t: ${protectedTokens}t in the protected window (last ${protTurns} user turns${protTurns !== cf.protectedTurns ? ` — AUTO-WIDENED down from ${cf.protectedTurns}` : ''}), ${spanTokens}t inside the spans (${countedFrom}), ${free}t freely compressible, ${outside - free}t elsewhere, ${st.systemOverheadTokens}t fixed overhead`);
       // The three parts sum to `spanTokens` BY CONSTRUCTION, and the test checks
       // that against the row above: two lines, one number, and a sum that cannot
       // be talked around. Without this, "48.623t inside the spans" is a number
@@ -7401,7 +7526,13 @@ function indexNodeViews(st: CwlState): IndexNodeView[] {
       const after = msgTokens + st.systemOverheadTokens;
       st.lastMeasuredTokens = after;
       persistIfUsed();
-      if (msgTokens <= trigger) {
+      // THE LATCH, read on THIS list: by now the provider's measurement for this turn has been
+      // refreshed above, so `governingHistoryTokens` returns the FRESH number here where the
+      // top of the hook could only have the last one the provider reported. The two readings
+      // can differ by a turn — and that is exactly why the decision is a LATCH and not two
+      // bare thresholds: one turn of stale input cannot make it cross twice.
+      const now = governingHistoryTokens(st, list);
+      if (!latchEviction(st, now.tokens, trigger)) {
         // The budget governs history CWL can act on. Fixed system/tool overhead
         // may make total provider usage larger, but cannot justify a futile demand.
         st.overBudgetSince = -1;
@@ -7482,26 +7613,15 @@ function indexNodeViews(st: CwlState): IndexNodeView[] {
         return rememberOutgoing(list);
       }
       st.gateWithheld = '';
-      // The demand is DELIVERED now, and that is the only thing that makes a turn
-      // count as an attempt: `turn_end` reads this flag. Without it the gate charged
-      // the agent for turns in which the request was never shown — measured: it gave
-      // up with "unanswered for 3 turns" right after a withheld turn.
-      st.demandShown = true;
-      // SAFETY: Pi accepts the custom role in the context hook although the
-      // AgentMessage union does not declare it; the extra keys are its contract.
-      return rememberOutgoing([...list, {
-          role: 'custom',
-          customType: GATE_CUSTOM_TYPE,
-          content: t('gateDemand')(
-            after.toLocaleString(),
-            Math.round(trigger).toLocaleString(),
-            cf.protectedTurns,
-            canClose,
-            canCompress,
-          ),
-          display: false,
-          timestamp: Date.now(),
-        } as unknown as AgentMessage]);
+      // THE CHANNEL IS SILENT NOW, and that is the change, not an oversight: the extension no
+      // longer asks the agent to compress. What stood here was a custom message at the END of
+      // every turn naming a call to make: it rewrote the tail of the prompt on every turn, it
+      // cost tokens in the currency the session was short of, and it made the agent do work
+      // the extension can do by itself — the background summarizer scheduled a few lines
+      // above, which writes the micro as well as the summary. `st.demandShown` stays false,
+      // so `turn_end` never charges the agent for an attempt it was never given.
+      debugLog(cf, `GATE above the latch and no background job started (canClose=${canClose}, canCompress=${canCompress}) — no demand is injected: the channel is silent by design`);
+      return rememberOutgoing(list);
     };
 
     // Episodes the eviction can no longer locate, said out loud instead of
@@ -7565,21 +7685,26 @@ function indexNodeViews(st: CwlState): IndexNodeView[] {
     // sotto soglia, vedo che rompono la cache. Devono agire solo quando la soglia viene superata
     // per dare più respiro ed evitare overflow non hanno nessun beneficio prima di quel momento,
     // invalidano la cache per niente."
-    // Sotto soglia (!roomNeeded):
+    // Con il latch questo diventa: finché `overBudget` e' falso (sotto il trigger, oppure
+    // dentro la banda di isteresi con il latch ancora aperto) valgono
     //  - zero background summaries schedulati (non sprecare chiamate LLM in background);
     //  - zero richieste di merge dell'indice (indexDue): un merge riscriverebbe l'header del pozzo
     //    invalidando la prefix cache del provider per spazio che nessuno ha chiesto;
-    //  - zero richieste di topic (topicDue) e di micro (leavesDue);
-    //  - zero messaggi custom di demand appesi alla fine del contesto, così il prompt rimane
-    //    stabile turno dopo turno preservando la cache di prefisso ed evitando loop.
+    //  - zero richieste di topic (topicDue) e di micro (leavesDue).
+    // E, SOPRA soglia, quei tre demand NON entrano comunque nel contesto: la loro voce e' stata
+    // tolta per decisione dell'operatore ("togliere qualsiasi avviso che chiede all'agente di
+    // comprimere"). I `debugLog` qui sotto restano: il log e' lo strumento dell'operatore e non
+    // costa contesto. Al posto loro agiscono due meccanismi automatici — la summarizzazione in
+    // background (che scrive il MICRO insieme alla sintesi: e' cosi' che una foglia nasce gia'
+    // pronta per un nodo) e il pozzo in background (che accorpa nodi interi con una sintesi sua).
     const inPit = containedNodes(st, st.oldNode?.nodes ?? []);
     const young = st.nodes.filter((nd) => !inPit.has(nd.id)).length;
     const pitAutoFallback = st.backgroundPitFallbackAfterTurn >= 0 && st.turns >= st.backgroundPitFallbackAfterTurn;
-    const pitAutoRequest = roomNeeded ? pitSnapshot(st, cf) : null;
+    const pitAutoRequest = overBudget ? pitSnapshot(st, cf) : null;
     const pitJobStarted = pitAutoRequest && !pitAutoFallback
       ? scheduleBackgroundPitSummary(key, st, cf, pitAutoRequest, ctx)
       : false;
-    const mergeRequest = roomNeeded && plan.due > 0 && !pitJobStarted ? t('indexDue')(young, cf.mergeNodesAt) : null;
+    const mergeRequest = overBudget && plan.due > 0 && !pitJobStarted ? t('indexDue')(young, cf.mergeNodesAt) : null;
     // The topic invitation exists because the INDEX ITSELF closes the window it depends on:
     // a leaf inside a node can never be moved again, so a topic that is not born while its
     // leaves are still in the buffer is lost for good. Until now the agent learned the size
@@ -7593,11 +7718,11 @@ function indexNodeViews(st: CwlState): IndexNodeView[] {
     const topicNeedChars = Math.max(Math.round(cf.mergeMinRatio * MERGE_SYNTHESIS_CHARS), cf.mergeMinChars);
     // The invitation fires ONLY when room is needed AND the guard would pass.
     const topicRequest =
-      roomNeeded && buffer && !buffer.name && buffer.leaves.length > cf.topicInviteAt && bufferMicroChars >= topicNeedChars
+      overBudget && buffer && !buffer.name && buffer.leaves.length > cf.topicInviteAt && bufferMicroChars >= topicNeedChars
         ? t('topicDue')(buffer.id, buffer.leaves.length, bufferMicroChars, topicNeedChars)
         : null;
     if (topicRequest && buffer) {
-      debugLog(cf, `TOPIC due: the buffer ${buffer.id} holds ${buffer.leaves.length} leaf/leaves (${bufferMicroChars} chars of micros, need ${topicNeedChars}) — asked in the context`);
+      debugLog(cf, `TOPIC due: the buffer ${buffer.id} holds ${buffer.leaves.length} leaf/leaves (${bufferMicroChars} chars of micros, need ${topicNeedChars}) — LOG ONLY now: the invitation left the context, so nothing is lost by having no agent turn to answer it`);
     }
     // The index shape belongs in the TUI, NOT in the context: a widget is UI, it costs no
     // tokens and it cannot nudge the agent. `showWidget: false` turns it off, and the
@@ -7611,18 +7736,24 @@ function indexNodeViews(st: CwlState): IndexNodeView[] {
       }
     }
     if (mergeRequest) {
-      debugLog(cf, `OLD NODE due: ${cf.mergeNodesAt}+ young nodes — the oldest ones should merge: write the merge summary with cwl_old`);
+      debugLog(cf, `OLD NODE due: ${cf.mergeNodesAt}+ young nodes — the oldest ones are due to merge. LOG ONLY now: the merge is done by the background pit, which writes its own synthesis and needs no turn from the agent`);
     }
     const microRequest =
-      roomNeeded && plan.waiting > 0
+      overBudget && plan.waiting > 0
         ? t('leavesDue')(plan.waiting, plan.waitingIds.slice(0, MICRO_DEMAND_IDS).join(' '))
         : null;
     if (microRequest) {
-      debugLog(cf, `MICRO due: ${plan.waiting} leaf/leaves waiting for a micro — asked in the context (${Math.min(plan.waiting, MICRO_DEMAND_IDS)} id(s) named)`);
+      debugLog(cf, `MICRO due: ${plan.waiting} leaf/leaves waiting for a micro — LOG ONLY now: the demand left the context, the background summarizer writes the micro together with the summary (${Math.min(plan.waiting, MICRO_DEMAND_IDS)} id(s) named here)`);
     }
     const saveRequest = st.forceAllNext ? t('cmdSaveDemand')(st.forceAllNote) : null;
-    const demand =
-      [saveRequest, microRequest, mergeRequest, topicRequest].filter((d): d is string => d !== null).join('\n\n') || null;
+    // ONE demand survives, and it is not a demand: `saveRequest` is the answer to a command the
+    // OPERATOR typed (/cwl_save), so it is an instruction the session asked for and not a nudge.
+    // `leavesDue`, `indexDue` and `topicDue` no longer enter the context at all. Their work is
+    // done without the agent: the background summarizer writes the MICRO together with the
+    // summary (that is how a leaf is born ready for a node), and the background pit merges
+    // whole nodes with a synthesis of its own. A demand that has to be repeated every turn is
+    // paid every turn, in the currency the session is short of.
+    const demand = saveRequest;
 
     if (st.spans.length > 0 || demand !== null || Boolean(st.importedFrom)) {
       // An inherited memory announces itself, and the announcement is an INJECTION at the END
@@ -7707,7 +7838,6 @@ function indexNodeViews(st: CwlState): IndexNodeView[] {
         // Recomputed HERE, on the ORIGINAL list: the span endpoints must still
         // resolve, or `covered` would be empty and the same region would be
         // offered again.
-        const protTurns = st.forceAllNext ? 0 : cf.protectedTurns;
         const nextRange = compressibleRange(messages, st.spans, protTurns, st.charTokenRatio);
         storeRange(st, cf, nextRange, messages);
         rangeStoredBySpans = true;
@@ -7748,6 +7878,13 @@ function indexNodeViews(st: CwlState): IndexNodeView[] {
 
     st.lastMeasuredTokens = currentTokens + st.systemOverheadTokens;
     const totalContext = st.lastMeasuredTokens;
+    // The latch, read on the list the EVICTION would actually act on. It governs the
+    // EVICTION PASS and NOTHING ELSE here: the range offered to the agent is computed above
+    // the TRIGGER, latch or no latch, because the agent decides when to compress and the
+    // extension estimate does not. Confusing the two is how a context sitting between
+    // `trigger` and `trigger * HYSTERESIS_RATIO` stopped being compressible at all —
+    // `cwl_compress_range` answered "nothing-to-compress" because no range had been stored.
+    const fresh = latchEviction(st, governingHistoryTokens(st, messages).tokens, trigger);
     if (currentTokens <= trigger) {
       if (st.forceAllNext && !rangeStoredBySpans) {
         const range = compressibleRange(messages, st.spans, 0, st.charTokenRatio);
@@ -7773,9 +7910,9 @@ function indexNodeViews(st: CwlState): IndexNodeView[] {
       return result;
     }
 
-    const protTurns = st.forceAllNext ? 0 : cf.protectedTurns;
-    // The last `protectedTurns` user turns are inviolable: compaction must never
-    // destroy the context the agent is working on.
+    // `protTurns` comes from the top of the hook: the last `protectedTurns` user turns are
+    // inviolable — compaction must never destroy the context the agent is working on — and the
+    // automatic widening narrows that window for ONE turn when the summarizer needs more.
     const safetyFloor = protectedFromIndex(messages, protTurns);
 
     // Addresses of the largest range the agent may ask to compress. Recomputed
@@ -7788,6 +7925,14 @@ function indexNodeViews(st: CwlState): IndexNodeView[] {
     // No episodes at all: with no episodes, we do not perform global reasoning
     // strips on live messages because modifying historical turns destroys the
     // provider's prefix cache across the entire conversation.
+    // THE LATCH GOVERNS THE AUTOMATIC PASS. Between `trigger` and `trigger * HYSTERESIS_RATIO`
+    // an OPEN latch stays open and a CLOSED one stays closed: that band is the whole point of
+    // the hysteresis — the context stops buying a cache invalidation at every crossing.
+    if (!fresh) {
+      debugLog(cf, `CONTEXT ${currentTokens}t over trigger ${Math.round(trigger)}t but inside the hysteresis band (it closes above ~${Math.round(trigger * HYSTERESIS_RATIO)}t): the range is offered to the agent, the eviction pass stays off`);
+      return finish(messages);
+    }
+
     if (g.isEmpty) {
       debugLog(cf, 'CONTEXT above threshold but no episode: context untouched (reasoning fallback disabled for cache preservation)');
       return finish(messages);

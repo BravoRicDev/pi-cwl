@@ -99,7 +99,10 @@ const demandText = (messages) =>
     .map((m) => String(m.content))
     .join('\n');
 
-test('past 18 leaves the buffer is invited to open a topic, with every number it needs', async () => {
+// Not exported by `_helpers.mjs`: every test that reads the log defines it in house.
+const logOf = (sandbox) => fs.readFileSync(path.join(sandbox.dir, '.pi', 'cwl', 'cwl.log'), 'utf8');
+
+test('past 18 leaves the buffer meets the topic condition, and it is said in the log only', async () => {
   const { sandbox, home, tools, hooks, ctx } = await boot();
   try {
     await fillBuffer(hooks, ctx, tools, 20, 20);
@@ -119,29 +122,38 @@ test('past 18 leaves the buffer is invited to open a topic, with every number it
       'the buffer must be the last node and the only one, otherwise the leaves are not movable',
     );
 
+    // THE INVITATION LEFT THE CONTEXT. The CONDITION did not, and neither did its numbers:
+    // they are in the LOG, which is now the only channel. The state assertions above are what
+    // keep this test honest — the window the topic needs really is open, and the leaves are
+    // still movable.
     const text = demandText(out);
-    assert.ok(
-      text.includes('[CWL TOPIC]'),
-      `no topic invitation in the context. The index closes the window the topic needs, and the agent ` +
-        `learns it only by being refused. Messages: ${out.map((m) => m.customType || m.role).join(', ')}`,
+    assert.equal(
+      text.length,
+      0,
+      `no topic invitation may enter the context any more: the operator removed every request `
+        + `that asks the agent to compress. Messages: ${out.map((m) => m.customType || m.role).join(', ')}`,
     );
-    assert.ok(text.includes('cwl_group'), `the invitation does not name the tool to call: ${text.slice(0, 240)}`);
+
+    const rows = logOf(sandbox);
     assert.ok(
-      text.includes(buffer.id),
-      `the invitation does not name the node ${buffer.id}: the agent has to guess which one. Text: ${text.slice(0, 240)}`,
+      rows.includes(`TOPIC due: the buffer ${buffer.id} holds 19 leaf/leaves`),
+      `the topic condition must still be stated in the LOG, naming the buffer and its leaf count: ${rows.trim().split('\n').slice(-4).join(' | ')}`,
     );
-    assert.ok(
-      text.includes('19'),
-      `the invitation does not say how many leaves the buffer holds: ${text.slice(0, 240)}`,
+    assert.match(
+      rows,
+      /TOPIC due:.*1900 characters|TOPIC due:.*380 chars/,
+      `the log row must carry how many characters of micro the leaves hold (19 x 20 = 380): ${rows.trim().split('\n').slice(-4).join(' | ')}`,
     );
-    // The two numbers that make it actionable instead of a wish.
-    assert.ok(
-      text.includes('380'),
-      `the invitation does not say how many characters of micro the leaves hold (19 x 20 = 380): ${text.slice(0, 240)}`,
+    assert.match(
+      rows,
+      /need 100/,
+      `the log row must carry how many characters the guard wants (mergeMinChars = 100), or nobody can see whether `
+        + `the group would pass: ${rows.trim().split('\n').slice(-4).join(' | ')}`,
     );
-    assert.ok(
-      text.includes('100'),
-      `the invitation does not say how many characters the guard wants (mergeMinChars = 100 here): ${text.slice(0, 240)}`,
+    assert.match(
+      rows,
+      /LOG ONLY now/,
+      `the log row must say that the log is the only channel left: ${rows.trim().split('\n').slice(-4).join(' | ')}`,
     );
   } finally {
     home.restore();
@@ -152,11 +164,18 @@ test('exactly 18 leaves: the invitation has NOT fired yet', async () => {
   const { sandbox, home, tools, hooks, ctx } = await boot();
   try {
     await fillBuffer(hooks, ctx, tools, 19, 20);
-    const text = demandText(await hook(hooks, ctx, conversation(1, 30)));
+    await hook(hooks, ctx, conversation(1, 30));
     assert.equal(stateOf(sandbox).nodes[0].leaves.length, 18, 'eighteen leaves were expected in the buffer');
+    // The demand can no longer be the probe: it never appears. The LOG is the probe now, and
+    // it is a STRICTER one — it would catch a condition computed anyway and merely not sent.
     assert.ok(
-      !text.includes('[CWL TOPIC]'),
-      `the invitation fired at 18 leaves, one turn early: the threshold is "past 18", so 19. Text: ${text.slice(0, 240)}`,
+      !logOf(sandbox).includes('TOPIC due'),
+      'the topic condition fired at 18 leaves, one turn early: the threshold is "past 18", so 19',
+    );
+    assert.equal(
+      demandText(await hook(hooks, ctx, conversation(1, 30))).length,
+      0,
+      'no demand may ever enter the context',
     );
   } finally {
     home.restore();
@@ -169,12 +188,12 @@ test('nineteen leaves but too few characters: no invitation, the guard would ref
   const { sandbox, home, tools, hooks, ctx } = await boot({ mergeMinChars: 100_000 });
   try {
     await fillBuffer(hooks, ctx, tools, 20, 20);
-    const text = demandText(await hook(hooks, ctx, conversation(1, 30)));
+    await hook(hooks, ctx, conversation(1, 30));
     assert.equal(stateOf(sandbox).nodes[0].leaves.length, 19, 'nineteen leaves were expected in the buffer');
     assert.ok(
-      !text.includes('[CWL TOPIC]'),
-      `the invitation fired although the group would be refused (380 chars of micro against a floor of ` +
-        `100,000): an invitation that cannot be acted on teaches nothing. Text: ${text.slice(0, 240)}`,
+      !logOf(sandbox).includes('TOPIC due'),
+      'the topic condition fired although the group would be refused (380 chars of micro against a floor of '
+        + '100,000): a condition nobody can act on teaches nothing',
     );
   } finally {
     home.restore();
