@@ -1005,6 +1005,17 @@ interface CwlConfig {
    */
   autoDelimiterTurns: number;
   /**
+   * LA COMPATTAZIONE CONTINUA: quanti token di materiale SPROTETTO servono perché la sintesi in
+   * background venga offerta. `0` la spegne.
+   *
+   * Decisione dell'operatore: "compattazione in background man mano che vengono sprotetti i
+   * turni". La molla e' il PAVIMENTO della finestra protetta che avanza, non il budget: sotto
+   * soglia le eviction restano ferme (riscrivono il prefisso iniettato senza beneficio) ma questo
+   * canale e' quello che CREA le foglie, e se aspettasse la soglia una sessione che non la
+   * raggiunge non ne produrrebbe mai nessuna.
+   */
+  autoCompactMinTokens: number;
+  /**
    * User turns at the tail that are NEVER evicted or stripped.
    *
    * A safety window: compaction must not destroy the context the agent is
@@ -1090,6 +1101,7 @@ const DEFAULT_CONFIG: CwlConfig = {
   // A recording every three turns: frequent enough that a long autonomous session is never
   // without a compressible episode, rare enough that the graph does not become a diary.
   autoDelimiterTurns: 3,
+  autoCompactMinTokens: 4_000,
   // Three turns, not ten. The window is a CONTINUOUS RUN of the list: the last N
   // user turns PLUS everything between and after them — every assistant message,
   // reasoning block, tool call and tool output. An operator who writes little
@@ -1200,6 +1212,7 @@ function loadConfig(): CwlConfig {
         // 0 is legal and means OFF: a session where the agent records its own episodes pays
         // nothing for a floor it does not need.
         autoDelimiterTurns: validNumber(user.autoDelimiterTurns, 0, 10_000, DEFAULT_CONFIG.autoDelimiterTurns),
+        autoCompactMinTokens: validNumber(user.autoCompactMinTokens, 0, 1_000_000, DEFAULT_CONFIG.autoCompactMinTokens),
         protectedTurns: validNumber(user.protectedTurns, 0, 10_000, DEFAULT_CONFIG.protectedTurns),
         looseLeaves: validNumber(user.looseLeaves, 0, 10_000, DEFAULT_CONFIG.looseLeaves),
         nodeCapacity: validNumber(user.nodeCapacity, 1, 10_000, DEFAULT_CONFIG.nodeCapacity),
@@ -1614,6 +1627,8 @@ interface CwlState {
    * re-record the same turn: the name is `auto-<turn>` and two episodes cannot share a name.
    */
   lastAutoEpisodeTurn: number;
+  /** Pavimento della finestra protetta all'ultimo tentativo di compattazione continua (-1 = mai). */
+  lastAutoCompactFloor: number;
   /**
    * Why the demand was withheld the last time it was impossible, or '' when the
    * last check found something doable. Not bookkeeping for its own sake: the
@@ -1781,6 +1796,7 @@ function newState(): CwlState {
     evicting: false,
     autoWidenTurn: -1,
     lastAutoEpisodeTurn: -1,
+    lastAutoCompactFloor: -1,
     rangeStartHash: null,
     rangeEndHash: null,
     rangeStartTurn: -1,
@@ -1927,6 +1943,7 @@ interface PersistedState {
   evicting?: boolean;
   autoWidenTurn?: number;
   lastAutoEpisodeTurn?: number;
+  lastAutoCompactFloor?: number;
   /** Optional on load: a state written before this field existed has none. */
   looseFrom?: number;
   charTokenRatio?: number;
@@ -2083,6 +2100,7 @@ function saveState(key: string, st: CwlState, opts?: { ownerPid?: number }): voi
       evicting: st.evicting,
       autoWidenTurn: st.autoWidenTurn,
       lastAutoEpisodeTurn: st.lastAutoEpisodeTurn,
+      lastAutoCompactFloor: st.lastAutoCompactFloor,
       charTokenRatio: st.charTokenRatio,
       systemOverheadTokens: st.systemOverheadTokens,
       providerContextTokens: st.providerContextTokens,
@@ -2172,6 +2190,7 @@ function loadPersistedState(key: string): CwlState | null {
     // -1 and not 0: "no recording yet" is not "the recording at turn 0", and with 0 the first
     // hook of a resumed session would skip a recording it is owed.
     st.lastAutoEpisodeTurn = typeof data.lastAutoEpisodeTurn === 'number' ? data.lastAutoEpisodeTurn : -1;
+    st.lastAutoCompactFloor = typeof data.lastAutoCompactFloor === 'number' ? data.lastAutoCompactFloor : -1;
     if (data.backgroundSummary && typeof data.backgroundSummary === 'object') {
       const request = data.backgroundSummary as BackgroundSummaryRequest;
       if (typeof request.requestId === 'string' && typeof request.startHash === 'string'
@@ -2938,7 +2957,36 @@ function isTurnBoundary(m: AgentMessage): boolean {
   return typeof probe.customType !== 'string' || !probe.customType.startsWith('cwl-');
 }
 
-function protectedFromIndex(messages: AgentMessage[], turns: number): number {
+/**
+ * P2 — LE CHIUSURE AUTOMATICHE SONO CONFINI DI TURNO.
+ *
+ * `isTurnBoundary` riconosce un `toolResult` con `toolName === 'delimiter'`, cioe' il delimitatore
+ * scritto DALL'AGENTE. Gli episodi automatici non producono quel messaggio: senza questi id il
+ * pavimento della finestra protetta non si muove nei run autonomi, dove ci sono molti turni
+ * dell'agente e pochi turni utente — misurato sul vivo: 254804t nella finestra protetta (ultimi 3
+ * turni utente) e 0t comprimibili, cioe' i due canali di compattazione morti insieme.
+ *
+ * Gli ID e non gli indici: un `toolCallId` resta lo stesso quando la lista cambia (gli indici
+ * slittano a ogni compressione, gli id no).
+ */
+function autoBoundaryIdsOf(st: CwlState): Set<string> {
+  const ids = new Set<string>();
+  for (const ep of st.graph.all) {
+    if (!ep.name.startsWith(AUTO_EPISODE_PREFIX)) continue;
+    if (ep.endToolCallId) ids.add(ep.endToolCallId);
+  }
+  return ids;
+}
+
+/** Vero se il messaggio e' l'ancora di chiusura di un episodio automatico. */
+function isAutoBoundary(m: AgentMessage, ids?: ReadonlySet<string>): boolean {
+  if (!ids || ids.size === 0) return false;
+  // SAFETY: sonda in sola lettura; solo i `toolResult` portano un `toolCallId`.
+  const id = (m as unknown as { toolCallId?: unknown }).toolCallId;
+  return typeof id === 'string' && ids.has(id);
+}
+
+function protectedFromIndex(messages: AgentMessage[], turns: number, boundaryIds?: ReadonlySet<string>): number {
   if (turns <= 0) return messages.length;
   let seen = 0;
   let byTurns = 0;
@@ -2950,7 +2998,7 @@ function protectedFromIndex(messages: AgentMessage[], turns: number): number {
   // the window forward proportionally rather than freezing it indefinitely.
   let consecutiveBoundaries = 0;
   for (let i = messages.length - 1; i >= 0; i--) {
-    if (!isTurnBoundary(messages[i])) {
+    if (!isTurnBoundary(messages[i]) && !isAutoBoundary(messages[i], boundaryIds)) {
       consecutiveBoundaries = 0;
       continue;
     }
@@ -3038,8 +3086,9 @@ function compressibleRange(
   spans: CompressedSpan[],
   protectedTurns: number,
   ratio: number = DEFAULT_CHAR_TOKEN_RATIO,
+  boundaryIds?: ReadonlySet<string>,
 ): { startHash: string; endHash: string; tokens: number } | null {
-  const floor = protectedFromIndex(messages, protectedTurns);
+  const floor = protectedFromIndex(messages, protectedTurns, boundaryIds);
 
   // One resolution for every caller (see locateSpans). This used to be a copy
   // that claimed to be "the same resolution applySpans performs" while NOT
@@ -3498,7 +3547,7 @@ function applyReadyBackgroundSummary(
   if (!request || request.status !== 'ready' || !request.result) return false;
 
   const protectedTurns = st.forceAllNext ? 0 : cf.protectedTurns;
-  const range = compressibleRange(messages, st.spans, protectedTurns, st.charTokenRatio);
+  const range = compressibleRange(messages, st.spans, protectedTurns, st.charTokenRatio, autoBoundaryIdsOf(st));
   const snapshot = range ? backgroundSnapshot(messages, range) : null;
   const invalidate = (reason: string): false => {
     request.status = 'stale';
@@ -7712,10 +7761,61 @@ function indexNodeViews(st: CwlState): IndexNodeView[] {
     // The ONE window this hook uses: the stored range, the safety floor and the eviction pass
     // all read it, so they cannot disagree about what is protected.
     const protTurns = st.forceAllNext ? 0 : (widenActive ? AUTO_WIDEN_PROTECTED_TURNS : cf.protectedTurns);
-    if (overBudget) {
-      applyReadyBackgroundSummary(key, st, cf, originalMessages);
-      applyReadyBackgroundPitSummary(key, st, cf);
+    // P2: le ancore di chiusura automatiche contano come confini di turno, cosi' il pavimento
+    // scorre anche quando l'agente lavora da solo. Calcolato UNA volta e passato a TUTTI i lettori
+    // della finestra: il range offerto, il pavimento di sicurezza e la passata di eviction non
+    // possono piu' divergere su cosa sia protetto.
+    const autoBoundaryIds = autoBoundaryIdsOf(st);
+
+    // LA MOLLA DELLA COMPATTAZIONE CONTINUA (decisione dell'operatore: "compattazione in
+    // background man mano che vengono sprotetti i turni").
+    //
+    // Il segnale NON e' "il contesto e' grande": e' "il pavimento della finestra protetta si e'
+    // mosso", cioe' un turno e' stato sprotetto. `compressibleRange` esclude da se' la finestra
+    // protetta e cio' che e' gia' compresso: il range CHE TORNA e' il materiale sprotetto e non
+    // ancora compattato, non c'e' niente da inventare.
+    //
+    // STA QUI, prima di ogni ramo, e non e' un dettaglio di gusto: sotto soglia l'hook RITORNA
+    // molto piu' giu' (`CONTEXT ... under threshold ... no eviction`), e il ramo che applica gli
+    // span ritorna anche lui quando con essi si scende sotto il trigger. Messa in quei rami, la
+    // molla non girava mai: i test l'hanno dimostrato (3 rossi su 5, "il background non e'
+    // partito"). Qui passa SEMPRE.
+    //
+    // E non guarda `overBudget`, ed e' la differenza voluta. Sotto soglia le EVICTION restano
+    // ferme, come deciso (riscrivono il prefisso iniettato senza beneficio e lo rompono), ma la
+    // sintesi in background e' il canale che CREA le foglie: se aspettasse la soglia, una sessione
+    // che non la raggiunge non ne produrrebbe mai nessuna — misurato sul vivo (la sessione a 300k,
+    // 220 turni e UNA foglia) e peggio su un modello piccolo, dove `contextWindowOf` risponde 0 e
+    // il tetto torna al budget configurato, che li' non si raggiunge affatto.
+    //
+    // Un tentativo per AVANZAMENTO del pavimento, non per hook: un turno che non sprote niente non
+    // costa niente, e il calcolo del range (che passa le stringhe) si paga solo quando il pavimento
+    // si muove. La dedup per `requestId` e l'attesa limitata `EXHAUSTED_RETRY_TURNS` vivono dentro
+    // `scheduleBackgroundSummary`, quindi valgono anche qui.
+    if (cf.autoCompactMinTokens > 0) {
+      const floorNow = protectedFromIndex(messages, protTurns, autoBoundaryIds);
+      if (floorNow > st.lastAutoCompactFloor) {
+        st.lastAutoCompactFloor = floorNow;
+        const autoRange = compressibleRange(messages, st.spans, protTurns, st.charTokenRatio, autoBoundaryIds);
+        if (autoRange && autoRange.tokens >= cf.autoCompactMinTokens) {
+          const snapshot = backgroundSnapshot(originalMessages, autoRange);
+          if (snapshot && scheduleBackgroundSummary(key, st, cf, snapshot, ctx)) {
+            debugLog(cf, `AUTO-COMPACT turn ${st.turns}: the protected window moved to ${floorNow}, ${autoRange.tokens}t of unprotected material handed to the background summarizer`);
+          }
+        }
+      }
     }
+    // IL BACKGROUND ATTERRA APPENA E' PRONTO, ANCHE SOTTO SOGLIA.
+    // Queste due erano dentro `if (overBudget)`, e quella condizione chiudeva il cerchio: la
+    // sintesi veniva schedulata solo sopra soglia E applicata solo sopra soglia, quindi una
+    // sessione che non raggiungeva il trigger non vedeva MAI nascere una foglia — e la foglia
+    // pronta sarebbe rimasta in attesa fino al primo superamento, cioe' forse mai.
+    // Non e' la stessa cosa delle eviction: li' la regola dell'operatore resta (sotto soglia non
+    // toccano niente, perche' riscrivono il prefisso a ogni turno senza beneficio); qui una
+    // foglia si applica UNA volta, quando c'e' materiale che l'estensione ha gia' compattato da
+    // se'. Entrambe le funzioni escono subito e gratis quando non c'e' niente di pronto.
+    applyReadyBackgroundSummary(key, st, cf, originalMessages);
+    applyReadyBackgroundPitSummary(key, st, cf);
 
     // MEASUREMENT of the cache — the instrument this design never had. The provider
     // cache is a PREFIX cache, and every leaf written here lands where the
@@ -7846,7 +7946,7 @@ function indexNodeViews(st: CwlState): IndexNodeView[] {
      */
     const declareFloor = (list: AgentMessage[], tokens: number): void => {
       if (tokens <= trigger) return;
-      const floor = protectedFromIndex(list, protTurns);
+      const floor = protectedFromIndex(list, protTurns, autoBoundaryIds);
       // The spans recorded where their content ended up, in the list they built
       // (see applySpans.insideOut). Re-resolving is impossible here: this list has
       // already been through the spans, so a span whose END anchor was an
@@ -8254,7 +8354,7 @@ function indexNodeViews(st: CwlState): IndexNodeView[] {
         // Recomputed HERE, on the ORIGINAL list: the span endpoints must still
         // resolve, or `covered` would be empty and the same region would be
         // offered again.
-        const nextRange = compressibleRange(messages, st.spans, protTurns, st.charTokenRatio);
+        const nextRange = compressibleRange(messages, st.spans, protTurns, st.charTokenRatio, autoBoundaryIds);
         storeRange(st, cf, nextRange, messages);
         rangeStoredBySpans = true;
 
@@ -8303,7 +8403,7 @@ function indexNodeViews(st: CwlState): IndexNodeView[] {
     const fresh = latchEviction(st, governingHistoryTokens(st, messages).tokens, trigger);
     if (currentTokens <= trigger) {
       if (st.forceAllNext && !rangeStoredBySpans) {
-        const range = compressibleRange(messages, st.spans, 0, st.charTokenRatio);
+        const range = compressibleRange(messages, st.spans, 0, st.charTokenRatio, autoBoundaryIds);
         storeRange(st, cf, range, messages, currentTokens, trigger, messageSource);
       }
       if (totalContext > trigger && st.systemOverheadTokens > 0) {
@@ -8329,14 +8429,15 @@ function indexNodeViews(st: CwlState): IndexNodeView[] {
     // `protTurns` comes from the top of the hook: the last `protectedTurns` user turns are
     // inviolable — compaction must never destroy the context the agent is working on — and the
     // automatic widening narrows that window for ONE turn when the summarizer needs more.
-    const safetyFloor = protectedFromIndex(messages, protTurns);
+    const safetyFloor = protectedFromIndex(messages, protTurns, autoBoundaryIds);
 
     // Addresses of the largest range the agent may ask to compress. Recomputed
     // here because this hook is the only place that sees the real message list.
     if (!rangeStoredBySpans) {
-      const range = compressibleRange(messages, st.spans, protTurns, st.charTokenRatio);
+      const range = compressibleRange(messages, st.spans, protTurns, st.charTokenRatio, autoBoundaryIds);
       storeRange(st, cf, range, messages, currentTokens, trigger, messageSource);
     }
+
 
     // No episodes at all: with no episodes, we do not perform global reasoning
     // strips on live messages because modifying historical turns destroys the
@@ -9111,7 +9212,7 @@ function indexNodeViews(st: CwlState): IndexNodeView[] {
           .filter((e) => !!e && e.type === 'message' && !!e.message)
           .map((e) => e.message as AgentMessage)
       : [];
-    const checkRange = messages.length > 0 ? compressibleRange(messages, st.spans, 0) : null;
+    const checkRange = messages.length > 0 ? compressibleRange(messages, st.spans, 0, undefined, autoBoundaryIdsOf(st)) : null;
     if (!checkRange) {
       if (ctx.hasUI) ctx.ui.notify(t('cmdSaveNothing')(), 'warning');
       return;
