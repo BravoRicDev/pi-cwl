@@ -995,6 +995,16 @@ interface CwlConfig {
    */
   dynamicBudgetRatio: number;
   /**
+   * Turns between two AUTOMATIC episode recordings; 0 disables them.
+   *
+   * The agent's `delimiter` is the SEMANTIC source of episodes. MEASURED in a live session at
+   * 300k: 220 assistant turns, ONE `delimiter` call, already `level: 'removed'` — so
+   * `recoverable()` was empty, `runEvictionPass` returned [] and the log repeated
+   * `CONTEXT 267463t above threshold but no safe candidate`. The demand that used to push the
+   * agent is gone by decision, so the floor has to be under the extension's own feet.
+   */
+  autoDelimiterTurns: number;
+  /**
    * User turns at the tail that are NEVER evicted or stripped.
    *
    * A safety window: compaction must not destroy the context the agent is
@@ -1077,6 +1087,9 @@ const DEFAULT_CONFIG: CwlConfig = {
   // reached before Pi compacts at ~41.565t of history. 0.6 is the default because, once the
   // overhead is subtracted, it is conservative on every window.
   dynamicBudgetRatio: 0.6,
+  // A recording every three turns: frequent enough that a long autonomous session is never
+  // without a compressible episode, rare enough that the graph does not become a diary.
+  autoDelimiterTurns: 3,
   // Three turns, not ten. The window is a CONTINUOUS RUN of the list: the last N
   // user turns PLUS everything between and after them — every assistant message,
   // reasoning block, tool call and tool output. An operator who writes little
@@ -1184,6 +1197,9 @@ function loadConfig(): CwlConfig {
         // A share of the window: 0 would cap the budget to nothing, 1 would cap it to the whole
         // window and never bite. Both ends are absurd, so out-of-range input falls back.
         dynamicBudgetRatio: validNumber(user.dynamicBudgetRatio, 0.05, 0.95, DEFAULT_CONFIG.dynamicBudgetRatio),
+        // 0 is legal and means OFF: a session where the agent records its own episodes pays
+        // nothing for a floor it does not need.
+        autoDelimiterTurns: validNumber(user.autoDelimiterTurns, 0, 10_000, DEFAULT_CONFIG.autoDelimiterTurns),
         protectedTurns: validNumber(user.protectedTurns, 0, 10_000, DEFAULT_CONFIG.protectedTurns),
         looseLeaves: validNumber(user.looseLeaves, 0, 10_000, DEFAULT_CONFIG.looseLeaves),
         nodeCapacity: validNumber(user.nodeCapacity, 1, 10_000, DEFAULT_CONFIG.nodeCapacity),
@@ -1594,6 +1610,11 @@ interface CwlState {
    */
   autoWidenTurn: number;
   /**
+   * `st.turns` at the last AUTOMATIC recording (-1: none yet). PERSISTED, so a restart does not
+   * re-record the same turn: the name is `auto-<turn>` and two episodes cannot share a name.
+   */
+  lastAutoEpisodeTurn: number;
+  /**
    * Why the demand was withheld the last time it was impossible, or '' when the
    * last check found something doable. Not bookkeeping for its own sake: the
    * silence of a withheld demand proved nothing once, and a diagnosis died on it.
@@ -1759,6 +1780,7 @@ function newState(): CwlState {
     gateWithheld: '',
     evicting: false,
     autoWidenTurn: -1,
+    lastAutoEpisodeTurn: -1,
     rangeStartHash: null,
     rangeEndHash: null,
     rangeStartTurn: -1,
@@ -1904,6 +1926,7 @@ interface PersistedState {
   /** Optional on load: the latch and the widening turn, absent in an older state file. */
   evicting?: boolean;
   autoWidenTurn?: number;
+  lastAutoEpisodeTurn?: number;
   /** Optional on load: a state written before this field existed has none. */
   looseFrom?: number;
   charTokenRatio?: number;
@@ -2059,6 +2082,7 @@ function saveState(key: string, st: CwlState, opts?: { ownerPid?: number }): voi
       gateWithheld: st.gateWithheld,
       evicting: st.evicting,
       autoWidenTurn: st.autoWidenTurn,
+      lastAutoEpisodeTurn: st.lastAutoEpisodeTurn,
       charTokenRatio: st.charTokenRatio,
       systemOverheadTokens: st.systemOverheadTokens,
       providerContextTokens: st.providerContextTokens,
@@ -2145,6 +2169,9 @@ function loadPersistedState(key: string): CwlState | null {
     // latch that started CLOSED would evict on the first turn of a resumed session.
     st.evicting = data.evicting === true;
     st.autoWidenTurn = typeof data.autoWidenTurn === 'number' ? data.autoWidenTurn : -1;
+    // -1 and not 0: "no recording yet" is not "the recording at turn 0", and with 0 the first
+    // hook of a resumed session would skip a recording it is owed.
+    st.lastAutoEpisodeTurn = typeof data.lastAutoEpisodeTurn === 'number' ? data.lastAutoEpisodeTurn : -1;
     if (data.backgroundSummary && typeof data.backgroundSummary === 'object') {
       const request = data.backgroundSummary as BackgroundSummaryRequest;
       if (typeof request.requestId === 'string' && typeof request.startHash === 'string'
@@ -2578,6 +2605,132 @@ function episodeRanges(
     out.set(ep.name, { from, to: Math.min(to, messages.length - 1), deduced: false });
   }
   return out;
+}
+
+/** The prefix of every episode the EXTENSION records for itself (see `recordAutomaticEpisode`). */
+const AUTO_EPISODE_PREFIX = 'auto-';
+
+/**
+ * The `toolCallId` of the LAST tool result that is WORK, not a boundary.
+ *
+ * A `delimiter` result is skipped on purpose: it is the agent's own boundary, and anchoring there
+ * would give a zero-length range that `episodeRanges` throws away (`to <= from`) — an episode no
+ * eviction can touch, which is worse than no episode because it looks like material.
+ */
+function lastWorkToolCallId(messages: AgentMessage[]): string | null {
+  for (let i = messages.length - 1; i >= 0; i--) {
+    // SAFETY: read-only probes of fields the AgentMessage union does not declare.
+    const probe = messages[i] as unknown as RealMessage;
+    if (probe.role !== 'toolResult') continue;
+    if (probe.toolName === 'delimiter') continue;
+    if (typeof probe.toolCallId === 'string' && probe.toolCallId) return probe.toolCallId;
+  }
+  return null;
+}
+
+/**
+ * The tools whose DECLARED purpose is to write: a segment containing one is an `act`.
+ *
+ * `bash` is deliberately absent. MEASURED on a real session, `bash` is the most frequent tool by
+ * far (236 of 282 tool results) and most of those calls verify rather than write; which ones
+ * mutated is not something a name can tell, and a guess would put episodes in the wrong half of
+ * the eviction order (act before expl) on fiction.
+ */
+const MUTATING_TOOLS: ReadonlySet<string> = new Set(['edit', 'write']);
+
+/** `act` if the segment contains a mutating tool, `expl` otherwise. */
+function segmentType(messages: AgentMessage[], from: number, to: number): EpisodeType {
+  for (let i = from; i <= to; i++) {
+    const probe = messages[i] as unknown as RealMessage;
+    if (probe.role !== 'toolResult') continue;
+    if (typeof probe.toolName === 'string' && MUTATING_TOOLS.has(probe.toolName)) return 'act';
+  }
+  return 'expl';
+}
+
+/**
+ * What RAN in the segment, not what was learned: the operator's decision, and the honest one for a
+ * machine with no judgement to offer.
+ *
+ * This text is the REPLACEMENT for a removed `expl` episode, so it is a RESIDUE that stays in the
+ * context for the rest of the session. Hence language-neutral (the tool names are identifiers,
+ * nothing to translate) and capped at the five most frequent tools.
+ */
+function segmentDescription(messages: AgentMessage[], from: number, to: number): string {
+  const counts = new Map<string, number>();
+  let errors = 0;
+  for (let i = from; i <= to; i++) {
+    const probe = messages[i] as unknown as RealMessage;
+    if (probe.role !== 'toolResult') continue;
+    const name = typeof probe.toolName === 'string' && probe.toolName ? probe.toolName : 'unknown';
+    counts.set(name, (counts.get(name) ?? 0) + 1);
+    if ((messages[i] as unknown as { isError?: unknown }).isError === true) errors++;
+  }
+  const tools = [...counts.entries()]
+    .sort((a, b) => b[1] - a[1])
+    .slice(0, 5)
+    .map(([name, n]) => `${name}x${n}`)
+    .join(' ');
+  return `auto: ${to - from + 1} msgs, tools: ${tools || 'none'}${errors > 0 ? `, errors: ${errors}` : ''}`;
+}
+
+/**
+ * Records ONE episode every `cf.autoDelimiterTurns` turns, without the agent's `delimiter`.
+ *
+ * WHY IT EXISTS: episodes used to enter the graph ONLY from the agent's tool. MEASURED in a live
+ * session at 300k tokens: 220 assistant turns, ONE `delimiter` call, already `level: 'removed'`.
+ * `recoverable()` was empty, so `runEvictionPass` returned [] and the log repeated
+ * `CONTEXT 267463t above threshold but no safe candidate: context untouched` — the budget could
+ * not be enforced at all, and no demand is injected any more by decision.
+ *
+ * The closing anchor is a tool result that EXISTS in the list, because `episodeRanges` SKIPS an
+ * episode whose closing anchor is missing (`EPISODES unlocatable`): an episode nobody can locate
+ * is a candidate nobody can evict.
+ *
+ * Returns true when an episode was recorded.
+ */
+function recordAutomaticEpisode(
+  key: string,
+  st: CwlState,
+  cf: CwlConfig,
+  messages: AgentMessage[],
+): boolean {
+  if (cf.autoDelimiterTurns <= 0) return false; // 0 disables it
+  const due = st.lastAutoEpisodeTurn < 0 || st.turns - st.lastAutoEpisodeTurn >= cf.autoDelimiterTurns;
+  // `due` already implies `st.turns > st.lastAutoEpisodeTurn` in both branches, so ONE recording
+  // per turn needs no extra test: `st.turns` only moves in `turn_end` while this hook runs once
+  // per LLM call, and a tool loop runs it many times inside the same turn.
+  if (!due) return false;
+
+  const endAnchor = lastWorkToolCallId(messages);
+  if (endAnchor === null) return false; // no tool result yet: the segment grows, nothing to close
+
+  const name = `${AUTO_EPISODE_PREFIX}${st.turns}`;
+  if (st.graph.has(name)) {
+    // The episode for this turn is already there — a restart between two hooks lands here, and
+    // the work IS done. Marking it keeps the following hooks from asking again every turn.
+    st.lastAutoEpisodeTurn = st.turns;
+    return false;
+  }
+
+  const closed = st.graph.closed();
+  const startAnchor = closed.length > 0 ? closed[closed.length - 1].endToolCallId ?? '' : '';
+  const pos = toolCallPositions(messages);
+  const to = pos.get(endAnchor);
+  if (to === undefined) return false;
+  // An anchor that left the list (a prefix cut took it) resolves to 0, exactly as
+  // `episodeRanges` resolves it: with the older messages gone there is nothing left to claim.
+  const from = startAnchor === '' ? 0 : pos.get(startAnchor) ?? 0;
+  if (to <= from) return false; // an empty segment would only LOOK like material
+
+  const type = segmentType(messages, from, to);
+  const description = segmentDescription(messages, from, to);
+  st.graph.open(name, type, [], st.messageCursor, startAnchor);
+  st.graph.close(name, description, st.messageCursor, endAnchor);
+  st.lastAutoEpisodeTurn = st.turns;
+  saveState(key, st);
+  debugLog(cf, `AUTO-EPISODE ${type} "${name}" [${from}..${to}] startAnchor=${startAnchor || '<session-start>'} ${description}`);
+  return true;
 }
 
 /** Tokens the messages in [from..to] occupy right now. */
@@ -6038,11 +6191,13 @@ function indexNodeViews(st: CwlState): IndexNodeView[] {
       // only number that matters, which is the two-numbers-for-one-decision defect again.
       const eb = effectiveBudget(cf, st, ctx);
 
-      const extra = st.systemOverheadTokens > 0
-        ? (LANG === 'it'
-            ? `overhead fisso: ~${st.systemOverheadTokens.toLocaleString()}, ratio: ${st.charTokenRatio.toFixed(1)} c/t`
-            : `fixed overhead: ~${st.systemOverheadTokens.toLocaleString()}, ratio: ${st.charTokenRatio.toFixed(1)} c/t`)
-        : undefined;
+      // One ternary, not two: `LANG` picks the label and a zero overhead is a plain ABSENCE.
+      // The nested version read worse than it was short, and it was flagged as such.
+      let extra: string | undefined;
+      if (st.systemOverheadTokens > 0) {
+        const detail = `~${st.systemOverheadTokens.toLocaleString()}, ratio: ${st.charTokenRatio.toFixed(1)} c/t`;
+        extra = LANG === 'it' ? `overhead fisso: ${detail}` : `fixed overhead: ${detail}`;
+      }
 
       const lines = [
         t('statusHeader')(eb.budget.toLocaleString(), (cf.thresholdRatio * 100).toFixed(0)),
@@ -7648,6 +7803,12 @@ function indexNodeViews(st: CwlState): IndexNodeView[] {
     // Tool results are appended during the turn, so the message count is
     // the only reliable basis for episode indices.
     st.messageCursor = messages.length; // recomputed, not accumulated
+
+    // The graph must never be empty BY ACCIDENT: the agent's `delimiter` is the semantic source
+    // of episodes and this is the floor under it. HERE and not in `turn_end`, because that hook
+    // has no message list (see the note on its cursor) and an episode needs an anchor that
+    // really exists in the list.
+    recordAutomaticEpisode(key, st, cf, messages);
 
     // Hash anchoring: the LLM points at the messages to compress by the hash
     // of their text. Indices shift every turn, hashes do not.
