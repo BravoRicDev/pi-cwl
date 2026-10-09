@@ -128,11 +128,13 @@ test('malformed JSON consumes one attempt and a valid second completion is appli
   }
 });
 
-test('two background failures defer the old hook fallback until the next trigger', async () => {
+test('two background failures do not disarm the channel: a NEW range gets its own attempts', async () => {
   let calls = 0;
+  let fail = true;
   const { sandbox, home, hooks, ctx } = await setup('background-fallback', async () => {
     calls++;
-    throw new Error('provider unavailable');
+    if (fail) throw new Error('provider unavailable');
+    return result('recovered micro', 'recovered summary');
   });
   const messages = conversation();
   try {
@@ -140,34 +142,52 @@ test('two background failures defer the old hook fallback until the next trigger
     assert.equal(hasGate(first), false, 'the failing trigger is not also the fallback trigger');
     await tick();
     assert.equal(calls, 2);
-    assert.equal(persistedState(sandbox).backgroundSummary.status, 'exhausted');
+    const after = persistedState(sandbox);
+    assert.equal(after.backgroundSummary.status, 'exhausted');
 
-    // The fallback is DEFERRED, not delivered. It is a marker in the state that tells the hook
-    // to stop scheduling background summaries for this range, written together with the turn it
-    // becomes active from. Under the new contract it injects NO demand into the context, so what
-    // has to be asserted is the marker and the silence — a message would be the old contract.
-    const marker = persistedState(sandbox).backgroundFallbackAfterTurn;
-    assert.ok(
-      marker >= 0,
-      'the exhausted request deferred no hook fallback at all: nothing would take over from it',
+    // THE LATCH IS GONE, and its absence is the contract under test. It used to disarm the
+    // background summarizer after two failures and hand the job over to a `delimiter` demand
+    // shown to the agent; that demand left the context by decision, so all the latch could still
+    // do was stop the extension from scheduling anything at all, for ever. What replaced it is a
+    // wait BOUNDED by `EXHAUSTED_RETRY_TURNS`, and the two assertions below measure both halves:
+    // the provider is not hammered, and the channel is not disarmed.
+    assert.equal(
+      'backgroundFallbackAfterTurn' in after,
+      false,
+      'the exhausted request disarmed the background channel: the fallback it names no longer exists',
     );
     assert.match(
       logOf(sandbox),
-      /BACKGROUND summary exhausted: .+hook fallback from turn \d+/,
-      'the fallback was deferred without saying when or why',
+      /BACKGROUND summary exhausted: .+ after 2 attempts: /,
+      'the exhaustion was not reported together with the reason the provider gave',
     );
 
+    // INSIDE the cooldown nothing is retried, even with new material in the list: the range's END
+    // drifts on every turn, so "a new requestId" is not new material, and retrying would cost two
+    // failed provider calls per turn during an outage. The old latch was the same idea with no end.
+    messages.push({ role: 'user', content: 'more material ' + 'N'.repeat(220), timestamp: 100 });
+    messages.push({ role: 'assistant', content: 'more answer ' + 'M'.repeat(220), timestamp: 101 });
     let last = null;
-    for (let turn = 0; turn < 4; turn++) {
+    for (let turn = 0; turn < 2; turn++) {
       last = await hooks.get('context')({ messages }, ctx);
       await hooks.get('turn_end')({}, ctx);
     }
     assert.equal(
       hasGate(last),
       false,
-      'the hook fallback injected a demand: the context is closed by the operator, the budget no longer writes into it',
+      'a demand was injected: the context is closed by the operator, the budget no longer writes into it',
     );
-    assert.equal(calls, 2, 'the fallback granted a third completion for the same range');
+    assert.equal(calls, 2, 'the exhausted material was retried inside the cooldown: the provider would be hammered');
+
+    // AND THE WAIT ENDS. This is the assertion that would have caught the dead latch: with
+    // `fallbackActive` on the scheduling line, the extension went on refusing to schedule for the
+    // rest of the session and the context stayed over budget for ever.
+    fail = false;
+    for (let turn = 0; turn < 20 && calls < 3; turn++) {
+      await hooks.get('context')({ messages }, ctx);
+      await hooks.get('turn_end')({}, ctx);
+    }
+    assert.equal(calls, 3, 'the cooldown never expired: the background channel is disarmed for good');
   } finally {
     await hooks.get('session_shutdown')?.({}, ctx);
     home.restore();
@@ -290,7 +310,7 @@ test('a restart keeps the attempt count: the limit of two survives the process',
       last = await second.hooks.get('context')({ messages }, ctx2);
       await second.hooks.get('turn_end')({}, ctx2);
     }
-    assert.equal(calls, 2, 'a restart must not grant a third completion for the same range');
+    assert.equal(calls, 2, 'a restart must not grant a third completion while the cooldown runs');
     assert.equal(
       hasGate(last),
       false,

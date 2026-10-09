@@ -1612,12 +1612,23 @@ interface CwlState {
   rangeEndTurn: number;
   /** Durable async summarizer request/result; the transcript body is never duplicated here. */
   backgroundSummary: BackgroundSummaryRequest | null;
-  /** Earliest `turn_end` turn at which hook fallback is allowed after two failures. */
-  backgroundFallbackAfterTurn: number;
   /** Durable async request for the PIT synthesis (`cwl_old` done by the extension). */
   backgroundPitSummary: BackgroundPitSummaryRequest | null;
-  /** Earliest `turn_end` turn at which the manual merge is offered again after two failures. */
-  backgroundPitFallbackAfterTurn: number;
+  /**
+   * NO `backgroundFallbackAfterTurn` AND NO `backgroundPitFallbackAfterTurn` HERE, and their
+   * absence IS the contract. Both were latches that disarmed a background job after two
+   * provider failures, because the fallback was a demand shown to the agent: the
+   * `fallbackActive` and `pitAutoFallback` gates read `turns >= latch` as "the demand has taken
+   * over". When the demands left the context by decision those gates stayed shut for ever: the
+   * job was never scheduled again, and the demand that was supposed to replace it no longer
+   * existed. MEASURED in the live session `582eea03`: the summary exhausted at turn 74, the
+   * latch was armed from turn 74, and 141 turns later the context sat at 302.033t against a
+   * 100.000t trigger with zero compressions, while every turn logged `GATE above the latch and
+   * no background job started (canClose=true, canCompress=true)`. The real guard is the
+   * What bounds the retrying is `EXHAUSTED_RETRY_TURNS`, derived from the exhausted request's own
+   * `triggerTurn`: an unlucky range waits, and then the CURRENT range is tried again. A wait with
+   * no end is not a policy, it is a silent promise to stop compressing.
+   */
   /**
    * Timestamp of the last assistant message whose `usage` was already logged. The
    * context hook runs once per REQUEST, so a tool loop would log the same request
@@ -1753,9 +1764,7 @@ function newState(): CwlState {
     rangeStartTurn: -1,
     rangeEndTurn: -1,
     backgroundSummary: null,
-    backgroundFallbackAfterTurn: -1,
     backgroundPitSummary: null,
-    backgroundPitFallbackAfterTurn: -1,
     lastUsageTs: 0,
     lastEvent: 'none',
     turnsSinceCompress: -1,
@@ -1903,9 +1912,7 @@ interface PersistedState {
   contextWindow?: number;
   effectiveBudget?: number;
   backgroundSummary?: BackgroundSummaryRequest | null;
-  backgroundFallbackAfterTurn?: number;
   backgroundPitSummary?: BackgroundPitSummaryRequest | null;
-  backgroundPitFallbackAfterTurn?: number;
 }
 
 const STATE_VERSION = 1;
@@ -2058,9 +2065,7 @@ function saveState(key: string, st: CwlState, opts?: { ownerPid?: number }): voi
       contextWindow: st.contextWindow,
       effectiveBudget: st.effectiveBudget,
       backgroundSummary: st.backgroundSummary,
-      backgroundFallbackAfterTurn: st.backgroundFallbackAfterTurn,
       backgroundPitSummary: st.backgroundPitSummary,
-      backgroundPitFallbackAfterTurn: st.backgroundPitFallbackAfterTurn,
     };
     // Atomic write: a crash mid-write must not leave a truncated file that then
     // fails to parse on resume and silently loses the whole state.
@@ -2140,9 +2145,6 @@ function loadPersistedState(key: string): CwlState | null {
     // latch that started CLOSED would evict on the first turn of a resumed session.
     st.evicting = data.evicting === true;
     st.autoWidenTurn = typeof data.autoWidenTurn === 'number' ? data.autoWidenTurn : -1;
-    st.backgroundFallbackAfterTurn = typeof data.backgroundFallbackAfterTurn === 'number'
-      ? data.backgroundFallbackAfterTurn
-      : -1;
     if (data.backgroundSummary && typeof data.backgroundSummary === 'object') {
       const request = data.backgroundSummary as BackgroundSummaryRequest;
       if (typeof request.requestId === 'string' && typeof request.startHash === 'string'
@@ -2151,8 +2153,6 @@ function loadPersistedState(key: string): CwlState | null {
         st.backgroundSummary = request;
       }
     }
-    st.backgroundPitFallbackAfterTurn = typeof data.backgroundPitFallbackAfterTurn === 'number'
-      ? data.backgroundPitFallbackAfterTurn : -1;
     if (data.backgroundPitSummary && typeof data.backgroundPitSummary === 'object') {
       const request = data.backgroundPitSummary as BackgroundPitSummaryRequest;
       if (typeof request.requestId === 'string' && typeof request.fingerprint === 'string'
@@ -3009,7 +3009,6 @@ function commitCompressionSpan(
   st.turnsSinceCompress = 0;
   const previousRequestId = st.backgroundSummary?.requestId;
   st.backgroundSummary = null;
-  st.backgroundFallbackAfterTurn = -1;
   const running = backgroundSummaryJobs.get(key);
   if (running && running.requestId === previousRequestId) {
     running.controller.abort();
@@ -3125,6 +3124,14 @@ function completionStoppedMessage(stopReason: string, errorMessage: unknown): st
   return `completion stopped: ${stopReason}${detail}`;
 }
 
+/**
+ * How long an exhausted background request waits before the CURRENT range is tried again.
+ * The latch this replaces waited FOR EVER, because the fallback it handed over to was a demand
+ * the agent no longer receives; but a retry on every boundary drift would cost two failed
+ * provider calls per turn during an outage, because the range's END drifts on every turn.
+ */
+const EXHAUSTED_RETRY_TURNS = 8;
+
 function scheduleBackgroundSummary(
   key: string,
   st: CwlState,
@@ -3138,7 +3145,13 @@ function scheduleBackgroundSummary(
 
   const requestId = `${spanId(snapshot.startHash, snapshot.endHash)}:${snapshot.fingerprint.slice(0, 16)}`;
   let request = st.backgroundSummary;
-  if (!request || request.requestId !== requestId || request.status === 'stale') {
+  // A range that failed twice is not retried at once — and NOT because of its `requestId`. The
+  // range's END drifts on every turn (a live session logged `..d16235050e56` and then
+  // `..bc7b1605a4ef`), so a new `requestId` is the same material with a moved boundary: retrying
+  // it during an outage would cost two failed provider calls per turn. The wait is BOUNDED,
+  // unlike the latch this replaces.
+  if (request?.status === 'exhausted' && st.turns < request.triggerTurn + EXHAUSTED_RETRY_TURNS) return true;
+  if (!request || request.requestId !== requestId || request.status === 'stale' || request.status === 'exhausted') {
     const previous = backgroundSummaryJobs.get(key);
     if (previous && previous.requestId !== requestId) {
       previous.controller.abort();
@@ -3164,8 +3177,11 @@ function scheduleBackgroundSummary(
 
   if (request.status === 'ready' || request.status === 'exhausted') return true;
   if (request.attempts >= 2) {
+    // The two attempts for THIS range are spent. The request stays `exhausted` so that the same
+    // material is not retried immediately; `EXHAUSTED_RETRY_TURNS` decides when it may be, and
+    // NOTHING is disarmed for ever — the latch that used to sit on this line made the channel
+    // stop permanently (see the note on `CwlState`).
     request.status = 'exhausted';
-    st.backgroundFallbackAfterTurn = Math.max(st.turns + 1, request.triggerTurn + 1);
     saveState(key, st);
     return true;
   }
@@ -3223,9 +3239,8 @@ function scheduleBackgroundSummary(
         request!.lastError = String(error).slice(0, 500);
         if (request!.attempts >= 2) {
           request!.status = 'exhausted';
-          st.backgroundFallbackAfterTurn = Math.max(st.turns + 1, request!.triggerTurn + 1);
           saveState(key, st);
-          debugLog(cf, `BACKGROUND summary exhausted: ${requestId}; hook fallback from turn ${st.backgroundFallbackAfterTurn}`);
+          debugLog(cf, `BACKGROUND summary exhausted: ${requestId} after ${request!.attempts} attempts: ${request!.lastError}`);
           return;
         }
         saveState(key, st);
@@ -3246,7 +3261,10 @@ function scheduleBackgroundPitSummary(
   if (!registry || !activeModel || !registry.hasConfiguredAuth(activeModel)) return false;
   const requestId = `pit:${snapshot.fingerprint.slice(0, 24)}`;
   let request = st.backgroundPitSummary;
-  if (!request || request.requestId !== requestId || request.status === 'stale') {
+  // Same bounded wait as the summarizer above, for the same reason: the pit inputs drift, so a
+  // new `requestId` is not new material, and the latch waited for ever.
+  if (request?.status === 'exhausted' && st.turns < request.triggerTurn + EXHAUSTED_RETRY_TURNS) return true;
+  if (!request || request.requestId !== requestId || request.status === 'stale' || request.status === 'exhausted') {
     const previous = backgroundPitSummaryJobs.get(key);
     if (previous && previous.requestId !== requestId) { previous.controller.abort(); backgroundPitSummaryJobs.delete(key); }
     request = { requestId, fingerprint: snapshot.fingerprint, nodes: [...snapshot.nodes], triggerTurn: st.turns,
@@ -3284,8 +3302,7 @@ function scheduleBackgroundPitSummary(
         request!.lastError = String(error).slice(0, 500);
         if (request!.attempts >= 2) {
           request!.status = 'exhausted';
-          st.backgroundPitFallbackAfterTurn = Math.max(st.turns + 1, request!.triggerTurn + 1);
-          saveState(key, st); debugLog(cf, `BACKGROUND pit summary exhausted: ${requestId}`); return;
+          saveState(key, st); debugLog(cf, `BACKGROUND pit summary exhausted: ${requestId} after ${request!.attempts} attempts: ${request!.lastError}`); return;
         }
         saveState(key, st);
       }
@@ -3312,7 +3329,7 @@ function applyReadyBackgroundPitSummary(key: string, st: CwlState, cf: CwlConfig
   if (pit.summary) pit.superseded = [pit.summary, ...(pit.superseded ?? [])].slice(0, SUPERSEDED_KEEP);
   pit.summary = request.result;
   pit.at = Date.now(); st.oldNode = pit; st.lastEvent = 'pit-rewritten';
-  st.backgroundPitSummary = null; st.backgroundPitFallbackAfterTurn = -1;
+  st.backgroundPitSummary = null;
   saveState(key, st);
   debugLog(cf, `OLD ${pit.id}: background absorbed ${toAdd.length} node(s); ${snapshot.freedChars} chars leave the head`);
   return true;
@@ -6936,7 +6953,6 @@ function indexNodeViews(st: CwlState): IndexNodeView[] {
       // whole prefix, not just a suffix, which is why it must be rare and big.
       st.lastEvent = 'pit-rewritten';
       st.backgroundPitSummary = null;
-      st.backgroundPitFallbackAfterTurn = -1;
       const pitJob = backgroundPitSummaryJobs.get(key);
       if (pitJob) { pitJob.controller.abort(); backgroundPitSummaryJobs.delete(key); }
       saveState(key, st);
@@ -7752,8 +7768,8 @@ function indexNodeViews(st: CwlState): IndexNodeView[] {
      * first time it ran, which is why the condition is written down here and not assumed.
      */
     const persistIfUsed = (): void => {
-      if (fs.existsSync(statePath(key)) || st.backgroundSummary !== null || st.backgroundFallbackAfterTurn >= 0
-        || st.backgroundPitSummary !== null || st.backgroundPitFallbackAfterTurn >= 0) saveState(key, st);
+      if (fs.existsSync(statePath(key)) || st.backgroundSummary !== null
+        || st.backgroundPitSummary !== null) saveState(key, st);
     };
 
     const rememberOutgoing = (list: AgentMessage[]): { messages: AgentMessage[] } => {
@@ -7824,17 +7840,18 @@ function indexNodeViews(st: CwlState): IndexNodeView[] {
       const endH = st.rangeEndHash;
       // Option B: canCompress is true only if start/end exist AND there is actual material (rangeTokens > 0)
       const canCompress = startH !== null && endH !== null && st.rangeTokens > 0;
-      const fallbackActive = st.backgroundFallbackAfterTurn >= 0 && st.turns >= st.backgroundFallbackAfterTurn;
-      if (canCompress && !fallbackActive && startH !== null && endH !== null) {
+      if (canCompress && startH !== null && endH !== null) {
         const snapshot = backgroundSnapshot(originalMessages, {
           startHash: startH,
           endHash: endH,
           tokens: st.rangeTokens,
         });
         if (snapshot && scheduleBackgroundSummary(key, st, cf, snapshot, ctx)) {
-          // The background job replaces the compression invitation. It is not a gate
-          // failure because no demand was shown; the old hook resumes only next turn
-          // after both background attempts have failed.
+          // THE BACKGROUND JOB IS THE CHANNEL, and it is the only one left: there is no
+          // `fallbackActive` test on this line any more. That test handed over to a `delimiter`
+          // demand after two failures, and the demand left the context by decision, so all the
+          // test could still do was stop the extension from scheduling anything at all. A range
+          // that failed twice waits out `EXHAUSTED_RETRY_TURNS` and is then offered again.
           st.gateWithheld = '';
           persistIfUsed();
           return rememberOutgoing(list);
@@ -7938,9 +7955,8 @@ function indexNodeViews(st: CwlState): IndexNodeView[] {
     // pronta per un nodo) e il pozzo in background (che accorpa nodi interi con una sintesi sua).
     const inPit = containedNodes(st, st.oldNode?.nodes ?? []);
     const young = st.nodes.filter((nd) => !inPit.has(nd.id)).length;
-    const pitAutoFallback = st.backgroundPitFallbackAfterTurn >= 0 && st.turns >= st.backgroundPitFallbackAfterTurn;
     const pitAutoRequest = overBudget ? pitSnapshot(st, cf) : null;
-    const pitJobStarted = pitAutoRequest && !pitAutoFallback
+    const pitJobStarted = pitAutoRequest
       ? scheduleBackgroundPitSummary(key, st, cf, pitAutoRequest, ctx)
       : false;
     const mergeRequest = overBudget && plan.due > 0 && !pitJobStarted ? t('indexDue')(young, cf.mergeNodesAt) : null;
@@ -8486,8 +8502,8 @@ function indexNodeViews(st: CwlState): IndexNodeView[] {
     // every turn. They cannot be recomputed from the transcript, so a crash or
     // a restart must not throw them away. Sessions that never used CWL write
     // nothing.
-    if (!st.graph.isEmpty || st.spans.length > 0 || st.backgroundSummary !== null || st.backgroundFallbackAfterTurn >= 0
-      || st.backgroundPitSummary !== null || st.backgroundPitFallbackAfterTurn >= 0) saveState(key, st);
+    if (!st.graph.isEmpty || st.spans.length > 0 || st.backgroundSummary !== null
+      || st.backgroundPitSummary !== null) saveState(key, st);
   });
 
   // -------------------------------------------------------------------------
