@@ -302,3 +302,74 @@ test('a restart keeps the attempt count: the limit of two survives the process',
     sandbox.cleanup();
   }
 });
+
+test('an OpenCode background completion carries the session header the gateway requires', async () => {
+  const seen = [];
+  const { sandbox, home, hooks, ctx } = await setup('background-opencode-header', async (...args) => {
+    seen.push(args[2]);
+    return result('header micro', 'header summary');
+  });
+  // The gateway answers 400 MissingSessionID without this header, and the adapter
+  // turns that into a bare 'error' stop reason: the sessionId option alone is not
+  // enough, because the bare complete() path merges only the headers we pass.
+  ctx.model = { provider: 'opencode-go', id: 'deepseek-v4.1-flash', baseUrl: 'https://opencode.ai/zen/go/v1' };
+  ctx.sessionManager.getSessionId = () => 'sess-header-id';
+  ctx.modelRegistry = {
+    ...ctx.modelRegistry,
+    find: (provider, id) => (provider === ctx.model.provider && id === ctx.model.id ? ctx.model : null),
+  };
+  const messages = conversation();
+  try {
+    await reachBackground(hooks, ctx, messages, () => seen.length);
+    assert.equal(seen.length, 1, 'the hook starts exactly one completion');
+    assert.equal(seen[0].headers?.['x-opencode-session'], 'sess-header-id',
+      'the request went out without the header the OpenCode gateway requires');
+    assert.equal(seen[0].headers?.['x-opencode-client'], 'pi');
+  } finally {
+    await hooks.get('session_shutdown')?.({}, ctx);
+    home.restore();
+    sandbox.cleanup();
+  }
+});
+
+test('a non-OpenCode provider receives no session header at all', async () => {
+  const seen = [];
+  const { sandbox, home, hooks, ctx } = await setup('background-plain-provider', async (...args) => {
+    seen.push(args[2]);
+    return result('plain micro', 'plain summary');
+  });
+  const messages = conversation();
+  try {
+    await reachBackground(hooks, ctx, messages, () => seen.length);
+    assert.equal(seen.length, 1, 'the hook starts exactly one completion');
+    assert.equal(seen[0].headers, undefined, 'the fix must leave every other provider byte-identical');
+  } finally {
+    await hooks.get('session_shutdown')?.({}, ctx);
+    home.restore();
+    sandbox.cleanup();
+  }
+});
+
+test('a provider failure reports its own reason, not only the stop reason', async () => {
+  let calls = 0;
+  const reason = 'Request is missing x-opencode-session and cannot be routed efficiently.';
+  const { sandbox, home, hooks, ctx } = await setup('background-error-detail', async () => {
+    calls++;
+    return { stopReason: 'error', errorMessage: reason, content: [] };
+  });
+  const messages = conversation();
+  try {
+    await reachBackground(hooks, ctx, messages, () => calls);
+    for (let i = 0; i < 6 && calls < 2; i++) await tick();
+    const after = persistedState(sandbox);
+    assert.equal(calls, 2, 'a failed attempt is retried exactly once');
+    assert.equal(after.backgroundSummary.status, 'exhausted');
+    assert.match(String(after.backgroundSummary.lastError), /x-opencode-session/,
+      'the provider reason was discarded: the log would say only completion stopped: error');
+    assert.match(logOf(sandbox), /x-opencode-session/);
+  } finally {
+    await hooks.get('session_shutdown')?.({}, ctx);
+    home.restore();
+    sandbox.cleanup();
+  }
+});

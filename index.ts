@@ -3084,6 +3084,47 @@ function parseBackgroundSummary(content: unknown): BackgroundSummaryResult {
   return { micro, summary };
 }
 
+/**
+ * OpenCode's gateway rejects a request that carries no session header: without
+ * `x-opencode-session` it answers `400 MissingSessionID`, and the adapter turns
+ * that into `stopReason: 'error'` with the reason tucked into `errorMessage`.
+ *
+ * Pi's own session path adds the header through `mergeProviderAttributionHeaders`,
+ * but the bare `registry.complete()` path never does: `prepareRequest` merges only
+ * the provider auth headers and the headers WE pass, so the `sessionId` option is
+ * silently ignored there. Same remedy as pi-subagents' `opencode-session-headers`.
+ * Returns undefined for every other provider, so their requests stay identical.
+ */
+function openCodeSessionHeaders(
+  model: { provider?: string; baseUrl?: string } | null | undefined,
+  sessionId: string | undefined,
+): Record<string, string> | undefined {
+  if (!model || !sessionId) return undefined;
+  let host = '';
+  try { host = new URL(String(model.baseUrl ?? '')).hostname; } catch { host = ''; }
+  if (model.provider !== 'opencode' && model.provider !== 'opencode-go' && host !== 'opencode.ai') return undefined;
+  return { 'x-opencode-session': sessionId, 'x-opencode-client': 'pi' };
+}
+
+/** The raw session id the provider routes on, not the state key derived from it. */
+function rawSessionId(ctx: ExtensionContext | null | undefined): string {
+  try {
+    // SAFETY: sessionManager is declared on ExtensionContext, but a degraded
+    // context may omit it, so the probe stays optional.
+    const sm = ctx?.sessionManager as { getSessionId?: () => string } | undefined;
+    const sid = typeof sm?.getSessionId === 'function' ? sm.getSessionId() : '';
+    return typeof sid === 'string' ? sid : '';
+  } catch {
+    return '';
+  }
+}
+
+/** A provider failure must name itself: the stop reason alone says nothing. */
+function completionStoppedMessage(stopReason: string, errorMessage: unknown): string {
+  const detail = typeof errorMessage === 'string' && errorMessage.trim() ? `: ${errorMessage.trim()}` : '';
+  return `completion stopped: ${stopReason}${detail}`;
+}
+
 function scheduleBackgroundSummary(
   key: string,
   st: CwlState,
@@ -3160,12 +3201,16 @@ function scheduleBackgroundSummary(
             reasoningEffort: 'low',
             cacheRetention: 'none',
             sessionId: requestId,
+            // The bare complete() path sends only these headers; without the
+            // OpenCode session header the gateway answers 400 and we would only
+            // see a bare 'error' stop reason.
+            headers: openCodeSessionHeaders(model, rawSessionId(ctx) || requestId),
             signal: controller.signal,
           },
         );
         if (!ownsRequest()) return;
         if (response.stopReason === 'error' || response.stopReason === 'aborted') {
-          throw new Error(`completion stopped: ${response.stopReason}`);
+          throw new Error(completionStoppedMessage(response.stopReason, response.errorMessage));
         }
         request!.result = parseBackgroundSummary(response.content);
         request!.status = 'ready';
@@ -3225,9 +3270,13 @@ function scheduleBackgroundPitSummary(
         const model = request!.modelProvider && request!.modelId ? registry.find(request!.modelProvider, request!.modelId) : activeModel;
         if (!model || !registry.hasConfiguredAuth(model)) throw new Error('summarizer model/auth unavailable');
         const response = await registry.complete(model, { messages: [{ role: 'user', content: [{ type: 'text', text: backgroundPitPrompt(snapshot) }], timestamp: Date.now() }] },
-          { reasoningEffort: 'low', cacheRetention: 'none', sessionId: requestId, signal: controller.signal });
+          {
+            reasoningEffort: 'low', cacheRetention: 'none', sessionId: requestId,
+            headers: openCodeSessionHeaders(model, rawSessionId(ctx) || requestId),
+            signal: controller.signal,
+          });
         if (!owns()) return;
-        if (response.stopReason === 'error' || response.stopReason === 'aborted') throw new Error(`completion stopped: ${response.stopReason}`);
+        if (response.stopReason === 'error' || response.stopReason === 'aborted') throw new Error(completionStoppedMessage(response.stopReason, response.errorMessage));
         request!.result = parseBackgroundPitSummary(response.content); request!.status = 'ready'; request!.lastError = undefined;
         saveState(key, st); debugLog(cf, `BACKGROUND pit summary ready: ${requestId} (${request!.attempts}/2 attempts)`); return;
       } catch (error) {
