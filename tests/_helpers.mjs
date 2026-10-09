@@ -219,6 +219,24 @@ export const sessionCtx = (sessionFile, cwd = '/tmp/progetto') => {
   return ctx;
 };
 
+/**
+ * Gives the context a MODEL WINDOW — what `effectiveBudget` reads to cap the budget.
+ *
+ * `sessionCtx` exposes only `cwd` and `sessionManager`, so before this the window was
+ * INVISIBLE to every fixture and the dynamic budget could not be observed at all. The shape
+ * is Pi's own `ContextUsage` (`tokens: number | null`, `contextWindow: number`,
+ * `percent: number | null`).
+ *
+ * `source` picks WHICH of the two probes the extension reads, so a test can PIN the priority
+ * instead of assuming it: `'usage'` installs `getContextUsage` (Pi's resolved value, the one
+ * that must win) and `'model'` installs only `ctx.model.contextWindow` (the fallback).
+ */
+export const withWindow = (ctx, contextWindow, { source = 'usage', tokens = 0, percent = null } = {}) => {
+  if (source === 'model') ctx.model = { contextWindow };
+  else ctx.getContextUsage = () => ({ tokens, contextWindow, percent });
+  return ctx;
+};
+
 /** Context without any identifier: it is the case that collapsed onto "default". */
 export const anonymousCtx = (cwd = '/tmp/progetto') => ({ cwd, hasUI: false });
 

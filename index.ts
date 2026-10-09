@@ -123,6 +123,11 @@ type CwlMessages = {
   invalidDeps: (names: string) => string;
   emptyDescriptionWarning: string;
   statusHeader: (budget: string, threshold: string) => string;
+  /**
+   * The line that EXPLAINS a budget lower than the configured one: the model's window, the
+   * configured value, the share and the fixed overhead. Without it a correct cap reads as a bug.
+   */
+  statusBudgetWindow: (window: string, configured: string, share: string, overhead: string) => string;
   statusEpisodes: (total: number, active: number, closed: number, stripped: number) => string;
   statusEvictions: (count: number, tokens: string) => string;
   /** Message injected instead of a compressed span (goes into the LLM context). */
@@ -392,6 +397,8 @@ const I18N: Record<Lang, CwlMessages> = {
     invalidDeps: (names) => `Invalid dependencies (must be closed expl episodes): ${names}`,
     emptyDescriptionWarning: ' WARNING: empty description — this episode has no fallback content.',
     statusHeader: (budget, threshold) => `CWL — token budget: ${budget} (threshold: ${threshold}%)`,
+    statusBudgetWindow: (window, configured, share, overhead) =>
+      `model window: ${window} | configured budget: ${configured} (share ${share}% minus ${overhead}t fixed overhead)`,
     statusEpisodes: (total, active, closed, stripped) => `Episodes total: ${total} | active: ${active} | with evictable content: ${closed} | already stripped: ${stripped}`,
     statusEvictions: (count, tokens) => `Evictions total: ${count} | tokens saved: ${tokens}`,
     compressedNotice: (from, to, saved, id) => `[CWL · RECALL] The messages from ${from} to ${to} were compressed into ` +
@@ -683,6 +690,8 @@ const I18N: Record<Lang, CwlMessages> = {
     invalidDeps: (names) => `Dipendenze non valide (devono essere episodi expl chiusi): ${names}`,
     emptyDescriptionWarning: ' ATTENZIONE: descrizione vuota — questo episodio non ha contenuto di fallback.',
     statusHeader: (budget, threshold) => `CWL — token budget: ${budget} (threshold: ${threshold}%)`,
+    statusBudgetWindow: (window, configured, share, overhead) =>
+      `finestra modello: ${window} | budget configurato: ${configured} (quota ${share}% meno ${overhead}t di overhead fisso)`,
     statusEpisodes: (total, active, closed, stripped) => `Episodi totali: ${total} | attivi: ${active} | con contenuto evictabile: ${closed} | gia' stripped: ${stripped}`,
     statusEvictions: (count, tokens) => `Eviction totali: ${count} | token risparmiati: ${tokens}`,
     compressedNotice: (from, to, saved, id) => `[CWL · RICHIAMO] I messaggi da ${from} a ${to} sono stati compressi in ` +
@@ -970,6 +979,22 @@ interface CwlConfig {
   /** Activation threshold as a fraction of the budget (0..1). */
   thresholdRatio: number;
   /**
+   * The SHARE OF THE MODEL'S CONTEXT WINDOW the budget may occupy, when that is smaller
+   * than `tokenBudget`.
+   *
+   * MEASURED (8 ott 2026): the fixed overhead — system prompt + tool schemas — is ~42.000t
+   * in a real session, i.e. 42% of a 100k window, and CWL cannot compress it. A budget of
+   * 100.000t on a 100k window is therefore UNREACHABLE: Pi compacts at `window - reserveTokens`
+   * (16.384 by default) on the WHOLE context, which for a 100k window is ~41.565t of history.
+   * Pi wins, summarises history with a summary that knows nothing about the index, and the
+   * graph is invalidated. The cap is what stops that.
+   *
+   * It is applied to the WHOLE window and the fixed overhead is SUBTRACTED after, because
+   * `tokenBudget` governs the compressible history alone: with a share alone, 42k would be 4%
+   * of a 1M window and 42% of a 100k one, and no single ratio can be right for both.
+   */
+  dynamicBudgetRatio: number;
+  /**
    * User turns at the tail that are NEVER evicted or stripped.
    *
    * A safety window: compaction must not destroy the context the agent is
@@ -1047,6 +1072,11 @@ const DEFAULT_CONFIG: CwlConfig = {
   // setting that decides when compaction starts.
   tokenBudget: 100_000,
   thresholdRatio: 1,
+  // The share of the model's window the budget may occupy (see `CwlConfig`): MEASURED, on a
+  // 100k window the fixed overhead alone is ~42.000t, so the configured 100.000t can never be
+  // reached before Pi compacts at ~41.565t of history. 0.6 is the default because, once the
+  // overhead is subtracted, it is conservative on every window.
+  dynamicBudgetRatio: 0.6,
   // Three turns, not ten. The window is a CONTINUOUS RUN of the list: the last N
   // user turns PLUS everything between and after them — every assistant message,
   // reasoning block, tool call and tool output. An operator who writes little
@@ -1151,6 +1181,9 @@ function loadConfig(): CwlConfig {
         // disabling (r too big) or inverting (r garbage) the whole policy.
         tokenBudget: validNumber(user.tokenBudget, 1, Number.MAX_SAFE_INTEGER, DEFAULT_CONFIG.tokenBudget),
         thresholdRatio: validNumber(user.thresholdRatio, 0, 1, DEFAULT_CONFIG.thresholdRatio),
+        // A share of the window: 0 would cap the budget to nothing, 1 would cap it to the whole
+        // window and never bite. Both ends are absurd, so out-of-range input falls back.
+        dynamicBudgetRatio: validNumber(user.dynamicBudgetRatio, 0.05, 0.95, DEFAULT_CONFIG.dynamicBudgetRatio),
         protectedTurns: validNumber(user.protectedTurns, 0, 10_000, DEFAULT_CONFIG.protectedTurns),
         looseLeaves: validNumber(user.looseLeaves, 0, 10_000, DEFAULT_CONFIG.looseLeaves),
         nodeCapacity: validNumber(user.nodeCapacity, 1, 10_000, DEFAULT_CONFIG.nodeCapacity),
@@ -1617,6 +1650,22 @@ interface CwlState {
    * Last total context tokens reported by provider/Pi (promptTokens + output or getContextUsage).
    */
   providerContextTokens: number;
+  /**
+   * The context window of the ACTIVE model, as Pi resolves it for this session
+   * (`ctx.getContextUsage().contextWindow`). **0 = never seen**, and that is a decision, not a
+   * missing value: with no window the budget stays `tokenBudget` unchanged, which is also the
+   * behaviour of every state written before this field existed.
+   */
+  contextWindow: number;
+  /**
+   * The budget actually in force on the last turn, after the window cap.
+   *
+   * Persisted for TWO reasons and NEITHER is the decision: `cwl_status` must show the number
+   * that evicts (not the one in the config file), and the `RANGE` row in `storeRange` needs the
+   * same figure when it is reached without a `trigger` argument. The decision is recomputed from
+   * the live window on every turn — switching model must not require a restart.
+   */
+  effectiveBudget: number;
   /** Calibration baseline bookkeeping for Δchars / Δtokens calculation. */
   lastCalibChars: number;
   lastCalibTokens: number;
@@ -1713,6 +1762,8 @@ function newState(): CwlState {
     charTokenRatio: DEFAULT_CHAR_TOKEN_RATIO,
     systemOverheadTokens: 0,
     providerContextTokens: 0,
+    contextWindow: 0,
+    effectiveBudget: 0,
     lastCalibChars: 0,
     lastCalibTokens: 0,
     bodies: new Map(),
@@ -1849,6 +1900,8 @@ interface PersistedState {
   charTokenRatio?: number;
   systemOverheadTokens?: number;
   providerContextTokens?: number;
+  contextWindow?: number;
+  effectiveBudget?: number;
   backgroundSummary?: BackgroundSummaryRequest | null;
   backgroundFallbackAfterTurn?: number;
   backgroundPitSummary?: BackgroundPitSummaryRequest | null;
@@ -2002,6 +2055,8 @@ function saveState(key: string, st: CwlState, opts?: { ownerPid?: number }): voi
       charTokenRatio: st.charTokenRatio,
       systemOverheadTokens: st.systemOverheadTokens,
       providerContextTokens: st.providerContextTokens,
+      contextWindow: st.contextWindow,
+      effectiveBudget: st.effectiveBudget,
       backgroundSummary: st.backgroundSummary,
       backgroundFallbackAfterTurn: st.backgroundFallbackAfterTurn,
       backgroundPitSummary: st.backgroundPitSummary,
@@ -2053,6 +2108,14 @@ function loadPersistedState(key: string): CwlState | null {
       : 0;
     st.providerContextTokens = typeof data.providerContextTokens === 'number' && Number.isFinite(data.providerContextTokens) && data.providerContextTokens >= 0
       ? data.providerContextTokens
+      : 0;
+    st.contextWindow = typeof data.contextWindow === 'number' && Number.isFinite(data.contextWindow) && data.contextWindow > 0
+      ? data.contextWindow
+      : 0;
+    // 0 means "nothing derived yet", and every caller reads it as ABSENT rather than as a zero
+    // budget: a zero budget would make every context look over budget on the first turn.
+    st.effectiveBudget = typeof data.effectiveBudget === 'number' && Number.isFinite(data.effectiveBudget) && data.effectiveBudget > 0
+      ? data.effectiveBudget
       : 0;
     st.turns = typeof data.turns === 'number' ? data.turns : 0;
     st.memoryName = typeof data.name === 'string' && data.name ? data.name : undefined;
@@ -2214,6 +2277,18 @@ const GATE_COOLDOWN_TURNS = 5;
 const HYSTERESIS_RATIO = 1.15;
 
 /**
+ * The floor under the DYNAMIC budget.
+ *
+ * `dynamicBudgetRatio * contextWindow - systemOverheadTokens` can be zero or negative: on a
+ * 100k window with a ~70.000t overhead it is -10.000t. A negative trigger is not a small
+ * budget, it is a broken one — the latch would close on every turn and the extension would
+ * rewrite the injected prefix forever, paying a cache WRITE where it used to pay a READ, to
+ * free room that does not exist. It is a floor and NOT a raise: the result is still passed
+ * through `min(tokenBudget, ...)`, so a deliberately small configured budget is respected.
+ */
+const MIN_DYNAMIC_BUDGET_TOKENS = 4_000;
+
+/**
  * The automatic widening: how often it may fire, and how far it widens.
  *
  * `protectedTurns` bounds the compression window — the last N user turns are inviolable — and
@@ -2225,6 +2300,68 @@ const HYSTERESIS_RATIO = 1.15;
  */
 const AUTO_WIDEN_EVERY_TURNS = 4;
 const AUTO_WIDEN_PROTECTED_TURNS = 1;
+
+/**
+ * The context window of the ACTIVE model, or 0 when nothing can tell us.
+ *
+ * Two sources, in order of authority, and neither is guessed:
+ *  1. `ctx.getContextUsage().contextWindow` — the value Pi RESOLVED for this session, model
+ *     overrides in `models.json` included. This extension already calls it on every turn (to
+ *     read `.tokens`) and used to throw `.contextWindow` away.
+ *  2. `ctx.model.contextWindow` — the model record, for the turns before the first response.
+ *
+ * A missing source answers 0 and NEVER a plausible default: the caller turns 0 into "no cap",
+ * which is the behaviour of the version before this one, so an older Pi degrades to what it
+ * already had instead of to a number nobody measured.
+ */
+function contextWindowOf(ctx: unknown): number {
+  const probe = ctx as {
+    getContextUsage?: () => { contextWindow?: unknown } | undefined;
+    model?: { contextWindow?: unknown };
+  } | null | undefined;
+  if (probe && typeof probe.getContextUsage === 'function') {
+    const win = probe.getContextUsage()?.contextWindow;
+    if (typeof win === 'number' && Number.isFinite(win) && win > 0) return win;
+  }
+  const fromModel = probe?.model?.contextWindow;
+  if (typeof fromModel === 'number' && Number.isFinite(fromModel) && fromModel > 0) return fromModel;
+  return 0;
+}
+
+/**
+ * THE BUDGET: the configured one, or the share of the model's window when that is smaller.
+ *
+ * `tokenBudget` is a number written for the biggest model the operator owns. MEASURED on a
+ * 100k window: the fixed overhead is ~42.000t (42% of the window) and CWL cannot compress it,
+ * while Pi compacts at `window - reserveTokens` (16.384 by default) on the WHOLE context —
+ * 83.616t here, which is ~41.565t of HISTORY. So a 100.000t history budget can never be
+ * reached: Pi summarises first, with a summary that knows nothing about the index, and the
+ * graph is invalidated. This cap is what puts the extension ahead of Pi.
+ *
+ * The share is applied to the WHOLE window and the fixed overhead is SUBTRACTED after,
+ * because this budget governs the compressible history alone. A share alone cannot work:
+ * 42k is 4% of a 1M window and 42% of a 100k one, and no single ratio is right for both.
+ * Subtracted, 0.6 is conservative everywhere — and it needs no knowledge of `reserveTokens`,
+ * because 0.6 of the whole context already sits below the point where Pi compacts.
+ *
+ * The FLOOR goes INSIDE the min, so it can never raise the budget above the configured one:
+ * `tokenBudget` is a deliberate operator choice, and the tests drive this extension with
+ * `tokenBudget: 100`.
+ */
+function effectiveBudget(
+  cf: CwlConfig,
+  st: CwlState,
+  ctx: unknown,
+): { budget: number; contextWindow: number; source: 'window' | 'configured' } {
+  const contextWindow = contextWindowOf(ctx);
+  if (contextWindow <= 0) return { budget: cf.tokenBudget, contextWindow: 0, source: 'configured' };
+  const share = Math.floor(cf.dynamicBudgetRatio * contextWindow) - Math.max(0, st.systemOverheadTokens);
+  return {
+    budget: Math.min(cf.tokenBudget, Math.max(MIN_DYNAMIC_BUDGET_TOKENS, share)),
+    contextWindow,
+    source: 'window',
+  };
+}
 
 /**
  * The number the budget gate decides on — the MEASURED one whenever the provider gave one.
@@ -3209,7 +3346,11 @@ function storeRange(
   // The spans branch runs before `trigger` exists, so fall back to the numbers
   // the state already carries.
   const tokens = currentTokens ?? st.lastMeasuredTokens;
-  const trig = trigger ?? cf.tokenBudget * cf.thresholdRatio;
+  // The persisted EFFECTIVE budget, not the configured one: when this row is reached without a
+  // `trigger` (the spans branch runs before the decision), the number it prints must be the
+  // number that DECIDED, or the log contradicts the eviction it describes. 0 = nothing derived
+  // yet, and only then the config is the honest fallback.
+  const trig = trigger ?? (st.effectiveBudget > 0 ? st.effectiveBudget : cf.tokenBudget) * cf.thresholdRatio;
   debugLog(cf, `RANGE source=${source} ${range
     ? `${range.startHash}..${range.endHash} (~${range.tokens}t)`
     : 'none'} | ${messages.length} msgs, ${tokens} message-tokens vs trigger ${Math.round(trig)}t, ${st.spans.length} span(s)`);
@@ -5826,6 +5967,10 @@ function indexNodeViews(st: CwlState): IndexNodeView[] {
       const active = g.active();
       const closed = g.recoverable();
       const stripped = closed.filter(e => e.level !== 'none');
+      // Derived LIVE with the SAME function the hook decides with: a status reporting the
+      // configured budget while the extension evicted at a lower one would be lying about the
+      // only number that matters, which is the two-numbers-for-one-decision defect again.
+      const eb = effectiveBudget(cf, st, ctx);
 
       const extra = st.systemOverheadTokens > 0
         ? (LANG === 'it'
@@ -5834,7 +5979,17 @@ function indexNodeViews(st: CwlState): IndexNodeView[] {
         : undefined;
 
       const lines = [
-        t('statusHeader')(cf.tokenBudget.toLocaleString(), (cf.thresholdRatio * 100).toFixed(0)),
+        t('statusHeader')(eb.budget.toLocaleString(), (cf.thresholdRatio * 100).toFixed(0)),
+        // The WINDOW, whenever one was seen: it is the reason the number above can be LOWER
+        // than the config file, and a status that hides it turns a correct cap into a bug.
+        ...(eb.source === 'window'
+          ? [t('statusBudgetWindow')(
+              eb.contextWindow.toLocaleString(),
+              cf.tokenBudget.toLocaleString(),
+              (cf.dynamicBudgetRatio * 100).toFixed(0),
+              st.systemOverheadTokens.toLocaleString(),
+            )]
+          : []),
         t('statusMeasured')(st.lastMeasuredTokens.toLocaleString(), extra),
         t('statusEpisodes')(g.count, active.length, closed.length, stripped.length),
         t('statusEvictions')(st.totalEvictions, st.totalEvictedTokens.toLocaleString()),
@@ -5920,7 +6075,13 @@ function indexNodeViews(st: CwlState): IndexNodeView[] {
         content: [{ type: 'text', text: lines.join('\n') }],
         details: {
           ok: true,
+          // `budget` stays the CONFIGURED one — the field is a published contract and renaming
+          // it would break a reader for nothing — and the two fields below say what was in force
+          // and why, which is what a caller actually needs to explain a low trigger.
           budget: cf.tokenBudget,
+          effectiveBudget: eb.budget,
+          contextWindow: eb.contextWindow,
+          budgetSource: eb.source,
           total: g.count,
           active: active.length,
           closed: closed.length,
@@ -7295,7 +7456,16 @@ function indexNodeViews(st: CwlState): IndexNodeView[] {
     // THE BUDGET DECISION, taken ONCE and taken here. `trigger`, the number compared against
     // it and the latch all live together: a decision read in two places from two different
     // formulas is how the gate and the eviction it guards came to disagree about one turn.
-    const trigger = cf.tokenBudget * cf.thresholdRatio;
+    // THE BUDGET IS DERIVED HERE, once, from the model's window when that is the smaller of the
+    // two, and the reason is measured: on a small window `tokenBudget` sits ABOVE the point
+    // where Pi compacts, so Pi summarises first, knows nothing about the index, and the graph is
+    // invalidated. `effectiveBudget` holds the arithmetic and why the fixed overhead is
+    // subtracted. `st.effectiveBudget` is kept because `storeRange` and `cwl_status` must show
+    // the number that DECIDED, not the one in the config file.
+    const budget = effectiveBudget(cf, st, ctx);
+    st.effectiveBudget = budget.budget;
+    st.contextWindow = budget.contextWindow;
+    const trigger = budget.budget * cf.thresholdRatio;
     const governing = governingHistoryTokens(st, messages);
     const overBudget = latchEviction(st, governing.tokens, trigger);
     // THE AUTOMATIC WIDENING, for the WHOLE turn. Widening the compression window is the only
