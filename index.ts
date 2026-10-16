@@ -2807,63 +2807,8 @@ function runEvictionPass(
   instruction: string;
   estimatedTokens: number;
 }[] {
-  const actions: {
-    episode: string;
-    level: StripLevel;
-    instruction: string;
-    estimatedTokens: number;
-  }[] = [];
-
-  // Candidates: closed episodes, not active, without live dependents
-  const candidates = graph.recoverable().filter(ep => {
-    if (graph.hasLiveDependents(ep.name)) return false;
-    return true;
-  });
-
-  if (candidates.length === 0) return [];
-
-  // Priority: act before expl (persistent effects), then by age
-  const actCandidates = candidates.filter(e => e.type === 'act');
-  const explCandidates = candidates.filter(e => e.type === 'expl');
-
-  const ordered = [
-    ...actCandidates.sort((a, b) => a.openedAt - b.openedAt),
-    ...explCandidates.sort((a, b) => a.openedAt - b.openedAt),
-  ];
-
-  // Measured on the SAME ranges the eviction will touch (episodeRanges), not on
-  // `ep.startIdx`.
-  const ranges = episodeRanges(messages, graph.closed());
-  let projected = currentTokens;
-
-  for (const target of ordered) {
-    if (projected <= targetTokens) break;
-
-    const range = ranges.get(target.name);
-    // No range: the eviction will skip this episode too. Counting a saving here
-    // would lower `projected` for something that will never be freed, and the
-    // pass would stop before reaching the target.
-    if (!range) continue;
-
-    // Find the minimum level that brings us back under budget
-    for (const level of ['reasoning', 'bulk', 'intermediate', 'removed'] as StripLevel[]) {
-      if (level === 'reasoning' && target.type !== 'expl') continue;
-
-      const action = computeStripActionWith(cfg, target, level);
-      if (action) {
-        const saved = levelSavingTokens(messages, range.from, range.to, level);
-        // A level that frees NOTHING is not a plan: escalate to the next one
-        // instead of stopping here with an action that cannot help.
-        if (saved <= 0 && level !== 'removed') continue;
-        target.level = level;
-        projected = Math.max(0, projected - saved);
-        actions.push({ ...action, estimatedTokens: rangeTokens(messages, range.from, range.to) });
-        break;
-      }
-    }
-  }
-
-  return actions;
+  // Eviction disabled per user request
+  return [];
 }
 
 function computeStripActionWith(cfg: CwlConfig, ep: Episode, level: StripLevel) {

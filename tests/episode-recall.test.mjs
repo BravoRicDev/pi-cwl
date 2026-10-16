@@ -150,11 +150,10 @@ test('cwl_recall resolves the key sessionKey really produces (full path)', async
   } finally { home.restore(); sandbox.cleanup(); }
 });
 
-test('the eviction emits the pointer, also for an act episode', async () => {
-  // Only `removeEpisode` active: this way the eviction goes STRAIGHT to the removed level,
-  // without having to escalate reasoning -> bulk -> intermediate over several turns.
-  // protectedTurns=0: here the safety window must be OFF, otherwise the two
-  // sole user turns of the scene are both protected and nothing is evicted.
+test('the eviction is disabled: no marker is emitted and the context is untouched', async () => {
+  // Eviction disabled per user request: `runEvictionPass` returns [].
+  // With no eviction there is no re-entry marker and no pointer to emit,
+  // and the messages outside the episode stay as they are.
   const config = {
     tokenBudget: 10,
     thresholdRatio: 0.5,
@@ -179,13 +178,16 @@ test('the eviction emits the pointer, also for an act episode', async () => {
         { role: 'user', content: 'post' },
       ];
       const res = await hooks.get('context')({ messages }, ctx);
-      assert.ok(res && Array.isArray(res.messages), 'the context hook evicted nothing');
-
-      const marker = res.messages.find((m) => m.customType === 'cwl-evicted');
-      assert.ok(marker, `no marker emitted for an ${type} episode`);
-      assert.match(marker.content, /cwl_recall_episode\("ep-(expl|act)"\)/, 'the marker does not contain the pointer');
+      // No eviction: either the hook answers `undefined` (no change) or returns
+      // the very same list. Either way nothing was evicted.
+      const out = (res && res.messages) || messages;
+      assert.ok(!out.some((m) => m.customType === 'cwl-evicted'),
+        `an eviction marker was emitted for a ${type} episode while eviction is disabled`);
+      // The content of the episode is still there.
+      assert.ok(out.some((m) => JSON.stringify(m).includes('plenty of contents')),
+        'the episode content was removed while eviction is disabled');
       // The messages outside the episode stay.
-      assert.ok(res.messages.some((m) => m.role === 'user' && m.content === 'post'), 'the user turn was touched');
+      assert.ok(out.some((m) => m.role === 'user' && m.content === 'post'), 'the user turn was touched');
     } finally { home.restore(); sandbox.cleanup(); }
   }
 });

@@ -104,7 +104,7 @@ async function createSpan(tools, hooks, ctx, messages) {
   return out;
 }
 
-test('with a live span that re-applies, the evictable episode is still evicted', async () => {
+test('with a live span that re-applies, the evictable episode is NOT evicted: eviction is disabled', async () => {
   const { sandbox, home, tools, hooks, ctx } = await boot(onlyRemoval());
   try {
     // 1. A compressible conversation: it is needed to create the span.
@@ -131,11 +131,11 @@ test('with a live span that re-applies, the evictable episode is still evicted',
     // the test would pass even without the defect it wants to demonstrate.
     assert.match(log, /SPANS (re-applied|applied): \d+/, 'the span did not re-apply: the test proves nothing');
 
+    // EVICTION IS DISABLED: the episode content stays, whatever the span
+    // re-application does.
     assert.ok(
-      !contains(out, 'INSIDE-1') || !contains(out, 'INSIDE-2'),
-      'the context is above the trigger with an evictable episode, the span re-applied, and the content of ' +
-      'the episode is still there: the span branch returned BEFORE `runEvictionPass`, ' +
-      'so a single span in the state switches off eviction for the rest of the session',
+      contains(out, 'INSIDE-1') && contains(out, 'INSIDE-2'),
+      'with eviction disabled, the episode content should remain in the context',
     );
   } finally { home.restore(); sandbox.cleanup(); }
 });

@@ -97,7 +97,7 @@ async function recordEpisode(tools, ctx, endAnchor, name, type = 'expl', descrip
   await tools.get('delimiter').execute(endAnchor, { name, type, description }, undefined, undefined, ctx);
 }
 
-test('an episode whose opening was lost is located by deduction and evacuated', async () => {
+test('an episode whose opening was lost is NOT evacuated: eviction is disabled', async () => {
   const { sandbox, home, tools, hooks, ctx } = await boot(onlyRemoval());
   try {
     // A chain of two: the SECOND episode begins where the FIRST ended, and that
@@ -114,15 +114,20 @@ test('an episode whose opening was lost is located by deduction and evacuated', 
       { role: 'user', content: 'recent question' },
     ];
     const out = await hook(hooks, ctx, messages);
-    assert.ok(!contains(out, 'INSIDE-1') && !contains(out, 'INSIDE-2'),
-      'the range was not deduced: the episode stayed invisible to the evacuation');
-    // The log must say it. A range deduced instead of read is a thing that
+    // EVICTION IS DISABLED: the episode content stays, whatever the range
+    // deduction would have done with it.
+    assert.ok(contains(out, 'INSIDE-1') && contains(out, 'INSIDE-2'),
+      'the episode was evacuated while eviction is disabled');
+    // The log must say it: a range deduced instead of read is a thing that
     // the operator must be able to see, otherwise the deduction is an assumption.
+    // This happens regardless of whether eviction is enabled or disabled — the
+    // deduction is about what native compaction did to the anchors, not about
+    // whether the extension then acts on that range.
     assert.match(logOf(sandbox), /EPISODES deduced: 1/, 'the log did not say that a range was deduced');
   } finally { home.restore(); sandbox.cleanup(); }
 });
 
-test('the summary of the native compaction survives that range', async () => {
+test('the summary of the native compaction survives: nothing is evacuated at all', async () => {
   const { sandbox, home, tools, hooks, ctx } = await boot(onlyRemoval());
   try {
     await recordEpisode(tools, ctx, 'call-gone', 'first');
@@ -135,13 +140,14 @@ test('the summary of the native compaction survives that range', async () => {
       { role: 'user', content: 'recent question' },
     ];
     const out = await hook(hooks, ctx, messages);
-    // The deduced range was applied (otherwise this test would prove
-    // nothing about the summary: it would be alive only because nobody touched it).
-    assert.ok(!contains(out, 'INSIDE-1'), 'the range was not applied: the test proves nothing');
+    // Nothing was evacuated, so the summary is trivially intact.
+    assert.ok(contains(out, 'INSIDE-1'), 'the episode was evacuated while eviction is disabled');
     assert.ok(contains(out, SUMMARY),
       'the summary of the native compaction was evacuated: it was the only copy of the replaced history');
     assert.ok(out.some((m) => m.role === 'user'), 'a user turn was touched');
-    assert.match(logOf(sandbox), /SUMMARY GUARD: 1/, 'the guard did not count the summary it saved');
+    // No guard fired, because no range was applied.
+    assert.ok(!/SUMMARY GUARD: [1-9]/.test(logOf(sandbox)),
+      'the summary guard counted a save while eviction is disabled');
   } finally { home.restore(); sandbox.cleanup(); }
 });
 
