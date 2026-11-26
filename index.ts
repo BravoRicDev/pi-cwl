@@ -9023,17 +9023,31 @@ function indexNodeViews(st: CwlState): IndexNodeView[] {
         ctx.ui.notify(t('cmdNoAdoptable')(), 'warning');
         return;
       }
-      const choice = await ctx.ui.select(t('cmdPickSource')(), adoptable.map((m) => m.name));
+      const labels = new Map<string, MemoryEntry>();
+      for (const m of adoptable) {
+        const nodes = Array.isArray(m.data.nodes) ? m.data.nodes : [];
+        const pitNodes = containedInNodes(nodes, m.data.oldNode?.nodes ?? []);
+        const pitLeaves = new Set(nodes.filter((n) => pitNodes.has(n.id)).flatMap((n) => n.leaves ?? [])).size;
+        const topics = nodes.map((n) => n.name || n.id).join(', ') || '—';
+        const base = `${m.name} | pozzo: ${pitLeaves} foglie | nodi (${nodes.length}): ${topics}`;
+        let label = base;
+        let n = 2;
+        while (labels.has(label)) label = `${base} (${n++})`;
+        labels.set(label, m);
+      }
+      const choice = await ctx.ui.select(t('cmdPickSource')(), [...labels.keys()]);
       if (choice === undefined) {
         ctx.ui.notify(t('cmdCancelled')(), 'info');
         return;
       }
-      const entered = await ctx.ui.input(t('cmdPickName')(), `${choice}--fork`);
+      const selected = labels.get(choice);
+      if (!selected) return;
+      const entered = await ctx.ui.input(t('cmdPickName')(), `${selected.name}--fork`);
       if (entered === undefined) {
         ctx.ui.notify(t('cmdCancelled')(), 'info');
         return;
       }
-      const res = performAdopt(cf, st, key, choice, entered.trim() || undefined);
+      const res = performAdopt(cf, st, key, selected.file, entered.trim() || undefined);
       ctx.ui.notify(res.text, res.ok ? 'info' : 'error');
     },
   });

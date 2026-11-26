@@ -98,7 +98,7 @@ test('cwl_adopt forks the picked memory under the name the operator typed', asyn
     const sourcePath = path.join(stateDirOf(sandbox), 'aaaa.json');
     const sourceBefore = fs.readFileSync(sourcePath, 'utf8');
     const notes = [];
-    const ctx = commandCtx({ sessionFile, notes, select: () => 'mem-a', input: () => 'my-copy' });
+    const ctx = commandCtx({ sessionFile, notes, select: (_title, options) => options.find((s) => s.startsWith('mem-a |')), input: () => 'my-copy' });
     await hooks.get('session_start')({}, ctx);
     await commands.get('cwl_adopt').handler('', ctx);
 
@@ -108,6 +108,31 @@ test('cwl_adopt forks the picked memory under the name the operator typed', asyn
     assert.ok(forked.spans.every((s) => s.archived === true), 'every forked leaf is archived');
     assert.equal(fs.readFileSync(sourcePath, 'utf8'), sourceBefore, 'the source memory is never touched');
     assert.match(notes.at(-1).text, /my-copy/, 'the operator is told what was created');
+  } finally { home.restore(); sandbox.cleanup(); }
+});
+
+test('picker shows transitive pit leaves and node names, and adopts the exact duplicate', async () => {
+  const { sandbox, home, hooks, commands, sessionFile } = await boot('details');
+  try {
+    const nodes = [
+      { id: 'parent', name: 'Progetto', leaves: ['L1'], children: ['child'], at: 1 },
+      { id: 'child', name: 'Dettagli', leaves: ['L2'], at: 2 },
+      { id: 'front', leaves: ['L3'], at: 3 },
+    ];
+    seedMemory(sandbox, 'a.json', 'same', [leaf('L1'), leaf('L2'), leaf('L3')], {
+      nodes, oldNode: { id: 'pit', nodes: ['parent'], summary: 's', at: 1 }, savedAt: 1,
+    });
+    seedMemory(sandbox, 'b.json', 'same', [leaf('other')], { savedAt: 2 });
+    let offered;
+    const ctx = commandCtx({ sessionFile, notes: [],
+      select: (_title, options) => { offered = options; return options.find((s) => s.includes('Progetto')); },
+      input: () => 'selected',
+    });
+    await hooks.get('session_start')({}, ctx);
+    await commands.get('cwl_adopt').handler('', ctx);
+    assert.ok(offered.some((s) => /pozzo: 2 foglie.*nodi \(3\): Progetto, Dettagli, front/.test(s)));
+    const forked = JSON.parse(fs.readFileSync(stateFileOf(sandbox, sessionFile), 'utf8'));
+    assert.equal(forked.spans.length, 3, 'the selected file, not the newest duplicate, was adopted');
   } finally { home.restore(); sandbox.cleanup(); }
 });
 
@@ -135,7 +160,7 @@ test('a LIVE memory is shown but never offered for adoption', async () => {
     let offered = null;
     const ctx = commandCtx({
       sessionFile, notes,
-      select: (_title, options) => { offered = options; return 'mem-a'; },
+      select: (_title, options) => { offered = options; return options.find((s) => s.startsWith('mem-a |')); },
       input: () => '',
     });
     await hooks.get('session_start')({}, ctx);
@@ -147,7 +172,7 @@ test('a LIVE memory is shown but never offered for adoption', async () => {
 
     // The picker leaves it out, and an empty name keeps the default.
     await commands.get('cwl_adopt').handler('', ctx);
-    assert.ok(offered.includes('mem-a'), 'the adoptable memory is offered');
+    assert.ok(offered.some((s) => s.startsWith('mem-a |')), 'the adoptable memory is offered');
     assert.ok(!offered.some((n) => n.includes('mem-live')), 'the LIVE memory is not offered');
     const forked = JSON.parse(fs.readFileSync(stateFileOf(sandbox, sessionFile), 'utf8'));
     assert.equal(forked.name, 'mem-a--fork', 'an empty name keeps the default');
